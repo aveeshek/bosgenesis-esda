@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block body %}
+<nav class="navbar navbar-expand-lg border-bottom bg-white">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/">BOS Genesis ESDA</a>
+    <div class="d-flex align-items-center gap-2">
+      <a class="btn btn-sm btn-outline-primary" href="/release-notes">Release Notes</a>
+      <a class="btn btn-sm btn-outline-warning" href="/approvals">Approvals</a>
+      <a class="btn btn-sm btn-outline-dark" href="/l4-audit">L4 Audit</a>
+      <button id="llm-chat-open" class="btn btn-sm btn-outline-success" type="button" data-bs-toggle="modal" data-bs-target="#llm-chat-modal">LLM Chat</button>
+      <span class="text-secondary small">{{ user.username }}</span>
+      <a class="btn btn-sm btn-outline-secondary" href="/logout">Logout</a>
+    </div>
+  </div>
+</nav>
+
+<main class="container-fluid py-3">
+  <div class="row g-3 align-items-start">
+    <section class="col-12 col-xl-4">
+      <div class="panel">
+        <h2>Health Check</h2>
+        <form id="diagnostic-form">
+          <div class="mb-3">
+            <label class="form-label" for="goal">Goal</label>
+            <textarea class="form-control" id="goal" rows="3">Check this service health and produce an evidence-backed diagnostic report.</textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="target_url">Target URL</label>
+            <input class="form-control" id="target_url" placeholder="http://localhost:8080/health" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="namespace">Namespace</label>
+            <input class="form-control" id="namespace" value="{{ default_namespace }}">
+          </div>
+          <button class="btn btn-primary" type="submit">Run Diagnostic</button>
+        </form>
+        <div id="error-box" class="alert alert-danger mt-3 d-none" role="alert"></div>
+      </div>
+    </section>
+
+    <section class="col-12 col-xl-4">
+      <div class="panel">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h2 class="mb-0">Run Timeline</h2>
+          <div id="run-status" class="badge text-bg-secondary">Idle</div>
+        </div>
+        <ol id="timeline" class="timeline"></ol>
+      </div>
+    </section>
+
+    <section class="col-12 col-xl-4">
+      <div class="panel mb-3">
+        <h2>Plan</h2>
+        <pre id="plan-panel" class="report-box">No plan yet.</pre>
+      </div>
+      <div class="panel mb-3">
+        <h2>Evidence</h2>
+        <pre id="evidence-panel" class="report-box">No evidence yet.</pre>
+      </div>
+      <div class="panel">
+        <h2>Final Report</h2>
+        <pre id="final-report" class="report-box">No run yet.</pre>
+      </div>
+    </section>
+  </div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/app.js"></script>
+{% endblock %}

@@ -1,0 +1,88 @@
+﻿{% extends "base.html" %}
+
+{% block body %}
+<nav class="navbar navbar-expand-lg border-bottom bg-white">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/">BOS Genesis ESDA</a>
+    <div class="d-flex align-items-center gap-2">
+      <a class="btn btn-sm btn-outline-secondary" href="/">Health Check</a>
+      <a class="btn btn-sm btn-outline-warning" href="/approvals">Approvals</a>
+      <a class="btn btn-sm btn-outline-dark" href="/l4-audit">L4 Audit</a>
+      <button id="llm-chat-open" class="btn btn-sm btn-outline-success" type="button" data-bs-toggle="modal" data-bs-target="#llm-chat-modal">LLM Chat</button>
+      <span class="text-secondary small">{{ user.username }}</span>
+      <a class="btn btn-sm btn-outline-secondary" href="/logout">Logout</a>
+    </div>
+  </div>
+</nav>
+
+<main class="container-fluid py-3">
+  <div class="row g-3">
+    <section class="col-12 col-xl-4">
+      <div class="panel">
+        <h2>Release Notes</h2>
+        <form id="release-note-form">
+          <div class="mb-3">
+            <label class="form-label" for="github_url">GitHub URL</label>
+            <input class="form-control" id="github_url" placeholder="https://github.com/org/repo" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="release_name">Release Name</label>
+            <input class="form-control" id="release_name" placeholder="v1.0.0 or Sprint 12">
+          </div>
+          <div class="source-ref-group">
+            <div class="source-ref-hint small text-secondary mb-2">Use one source ref. Commit overrides tag; tag overrides branch.</div>
+            <div class="row g-2">
+            <div class="col-12 col-md-4">
+              <label class="form-label" for="branch">Branch</label>
+              <input class="form-control" id="branch" placeholder="main">
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label" for="tag">Tag</label>
+              <input class="form-control" id="tag" placeholder="v1.0.0">
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label" for="commit_sha">Commit</label>
+              <input class="form-control" id="commit_sha" placeholder="abcdef1">
+            </div>
+            </div>
+          </div>
+          <div class="mb-3 mt-3">
+            <label class="form-label" for="analysis_depth">Analysis Depth</label>
+            <select class="form-select" id="analysis_depth">
+              <option value="fast" selected>Fast</option>
+              <option value="standard">Standard</option>
+              <option value="deep">Deep</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" type="submit">Generate Draft</button>
+        </form>
+      </div>
+    </section>
+    <section class="col-12 col-xl-4">
+      <div class="panel progress-panel">
+        <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
+          <h2 class="mb-0">Live Progress</h2>
+          <button id="copy-progress" class="btn btn-sm btn-outline-secondary" type="button">Copy Progress</button>
+        </div>
+        <div id="run-status" class="badge text-bg-secondary mb-2 align-self-start">Idle</div>
+        <div id="timeline-scroll" class="timeline-scroll" tabindex="0" aria-label="Live progress events">
+          <ol id="timeline" class="timeline"></ol>
+        </div>
+        <div id="copy-progress-status" class="copy-feedback small text-secondary mt-2" aria-live="polite"></div>
+      </div>
+    </section>
+    <section class="col-12 col-xl-4">
+      <div class="panel">
+        <h2>Draft Artifact</h2>
+        <div id="artifact-links" class="artifact-links mb-3"></div>
+        <pre id="final-report" class="report-box">No release-note run yet.</pre>
+      </div>
+    </section>
+  </div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/release_notes.js"></script>
+{% endblock %}
+

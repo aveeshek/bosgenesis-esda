@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+
+{% block body %}
+<nav class="navbar navbar-expand-lg border-bottom bg-white">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/">BOS Genesis ESDA</a>
+    <div class="d-flex align-items-center gap-2">
+      <a class="btn btn-sm btn-outline-secondary" href="/">Health Check</a>
+      <a class="btn btn-sm btn-outline-secondary" href="/release-notes">Release Notes</a>
+      <a class="btn btn-sm btn-outline-dark" href="/l4-audit">L4 Audit</a>
+      <button id="llm-chat-open" class="btn btn-sm btn-outline-success" type="button" data-bs-toggle="modal" data-bs-target="#llm-chat-modal">LLM Chat</button>
+      <span class="text-secondary small">{{ user.username }}</span>
+      <a class="btn btn-sm btn-outline-secondary" href="/logout">Logout</a>
+    </div>
+  </div>
+</nav>
+
+<main class="container-fluid py-3">
+  <div class="row g-3">
+    <section class="col-12 col-xxl-8">
+      <div class="panel">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+          <h2 class="mb-0">Approval Queue</h2>
+          <div class="d-flex gap-2">
+            <select id="approval-status-filter" class="form-select form-select-sm approval-filter">
+              <option value="pending" selected>Pending</option>
+              <option value="">All</option>
+              <option value="approved">Approved</option>
+              <option value="rejected">Rejected</option>
+              <option value="expired">Expired</option>
+            </select>
+            <button id="approval-refresh" class="btn btn-sm btn-outline-primary" type="button">Refresh</button>
+          </div>
+        </div>
+        <div id="approval-alert" class="alert alert-danger d-none" role="alert"></div>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Tool</th>
+                <th>Workflow</th>
+                <th>Target</th>
+                <th>Risk</th>
+                <th>Expires</th>
+                <th class="text-end">Action</th>
+              </tr>
+            </thead>
+            <tbody id="approval-table-body">
+              <tr><td colspan="7" class="text-secondary">Loading approvals...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    <section class="col-12 col-xxl-4">
+      <div class="panel">
+        <h2>Policy Probe</h2>
+        <form id="policy-probe-form">
+          <div class="mb-3">
+            <label class="form-label" for="probe-tool">Tool</label>
+            <select id="probe-tool" class="form-select">
+              <option value="k8s.restart" selected>Kubernetes Restart</option>
+              <option value="k8s.patch">Kubernetes Patch</option>
+              <option value="helm.upgrade">Helm Upgrade</option>
+              <option value="helm.rollback">Helm Rollback</option>
+              <option value="powershell.raw">Raw PowerShell</option>
+            </select>
+          </div>
+          <div class="row g-2">
+            <div class="col-12 col-md-6">
+              <label class="form-label" for="probe-workflow">Workflow</label>
+              <select id="probe-workflow" class="form-select">
+                <option value="k8s_management" selected>K8s Management</option>
+                <option value="helm_management">Helm Management</option>
+                <option value="mop_execution">MoP Execution</option>
+              </select>
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="form-label" for="probe-environment">Environment</label>
+              <select id="probe-environment" class="form-select">
+                <option value="local" selected>Local</option>
+                <option value="dev">Dev</option>
+                <option value="stage">Stage</option>
+                <option value="prod">Prod</option>
+              </select>
+            </div>
+          </div>
+          <div class="mb-3 mt-3">
+            <label class="form-label" for="probe-namespace">Namespace</label>
+            <input id="probe-namespace" class="form-control" value="bosgenesis">
+          </div>
+          <button class="btn btn-primary" type="submit">Evaluate</button>
+        </form>
+        <pre id="policy-probe-result" class="approval-json mt-3">No policy check yet.</pre>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div class="modal fade" id="approval-detail-modal" tabindex="-1" aria-labelledby="approval-detail-title" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h1 class="modal-title fs-6" id="approval-detail-title">Approval Detail</h1>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="approval-detail-summary" class="mb-3"></div>
+        <label class="form-label" for="approval-notes">Review Notes</label>
+        <textarea id="approval-notes" class="form-control mb-3" rows="3"></textarea>
+        <pre id="approval-detail-json" class="approval-json"></pre>
+      </div>
+      <div class="modal-footer">
+        <button id="approval-reject" class="btn btn-outline-danger" type="button">Reject</button>
+        <button id="approval-approve" class="btn btn-primary" type="button">Approve</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/approvals.js"></script>
+{% endblock %}

@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block body %}
+<nav class="navbar navbar-expand-lg border-bottom bg-white">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/">BOS Genesis ESDA</a>
+    <div class="d-flex align-items-center gap-2">
+      <a class="btn btn-sm btn-outline-secondary" href="/">Health Check</a>
+      <a class="btn btn-sm btn-outline-secondary" href="/release-notes">Release Notes</a>
+      <a class="btn btn-sm btn-outline-warning" href="/approvals">Approvals</a>
+      <button id="llm-chat-open" class="btn btn-sm btn-outline-success" type="button" data-bs-toggle="modal" data-bs-target="#llm-chat-modal">LLM Chat</button>
+      <span class="text-secondary small">{{ user.username }}</span>
+      <a class="btn btn-sm btn-outline-secondary" href="/logout">Logout</a>
+    </div>
+  </div>
+</nav>
+
+<main class="container-fluid py-3">
+  <div class="row g-3">
+    <section class="col-12 col-xl-4">
+      <div class="panel">
+        <h2>L4 Eligibility Probe</h2>
+        <form id="l4-eligibility-form">
+          <div class="mb-3">
+            <label class="form-label" for="l4-workflow">Workflow</label>
+            <select id="l4-workflow" class="form-select">
+              <option value="k8s_management" selected>K8s Management</option>
+              <option value="helm_management">Helm Management</option>
+            </select>
+          </div>
+          <div class="row g-2">
+            <div class="col-12 col-md-6">
+              <label class="form-label" for="l4-environment">Environment</label>
+              <select id="l4-environment" class="form-select">
+                <option value="local" selected>Local</option>
+                <option value="dev">Dev</option>
+                <option value="stage">Stage</option>
+                <option value="prod">Prod</option>
+              </select>
+            </div>
+            <div class="col-12 col-md-6">
+              <label class="form-label" for="l4-namespace">Namespace</label>
+              <input id="l4-namespace" class="form-control" value="bosgenesis">
+            </div>
+          </div>
+          <div class="mb-3 mt-3">
+            <label class="form-label" for="l4-tool">Tool Sequence</label>
+            <select id="l4-tool" class="form-select">
+              <option value="mcp.k8s_inspector" selected>K8s inspector</option>
+              <option value="rest.get">REST GET</option>
+              <option value="helm.status">Helm status</option>
+              <option value="k8s.restart">K8s restart</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" type="submit">Evaluate L4</button>
+        </form>
+        <pre id="l4-result" class="approval-json mt-3">No L4 check yet.</pre>
+      </div>
+    </section>
+    <section class="col-12 col-xl-8">
+      <div class="panel">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h2 class="mb-0">L4 Audit Trail</h2>
+          <button id="l4-refresh" class="btn btn-sm btn-outline-primary" type="button">Refresh</button>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle">
+            <thead>
+              <tr>
+                <th>Decision</th>
+                <th>Workflow</th>
+                <th>Target</th>
+                <th>Reasons</th>
+                <th>Created</th>
+                <th class="text-end">Export</th>
+              </tr>
+            </thead>
+            <tbody id="l4-audit-body">
+              <tr><td colspan="6" class="text-secondary">Loading audit records...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/l4_audit.js"></script>
+{% endblock %}

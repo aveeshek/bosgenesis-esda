@@ -1,0 +1,351 @@
+# BOS Genesis ESDA Policy and ODD Starter
+#
+# This file is the initial implementation artifact for the Operational Design
+# Domain (ODD), tool policy, MCP policy, PowerShell template policy, memory
+# governance, and prompt governance. The application may later load these
+# rules from an admin-managed policy store, but V1 should start here.
+
+version: 1
+status: draft
+owner: bosgenesis-esda
+
+provider_boundary:
+  llm_provider_boundary: gpt5_compatible_model_endpoint
+  v1_implementation: azure_openai_gpt5_deployment
+  integration: langchain_wrapper
+  browser_model_access: denied
+
+storage_policy:
+  v1_required_stores:
+    - postgresql
+    - qdrant
+  optional_stores:
+    redis:
+      allowed_uses:
+        - cache
+        - distributed_locks
+        - rate_limiting
+        - sse_pressure
+  out_of_scope_v1:
+    - mongodb
+
+operational_design_domain:
+  allowed_workflows:
+    - health_check_diagnostic
+    - release_note_creation
+    - mop_creation
+    - mop_execution
+    - helm_management
+    - k8s_management
+  allowed_environments:
+    - local
+    - dev
+    - stage
+  production:
+    read_only_by_default: true
+    mutation_allowed: false
+    mutation_requires_explicit_policy: true
+  allowed_namespaces:
+    - bosgenesis
+  allowed_autonomy_modes:
+    - observe_only
+    - dry_run
+    - assisted
+    - semi_autonomous
+    - conditional_l4
+  conditional_l4:
+    enabled: false
+    allowed_workflows:
+      - k8s_management
+      - helm_management
+    allowed_environments:
+      - local
+      - dev
+    allowed_namespaces:
+      - bosgenesis
+    allowed_roles:
+      - admin
+      - operator
+    allowed_tools:
+      - rest.get
+      - powershell.ps_http_get
+      - mcp.k8s_inspector
+      - helm.status
+    approved_procedures: []
+    allowed_risk_levels:
+      - low
+      - medium_preapproved
+    max_retries: 2
+    max_duration_seconds: 900
+    requires_approved_procedure: true
+    requires_rollback_metadata: true
+    requires_validation_rules: true
+    requires_postgresql_logging: true
+
+allowed_tool_categories:
+  read_only:
+    - mcp
+    - rest
+    - powershell_template
+    - kubernetes_read
+    - helm_read
+    - validation
+    - artifact
+    - memory_search
+  mutation:
+    - kubernetes_restart
+    - kubernetes_patch
+    - helm_upgrade
+    - helm_rollback
+    - memory_write
+
+mutation_policy:
+  allowed_mutation_types:
+    - memory_write
+    - artifact_write
+    - approved_kubernetes_restart
+    - approved_kubernetes_patch
+    - approved_helm_upgrade
+    - approved_helm_rollback
+  always_requires_approval:
+    - kubernetes_restart
+    - kubernetes_patch
+    - helm_upgrade
+    - helm_rollback
+    - production_write
+    - long_running_job
+  denied:
+    - raw_shell
+    - raw_powershell
+    - kubernetes_secret_read
+    - namespace_delete
+    - helm_uninstall
+    - credential_extraction
+    - unbounded_web_download
+
+rollback_requirements:
+  required_for:
+    - kubernetes_patch
+    - kubernetes_restart
+    - helm_upgrade
+    - helm_rollback
+    - mop_execution
+  fields:
+    - rollback_plan
+    - pre_change_state
+    - validation_plan
+    - owner
+    - approval_id
+
+stop_conditions:
+  - id: critical_risk_detected
+    action: stop_and_escalate
+  - id: out_of_scope_action
+    action: stop_and_escalate
+  - id: high_risk_action_needs_approval
+    action: pause_for_approval
+  - id: validation_failed_twice
+    action: stop_and_escalate
+  - id: contradictory_tool_output
+    action: stop_and_escalate
+  - id: secret_like_output_detected
+    action: stop_and_escalate
+  - id: postgresql_logging_unavailable
+    action: stop_and_escalate
+  - id: missing_rollback_state
+    action: stop_and_escalate
+  - id: model_uncertainty_high
+    action: stop_and_escalate
+  - id: retry_budget_exceeded
+    action: stop_and_escalate
+  - id: run_duration_exceeded
+    action: stop_and_escalate
+
+validation_requirements:
+  required_after_tool_call: true
+  required_after_mutation: true
+  allowed_validation_types:
+    - http_status
+    - json_path
+    - schema
+    - kubernetes_condition
+    - helm_status
+    - log_pattern
+    - artifact_schema
+
+mcp_servers:
+  bosgenesis-k8s-inspector-mcp:
+    url: ${MCP_K8S_INSPECTOR_URL}
+    enabled: true
+    allowed_workflows:
+      - k8s_management
+      - mop_execution
+    allowed_tools:
+      - list_pods
+      - list_services
+      - get_deployment
+      - get_logs
+      - describe_resource
+    timeout_seconds: 30
+    max_response_bytes: 200000
+    auth_mode: service_token
+    risk_level: medium
+  bosgenesis-api-test-mcp:
+    url: ${MCP_API_TEST_URL}
+    enabled: true
+    allowed_workflows:
+      - release_note_creation
+      - mop_creation
+      - mop_execution
+      - k8s_management
+    allowed_tools:
+      - call_endpoint
+      - validate_status
+      - validate_schema
+    timeout_seconds: 30
+    max_response_bytes: 200000
+    auth_mode: service_token
+    risk_level: low
+  bosgenesis-docs-rag-mcp:
+    url: ${MCP_DOCS_RAG_URL}
+    enabled: true
+    allowed_workflows:
+      - release_note_creation
+      - mop_creation
+      - mop_execution
+      - helm_management
+      - k8s_management
+    allowed_tools:
+      - search_docs
+      - retrieve_context
+    timeout_seconds: 30
+    max_response_bytes: 200000
+    auth_mode: service_token
+    risk_level: low
+  bosgenesis-observability-mcp:
+    url: ${MCP_OBSERVABILITY_URL}
+    enabled: true
+    allowed_workflows:
+      - mop_execution
+      - helm_management
+      - k8s_management
+    allowed_tools:
+      - get_recent_traces
+      - get_error_spans
+      - query_metrics
+    timeout_seconds: 30
+    max_response_bytes: 200000
+    auth_mode: service_token
+    risk_level: medium
+
+mcp_response_envelope:
+  status_values:
+    - success
+    - failed
+    - denied
+    - timeout
+  required_fields:
+    - status
+    - tool_name
+    - normalized_result
+    - evidence_refs
+    - error
+  error_fields:
+    - code
+    - message
+    - retryable
+
+powershell_runner:
+  service_boundary: separate_service
+  accepts_raw_command: false
+  request_shape:
+    - template_id
+    - typed_parameters
+    - run_id
+    - step_id
+    - user_id
+  execution_identity: low_privilege_windows_identity
+  timeout_seconds_default: 30
+  stdout_max_bytes: 200000
+  stderr_max_bytes: 50000
+  redact_before_persistence: true
+  blocked_patterns:
+    - Invoke-Expression
+    - iex
+    - download_and_execute
+    - raw_kubectl_delete
+    - raw_helm_upgrade
+    - credential_store_access
+  templates:
+    ps_http_get:
+      risk_level: low
+      allowed_roles:
+        - operator
+        - approver
+        - admin
+      allowed_workflows:
+        - release_note_creation
+        - mop_creation
+        - mop_execution
+        - helm_management
+        - k8s_management
+      allowed_environments:
+        - local
+        - dev
+        - stage
+    ps_kubectl_logs:
+      risk_level: medium
+      allowed_roles:
+        - operator
+        - approver
+        - admin
+      allowed_workflows:
+        - k8s_management
+        - mop_execution
+      allowed_environments:
+        - local
+        - dev
+        - stage
+    ps_helm_status:
+      risk_level: low
+      allowed_roles:
+        - operator
+        - approver
+        - admin
+      allowed_workflows:
+        - helm_management
+        - mop_execution
+      allowed_environments:
+        - local
+        - dev
+        - stage
+
+memory_governance:
+  writes_require_policy_check: true
+  reject_secret_like_content: true
+  require_source_run_id: true
+  known_fix_requires_confidence_score: true
+  low_confidence_review_required: true
+  procedural_memory_requires_approval: true
+  procedural_memory_requires_versioning: true
+  retrieval_must_log_reason_used: true
+
+prompt_governance:
+  prompt_template_dir: prompt_templates
+  required_templates:
+    - system_bounded_agent_v1.md
+    - planner_v1.md
+    - verifier_v1.md
+    - recovery_v1.md
+    - report_writer_v1.md
+  required_log_fields:
+    - prompt_version
+    - prompt_hash
+    - model_deployment
+    - workflow_type
+    - tool_choices
+    - reasoning_summary
+    - policy_decision
+    - validation_result
+  store_hidden_chain_of_thought: false
+
