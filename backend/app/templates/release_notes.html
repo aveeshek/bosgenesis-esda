@@ -1,20 +1,6 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 
 {% block body %}
-<nav class="navbar navbar-expand-lg border-bottom bg-white">
-  <div class="container-fluid">
-    <a class="navbar-brand" href="/">BOS Genesis ESDA</a>
-    <div class="d-flex align-items-center gap-2">
-      <a class="btn btn-sm btn-outline-secondary" href="/">Health Check</a>
-      <a class="btn btn-sm btn-outline-warning" href="/approvals">Approvals</a>
-      <a class="btn btn-sm btn-outline-dark" href="/l4-audit">L4 Audit</a>
-      <button id="llm-chat-open" class="btn btn-sm btn-outline-success" type="button" data-bs-toggle="modal" data-bs-target="#llm-chat-modal">LLM Chat</button>
-      <span class="text-secondary small">{{ user.username }}</span>
-      <a class="btn btn-sm btn-outline-secondary" href="/logout">Logout</a>
-    </div>
-  </div>
-</nav>
-
 <main class="container-fluid py-3">
   <div class="row g-3">
     <section class="col-12 col-xl-4">
@@ -29,6 +15,7 @@
             <label class="form-label" for="release_name">Release Name</label>
             <input class="form-control" id="release_name" placeholder="v1.0.0 or Sprint 12">
           </div>
+
           <div class="source-ref-group">
             <div class="source-ref-hint small text-secondary mb-2">Use one source ref. Commit overrides tag; tag overrides branch.</div>
             <div class="row g-2">
@@ -85,4 +72,3 @@
 {% block scripts %}
 <script src="/static/js/release_notes.js"></script>
 {% endblock %}
-

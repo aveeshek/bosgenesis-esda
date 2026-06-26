@@ -27,21 +27,82 @@ def test_azure_api_key_mode_requires_api_key() -> None:
     assert not settings.azure_configured
 
 
+def test_default_azure_credential_mode_does_not_require_api_key() -> None:
+    settings = Settings(
+        azure_openai_endpoint="https://example.openai.azure.com/",
+        azure_openai_auth_mode="default_azure_credential",
+        azure_openai_gpt5_deployment="deployment",
+        azure_openai_api_version="2024-12-01-preview",
+        azure_openai_api_key="",
+    )
+
+    assert settings.azure_configured
+
+
+def test_model_profiles_include_requested_azure_and_ollama_profiles() -> None:
+    service = AzureGpt5Service(Settings())
+    profiles = {profile["profile_id"]: profile for profile in service.model_profiles()}
+
+    assert profiles["azure_gpt5_pro"]["deployment"] == "bos-trainium-gpt-5.0"
+    assert profiles["azure_gpt5_pro"]["model_name"] == "gpt-5"
+    assert profiles["azure_gpt5_pro"]["auth_mode"] == "default_azure_credential"
+    assert profiles["azure_gpt41_mini"]["deployment"] == "bos-trainium-sigma-gpt-4.1-mini"
+    assert profiles["ollama_llama70b"]["endpoint"] == "http://ollama-llama70b.bosgenesis.local/v1"
+    assert profiles["ollama_llama70b"]["model_name"] == "llama3.3:70b"
+    assert profiles["ollama_gemma4"]["endpoint"] == "http://ollama.bosgenesis.local/v1"
+    assert profiles["ollama_gemma4"]["model_name"] == "gemma4:26b"
+
+
 def test_azure_cli_auth_mode_uses_azure_chat_openai_path(monkeypatch) -> None:
     settings = Settings(
         azure_openai_endpoint="https://example.openai.azure.com/",
         azure_openai_auth_mode="azure_cli",
         openai_deployment="deployment",
         openai_api_version="2024-12-01-preview",
+        llm_default_model_profile="azure_configured",
     )
     service = AzureGpt5Service(settings)
     called = {"azure_cli": False}
 
-    def fake_cli_model():
+    def fake_cli_model(profile):
         called["azure_cli"] = True
+        assert profile.profile_id == "azure_configured"
         return object()
 
     monkeypatch.setattr(service, "_azure_chat_openai_with_cli_token", fake_cli_model)
 
-    assert service._model() is not None
+    assert service._model("azure_configured") is not None
     assert called["azure_cli"] is True
+
+
+def test_gpt5_profile_uses_default_azure_credential_path(monkeypatch) -> None:
+    service = AzureGpt5Service(Settings())
+    called = {"default_credential": False}
+
+    def fake_default_model(profile):
+        called["default_credential"] = True
+        assert profile.profile_id == "azure_gpt5_pro"
+        assert profile.deployment == "bos-trainium-gpt-5.0"
+        return object()
+
+    monkeypatch.setattr(service, "_azure_chat_openai_with_default_credential", fake_default_model)
+
+    assert service._model("azure_gpt5_pro") is not None
+    assert called["default_credential"] is True
+
+
+def test_ollama_profile_uses_openai_compatible_path(monkeypatch) -> None:
+    service = AzureGpt5Service(Settings())
+    called = {"ollama": False}
+
+    def fake_ollama_model(profile):
+        called["ollama"] = True
+        assert profile.profile_id == "ollama_llama70b"
+        assert profile.endpoint == "http://ollama-llama70b.bosgenesis.local/v1"
+        assert profile.model_name == "llama3.3:70b"
+        return object()
+
+    monkeypatch.setattr(service, "_openai_compatible_chat_model", fake_ollama_model)
+
+    assert service._model("ollama_llama70b") is not None
+    assert called["ollama"] is True

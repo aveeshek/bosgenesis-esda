@@ -36,6 +36,18 @@ class Settings(BaseSettings):
     azure_openai_timeout_seconds: int = 120
     azure_openai_max_retries: int = 2
 
+    llm_default_model_profile: str = "azure_gpt5_pro"
+    azure_openai_gpt5_endpoint: str = "https://aiservicesprjbossdcdevh23aw001.openai.azure.com/"
+    azure_openai_gpt5_pro_deployment: str = "bos-trainium-gpt-5.0"
+    azure_openai_gpt5_model_name: str = "gpt-5"
+    azure_openai_gpt5_api_version: str = "2024-12-01-preview"
+    azure_openai_gpt41_mini_deployment: str = "bos-trainium-sigma-gpt-4.1-mini"
+    azure_openai_gpt41_mini_model_name: str = "gpt-4.1-mini"
+    ollama_llama70b_base_url: str = "http://ollama-llama70b.bosgenesis.local/v1"
+    ollama_llama70b_model: str = "llama3.3:70b"
+    ollama_gemma_base_url: str = "http://ollama.bosgenesis.local/v1"
+    ollama_gemma_model: str = "gemma4:26b"
+
     # Compatibility aliases for existing Azure OpenAI examples/scripts.
     openai_deployment: str = ""
     openai_api_version: str = ""
@@ -84,7 +96,7 @@ class Settings(BaseSettings):
         )
         if not common_configured:
             return False
-        if self.azure_openai_auth_mode == "azure_cli":
+        if self.azure_openai_auth_mode in {"azure_cli", "default_azure_credential"}:
             return True
         return bool(self.azure_openai_api_key)
 
@@ -100,7 +112,7 @@ class Settings(BaseSettings):
     @field_validator("azure_openai_auth_mode")
     @classmethod
     def validate_azure_openai_auth_mode(cls, value: str) -> str:
-        allowed = {"api_key", "azure_cli"}
+        allowed = {"api_key", "azure_cli", "default_azure_credential"}
         if value not in allowed:
             raise ValueError(f"AZURE_OPENAI_AUTH_MODE must be one of {sorted(allowed)}")
         return value

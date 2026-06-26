@@ -8,6 +8,61 @@
     <link href="/static/css/app.css" rel="stylesheet">
   </head>
   <body>
+    {% if user is defined %}
+      {% set current_path = request.url.path if request is defined else "" %}
+      <header class="app-header">
+        <div class="app-header-inner">
+          <a class="brand-lockup" href="/" aria-label="BOS Genesis ESDA home">
+            <span class="brand-mark" aria-hidden="true">AI</span>
+            <span class="brand-copy">
+              <span class="brand-title">BOS Genesis ESDA</span>
+              <span class="brand-subtitle">AI Workflow Console</span>
+            </span>
+          </a>
+
+          <nav class="app-nav" aria-label="Primary navigation">
+            <button id="llm-chat-open" class="app-nav-link app-nav-link-ai" type="button" data-bs-toggle="modal" data-bs-target="#llm-chat-modal">
+              <span class="nav-dot" aria-hidden="true"></span>
+              <span>LLM Chat</span>
+            </button>
+            <a class="app-nav-link {% if current_path == '/' %}is-active{% endif %}" href="/">Health Check</a>
+            <a class="app-nav-link {% if current_path.startswith('/release-notes') %}is-active{% endif %}" href="/release-notes">Release Notes</a>
+            <a class="app-nav-link {% if current_path.startswith('/approvals') %}is-active{% endif %}" href="/approvals">Approvals</a>
+            <a class="app-nav-link {% if current_path.startswith('/l4-audit') %}is-active{% endif %}" href="/l4-audit">L4 Audit</a>
+          </nav>
+
+          <div class="header-actions">
+            <label class="model-switcher" for="model_profile">
+              <span class="model-switcher-label">Model</span>
+              <select id="model_profile" class="model-switcher-select" aria-label="Select LLM model">
+                {% for profile in model_profiles|default([]) %}
+                  <option value="{{ profile.profile_id }}" {% if profile.is_default %}selected{% endif %} title="{{ profile.label }} - {{ profile.model_display }}">{{ profile.short_label }}</option>
+                {% else %}
+                  <option value="">Default</option>
+                {% endfor %}
+              </select>
+            </label>
+
+            <div class="dropdown profile-menu">
+              <button class="profile-trigger" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Open profile menu">
+                <span class="profile-avatar">{{ (user.username[:1] or 'U')|upper }}</span>
+                <span class="profile-chevron" aria-hidden="true">v</span>
+              </button>
+              <div class="dropdown-menu dropdown-menu-end profile-dropdown shadow-lg">
+                <div class="profile-summary">
+                  <div class="profile-summary-label">Signed in as</div>
+                  <div class="profile-summary-name">{{ user.username }}</div>
+                  <div class="profile-summary-role">{{ user.roles|join(', ') }}</div>
+                </div>
+                <div class="dropdown-divider"></div>
+                <a class="dropdown-item profile-logout" href="/logout">Logout</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </header>
+    {% endif %}
+
     {% block body %}{% endblock %}
     <div class="modal fade" id="llm-chat-modal" tabindex="-1" aria-labelledby="llm-chat-title" aria-hidden="true">
       <div class="modal-dialog modal-dialog-scrollable modal-lg">

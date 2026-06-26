@@ -74,9 +74,19 @@ ESDA calls the release-note-agent MCP compatibility tools for release-note gener
 ## Artifacts
 
 Release-note drafts are saved as Markdown artifacts under `ARTIFACT_STORAGE_DIR` (`var/artifacts` by default). The UI shows a download link when a release-note run completes, and the backend serves artifacts through `/api/artifacts/{artifact_id}` with the same run ownership checks used by run APIs.
-## Azure OpenAI Local Auth
+## LLM Model Profiles
 
-For local ingress mode, the app can use Azure CLI authentication through `AzureCliCredential`, matching the working GPT-4.1 sample. Run `az login`, then set:
+The UI exposes a model selector for the chatbot and release-note generation. The default profile is GPT-5 Pro on Azure OpenAI using `DefaultAzureCredential`:
+
+```powershell
+LLM_DEFAULT_MODEL_PROFILE=azure_gpt5_pro
+AZURE_OPENAI_GPT5_ENDPOINT=https://aiservicesprjbossdcdevh23aw001.openai.azure.com/
+AZURE_OPENAI_GPT5_PRO_DEPLOYMENT=bos-trainium-gpt-5.0
+AZURE_OPENAI_GPT5_MODEL_NAME=gpt-5
+AZURE_OPENAI_GPT5_API_VERSION=2024-12-01-preview
+```
+
+GPT-4.1 mini remains selectable and follows the legacy Azure auth settings, so local ingress mode can still use `AzureCliCredential` after `az login`:
 
 ```powershell
 AZURE_OPENAI_AUTH_MODE=azure_cli
@@ -86,4 +96,4 @@ OPENAI_API_VERSION=2024-12-01-preview
 AZURE_OPENAI_USE_V1_API=false
 ```
 
-`AZURE_OPENAI_GPT5_DEPLOYMENT` / `AZURE_OPENAI_API_VERSION` are also supported. Helm deployments should keep using API-key backed Kubernetes secrets until we add a managed-identity profile.
+The UI also lists OpenAI-compatible Ollama profiles using ingress URLs: `http://ollama-llama70b.bosgenesis.local/v1` for Llama 3.3 70B (`llama3.3:70b`) and `http://ollama.bosgenesis.local/v1` for Gemma4 26B (`gemma4:26b`).

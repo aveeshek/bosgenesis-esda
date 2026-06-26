@@ -13,6 +13,7 @@ def build_test_client(tmp_path, monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("LANGGRAPH_CHECKPOINTER", "disabled")
     monkeypatch.setenv("LLM_REVIEW_LOGGING_ENABLED", "true")
+    monkeypatch.setenv("LLM_DEFAULT_MODEL_PROFILE", "azure_configured")
     monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "api_key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "")
@@ -67,10 +68,39 @@ def test_llm_chat_endpoint_requires_auth_and_reports_fallback(tmp_path, monkeypa
 
         login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
-        response = client.post("/api/llm/chat", json={"message": "Hello from the UI"})
+        response = client.post(
+            "/api/llm/chat",
+            json={"message": "Hello from the UI", "model_profile": "azure_configured"},
+        )
         assert response.status_code == 200
         result = response.json()
         assert result["ok"] is False
         assert result["configured"] is False
         assert result["used_fallback"] is True
         assert "not configured" in result["message"]
+
+def test_llm_model_profiles_endpoint_requires_auth_and_lists_profiles(tmp_path, monkeypatch) -> None:
+    with build_test_client(tmp_path, monkeypatch) as client:
+        unauthenticated = client.get("/api/llm/model-profiles")
+        assert unauthenticated.status_code == 401
+
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        response = client.get("/api/llm/model-profiles")
+        assert response.status_code == 200
+        result = response.json()
+        profile_ids = {profile["profile_id"] for profile in result["profiles"]}
+        assert result["default_model_profile"] == "azure_configured"
+        assert {"azure_gpt5_pro", "azure_gpt41_mini", "ollama_llama70b", "ollama_gemma4"}.issubset(profile_ids)
+
+def test_release_notes_page_renders_model_selectors(tmp_path, monkeypatch) -> None:
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+
+        response = client.get("/release-notes")
+        assert response.status_code == 200
+        assert 'id="model_profile"' in response.text
+        assert 'id="llm-model-profile"' not in response.text
+        assert "GPT 5 Pro" in response.text
+        assert "Llama70B" in response.text

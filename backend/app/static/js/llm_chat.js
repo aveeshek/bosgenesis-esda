@@ -2,6 +2,7 @@ const llmChatMessages = document.getElementById("llm-chat-messages");
 const llmChatInput = document.getElementById("llm-chat-input");
 const llmChatSend = document.getElementById("llm-chat-send");
 const llmChatStatus = document.getElementById("llm-chat-status");
+const llmModelProfile = document.getElementById("model_profile");
 
 function setChatStatus(text, className = "text-secondary", title = "") {
   if (!llmChatStatus) return;
@@ -46,7 +47,7 @@ async function sendLlmChatMessage() {
     const response = await fetch("/api/llm/chat", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({message}),
+      body: JSON.stringify({message, model_profile: llmModelProfile?.value || null}),
     });
     const result = await response.json();
     if (!response.ok || !result.ok) {
@@ -55,7 +56,9 @@ async function sendLlmChatMessage() {
       setChatStatus("LLM failed", "text-danger", detail);
       return;
     }
-    const meta = `${result.deployment} · ${result.auth_mode}`;
+    const provider = result.provider || result.auth_mode || "model";
+    const model = result.model_label || result.deployment || result.model_profile || "selected model";
+    const meta = `${model} - ${provider}`;
     addChatMessage("assistant", result.message, meta);
     setChatStatus(result.used_fallback ? "Fallback response" : "LLM OK", result.used_fallback ? "text-warning" : "text-success", meta);
   } catch (error) {

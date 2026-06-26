@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 from contextlib import asynccontextmanager
 import json
 import logging
@@ -62,12 +62,14 @@ class DiagnosticRequest(BaseModel):
 
 class LlmChatRequest(BaseModel):
     message: str
+    model_profile: str | None = None
 
 
 class WorkflowClassifyRequest(BaseModel):
     message: str
     github_url: str | None = None
     release_name: str | None = None
+    model_profile: str | None = None
 
 
 class PolicyEvaluateRequest(BaseModel):
@@ -93,6 +95,7 @@ class ReleaseNoteRequest(BaseModel):
     tag: str | None = None
     commit_sha: str | None = None
     analysis_depth: str = "fast"
+    model_profile: str | None = None
 
 
 def create_app() -> FastAPI:
@@ -241,6 +244,15 @@ def create_app() -> FastAPI:
     def public_user(principal: SessionPrincipal) -> dict:
         return {"user_id": principal.user_id, "username": principal.username, "roles": principal.roles}
 
+    def template_context(principal: SessionPrincipal, **extra) -> dict:
+        context = {
+            "user": principal,
+            "model_profiles": llm.model_profiles(),
+            "default_model_profile": settings.llm_default_model_profile,
+        }
+        context.update(extra)
+        return context
+
     def require_approver(principal: SessionPrincipal) -> None:
         if not {"admin", "approver"}.intersection(principal.roles):
             raise HTTPException(status_code=403, detail="Approver role required")
@@ -265,6 +277,14 @@ def create_app() -> FastAPI:
     def health() -> dict:
         return {"status": "ok", "app": settings.app_name}
 
+    @app.get("/api/llm/model-profiles", tags=["system"])
+    def llm_model_profiles(principal: SessionPrincipal = Depends(get_current_user)) -> dict:
+        return {
+            "default_model_profile": settings.llm_default_model_profile,
+            "profiles": llm.model_profiles(),
+            "user": principal.username,
+        }
+
 
 
     @app.post("/api/llm/chat", tags=["system"])
@@ -272,13 +292,16 @@ def create_app() -> FastAPI:
         request: LlmChatRequest,
         principal: SessionPrincipal = Depends(get_current_user),
     ) -> dict:
-        result = await llm.chat(message=request.message)
+        result = await llm.chat(message=request.message, model_profile=request.model_profile)
         result["user"] = principal.username
         return result
 
     @app.post("/api/llm/smoke-test", tags=["system"])
-    async def llm_smoke_test(principal: SessionPrincipal = Depends(get_current_user)) -> dict:
-        result = await llm.smoke_test()
+    async def llm_smoke_test(
+        model_profile: str | None = None,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict:
+        result = await llm.smoke_test(model_profile=model_profile)
         result["user"] = principal.username
         return result
 
@@ -331,10 +354,7 @@ def create_app() -> FastAPI:
         return templates.TemplateResponse(
             request,
             "index.html",
-            {
-                "user": principal,
-                "default_namespace": settings.default_namespace,
-            },
+            template_context(principal, default_namespace=settings.default_namespace),
         )
 
     @app.get("/release-notes", response_class=HTMLResponse, tags=["pages"])
@@ -342,7 +362,7 @@ def create_app() -> FastAPI:
         principal = get_current_user_or_none(request)
         if not principal:
             return RedirectResponse("/login", status_code=303)
-        return templates.TemplateResponse(request, "release_notes.html", {"user": principal})
+        return templates.TemplateResponse(request, "release_notes.html", template_context(principal))
 
     @app.get("/approvals", response_class=HTMLResponse, tags=["pages"])
     def approvals_page(request: Request) -> HTMLResponse:
@@ -351,7 +371,7 @@ def create_app() -> FastAPI:
             return RedirectResponse("/login", status_code=303)
         if not {"admin", "approver"}.intersection(principal.roles):
             raise HTTPException(status_code=403, detail="Approver role required")
-        return templates.TemplateResponse(request, "approvals.html", {"user": principal})
+        return templates.TemplateResponse(request, "approvals.html", template_context(principal))
 
 
     @app.get("/l4-audit", response_class=HTMLResponse, tags=["pages"])
@@ -359,7 +379,7 @@ def create_app() -> FastAPI:
         principal = get_current_user_or_none(request)
         if not principal:
             return RedirectResponse("/login", status_code=303)
-        return templates.TemplateResponse(request, "l4_audit.html", {"user": principal})
+        return templates.TemplateResponse(request, "l4_audit.html", template_context(principal))
     @app.post("/api/policy/evaluate", tags=["policy"])
     def evaluate_policy(
         request: PolicyEvaluateRequest,
@@ -499,6 +519,7 @@ def create_app() -> FastAPI:
             user_text=request.message,
             github_url=request.github_url,
             release_name=request.release_name,
+            model_profile=request.model_profile,
         )
         result = classification.model_dump()
         result["user"] = principal.username
@@ -555,6 +576,7 @@ def create_app() -> FastAPI:
             user_text=f"Generate release notes for {request.github_url}",
             github_url=request.github_url,
             release_name=request.release_name,
+            model_profile=request.model_profile,
         )
         classification_payload = classification.model_dump()
         run_id = f"run_{uuid4().hex}"
@@ -576,6 +598,7 @@ def create_app() -> FastAPI:
             tag=request.tag,
             commit_sha=request.commit_sha,
             analysis_depth=request.analysis_depth,
+            model_profile=request.model_profile,
             user_roles=list(principal.roles),
         )
         asyncio.create_task(release_note_graph.run(release_note))
@@ -583,6 +606,7 @@ def create_app() -> FastAPI:
             "run_id": run_id,
             "events_url": f"/api/runs/{run_id}/events",
             "classification": classification_payload,
+            "model_profile": request.model_profile or settings.llm_default_model_profile,
         }
 
     @app.get("/api/runs/{run_id}", tags=["runs"])

@@ -33,6 +33,7 @@ class ReleaseNoteInput:
     tag: str | None = None
     commit_sha: str | None = None
     analysis_depth: str = "fast"
+    model_profile: str | None = None
     user_roles: list[str] | None = None
 
 
@@ -189,11 +190,20 @@ class ReleaseNoteGraph:
 
     async def _run(self, release_note: ReleaseNoteInput) -> None:
         self.repository.update_status(release_note.run_id, "running")
+        selected_model = self._model_profile_payload(release_note.model_profile)
+        model_deployment = str(
+            selected_model.get("model_display")
+            or selected_model.get("deployment")
+            or selected_model.get("model_name")
+            or selected_model.get("profile_id")
+            or "not_configured"
+        )
+        start_payload = {"github_url": release_note.github_url, "model_profile": selected_model}
         await self._emit(
             release_note.run_id,
             "run_started",
             "Release-note generation started",
-            {"github_url": release_note.github_url},
+            start_payload,
         )
         await self.logger.event(
             run_id=release_note.run_id,
@@ -201,7 +211,7 @@ class ReleaseNoteGraph:
             graph_node="start",
             event_type="run_started",
             message="Release-note generation started",
-            payload={"github_url": release_note.github_url},
+            payload=start_payload,
             workflow_type=WORKFLOW_TYPE,
         )
 
@@ -209,8 +219,10 @@ class ReleaseNoteGraph:
             user_text=f"Generate release notes for {release_note.github_url}",
             github_url=release_note.github_url,
             release_name=release_note.release_name,
+            model_profile=release_note.model_profile,
         )
         classification_payload = classification.model_dump()
+        classification_payload["model_profile"] = selected_model
         await self.logger.llm_review(
             run_id=release_note.run_id,
             user_id=release_note.user_id,
@@ -219,6 +231,7 @@ class ReleaseNoteGraph:
             plan=classification_payload,
             reasoning_summary=classification.reasoning_summary,
             workflow_type=WORKFLOW_TYPE,
+            model_deployment=model_deployment,
         )
         await self._emit(
             release_note.run_id,
@@ -231,7 +244,7 @@ class ReleaseNoteGraph:
             release_note.run_id,
             "planning_started",
             "Creating release-note plan",
-            {"github_url": release_note.github_url},
+            {"github_url": release_note.github_url, "model_profile": selected_model},
         )
 
         plan_model = await self.planner.run(
@@ -240,8 +253,10 @@ class ReleaseNoteGraph:
             branch=release_note.branch,
             tag=release_note.tag,
             commit_sha=release_note.commit_sha,
+            model_profile=release_note.model_profile,
         )
         plan = plan_model.model_dump()
+        plan["model_profile"] = selected_model
         await self.logger.llm_review(
             run_id=release_note.run_id,
             user_id=release_note.user_id,
@@ -250,6 +265,7 @@ class ReleaseNoteGraph:
             plan=plan,
             reasoning_summary=plan_model.reasoning_summary,
             workflow_type=WORKFLOW_TYPE,
+            model_deployment=model_deployment,
         )
         await self._emit(release_note.run_id, "plan_created", "Release-note plan created", plan)
         await self._emit(
@@ -282,7 +298,11 @@ class ReleaseNoteGraph:
             release_note.run_id,
             "draft_started",
             "Drafting release-note artifact",
-            {"github_url": release_note.github_url, "agent_status": agent_result.status},
+            {
+                "github_url": release_note.github_url,
+                "agent_status": agent_result.status,
+                "model_profile": selected_model,
+            },
         )
 
         draft = await self.report_writer.run(
@@ -290,8 +310,10 @@ class ReleaseNoteGraph:
             release_name=release_note.release_name,
             plan=plan,
             agent_result=agent_result.model_dump(),
+            model_profile=release_note.model_profile,
         )
         draft_payload = draft.model_dump()
+        draft_payload["model_profile"] = selected_model
         final_report = draft.markdown.strip()
         if not final_report:
             final_report = self._fallback_markdown(release_note, agent_result)
@@ -304,6 +326,7 @@ class ReleaseNoteGraph:
             reasoning_summary=draft.reasoning_summary,
             final_answer=final_report,
             workflow_type=WORKFLOW_TYPE,
+            model_deployment=model_deployment,
         )
 
         verification = await self.verifier.run(
@@ -311,8 +334,10 @@ class ReleaseNoteGraph:
             github_url=release_note.github_url,
             agent_result=agent_result.model_dump(),
             plan=plan,
+            model_profile=release_note.model_profile,
         )
         validation = verification.model_dump()
+        validation["model_profile"] = selected_model
         await self._emit(
             release_note.run_id,
             "validation_completed",
@@ -328,14 +353,17 @@ class ReleaseNoteGraph:
             reasoning_summary=verification.reasoning_summary,
             final_answer=final_report,
             workflow_type=WORKFLOW_TYPE,
+            model_deployment=model_deployment,
         )
 
         recovery = await self.recovery.run(
             agent_result=agent_result.model_dump(),
             verification=validation,
             github_url=release_note.github_url,
+            model_profile=release_note.model_profile,
         )
         recovery_payload = recovery.model_dump()
+        recovery_payload["model_profile"] = selected_model
         await self._emit(
             release_note.run_id,
             "recovery_recommendation",
@@ -350,6 +378,7 @@ class ReleaseNoteGraph:
             plan=recovery_payload,
             reasoning_summary=recovery.reasoning_summary,
             workflow_type=WORKFLOW_TYPE,
+            model_deployment=model_deployment,
         )
         artifact = self.artifact_service.save_markdown(
             run_id=release_note.run_id,
@@ -363,6 +392,7 @@ class ReleaseNoteGraph:
                 "validation": validation,
                 "recovery": recovery_payload,
                 "agent_status": agent_result.status,
+                "model_profile": selected_model,
             },
         )
         await self._emit(
@@ -438,6 +468,7 @@ class ReleaseNoteGraph:
                 "classification": classification_payload,
                 "validation": validation,
                 "recovery": recovery_payload,
+                "model_profile": selected_model,
             },
         )
         await self.logger.event(
@@ -446,7 +477,12 @@ class ReleaseNoteGraph:
             graph_node="final_report",
             event_type="run_completed" if final_status == "completed" else "run_failed",
             message=f"Release-note generation {final_status}",
-            payload={"agent_status": agent_result.status, "artifacts": artifacts, "validation": validation},
+            payload={
+                "agent_status": agent_result.status,
+                "artifacts": artifacts,
+                "validation": validation,
+                "model_profile": selected_model,
+            },
             workflow_type=WORKFLOW_TYPE,
         )
 
@@ -544,6 +580,19 @@ class ReleaseNoteGraph:
                 "has_title": has_title,
                 "has_subsection": has_subsection,
             },
+        }
+
+    def _model_profile_payload(self, model_profile: str | None) -> dict:
+        if hasattr(self.llm, "describe_model_profile"):
+            with suppress(Exception):
+                profile = self.llm.describe_model_profile(model_profile)
+                if isinstance(profile, dict):
+                    return profile
+        fallback_profile = model_profile or "default"
+        return {
+            "profile_id": fallback_profile,
+            "label": fallback_profile,
+            "model_display": fallback_profile,
         }
 
     def _fallback_markdown(

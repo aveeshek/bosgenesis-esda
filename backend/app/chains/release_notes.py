@@ -47,6 +47,7 @@ class ReleaseNoteIntentClassifierChain:
         user_text: str,
         github_url: str | None = None,
         release_name: str | None = None,
+        model_profile: str | None = None,
     ) -> IntentClassification:
         payload = {
             "user_text": user_text,
@@ -59,6 +60,7 @@ class ReleaseNoteIntentClassifierChain:
             system=self.system_prompt,
             user_payload=payload,
             fallback=fallback.model_dump(),
+            model_profile=model_profile,
         )
         return _validate_model(IntentClassification, fallback, raw)
 
@@ -113,6 +115,7 @@ class ReleaseNotePlannerChain:
         branch: str | None,
         tag: str | None,
         commit_sha: str | None,
+        model_profile: str | None = None,
     ) -> AgentPlan:
         payload = {
             "github_url": github_url,
@@ -171,6 +174,7 @@ class ReleaseNotePlannerChain:
             system=self.system_prompt,
             user_payload=payload,
             fallback=fallback.model_dump(),
+            model_profile=model_profile,
         )
         return _validate_model(AgentPlan, fallback, raw, normalizer=_normalize_plan_payload)
 
@@ -186,7 +190,15 @@ class ReleaseNoteVerifierChain:
     def __init__(self, llm) -> None:
         self.llm = llm
 
-    async def run(self, *, markdown: str, github_url: str, agent_result: dict, plan: dict) -> VerificationResult:
+    async def run(
+        self,
+        *,
+        markdown: str,
+        github_url: str,
+        agent_result: dict,
+        plan: dict,
+        model_profile: str | None = None,
+    ) -> VerificationResult:
         payload = {
             "github_url": github_url,
             "markdown": markdown[:6000],
@@ -199,6 +211,7 @@ class ReleaseNoteVerifierChain:
             system=self.system_prompt,
             user_payload=payload,
             fallback=deterministic.model_dump(),
+            model_profile=model_profile,
         )
         result = _validate_model(VerificationResult, deterministic, raw)
         return result.model_copy(
@@ -258,7 +271,14 @@ class ReleaseNoteRecoveryRecommendationChain:
     def __init__(self, llm) -> None:
         self.llm = llm
 
-    async def run(self, *, agent_result: dict, verification: dict, github_url: str) -> RecoveryRecommendation:
+    async def run(
+        self,
+        *,
+        agent_result: dict,
+        verification: dict,
+        github_url: str,
+        model_profile: str | None = None,
+    ) -> RecoveryRecommendation:
         payload = {
             "agent_result": agent_result,
             "verification": verification,
@@ -270,6 +290,7 @@ class ReleaseNoteRecoveryRecommendationChain:
             system=self.system_prompt,
             user_payload=payload,
             fallback=deterministic.model_dump(),
+            model_profile=model_profile,
         )
         result = _validate_model(RecoveryRecommendation, deterministic, raw)
         return result.model_copy(
@@ -335,6 +356,7 @@ class ReleaseNoteReportWriterChain:
         release_name: str | None,
         plan: dict,
         agent_result: dict,
+        model_profile: str | None = None,
     ) -> ReportWriterResult:
         payload = {
             "github_url": github_url,
@@ -348,6 +370,7 @@ class ReleaseNoteReportWriterChain:
             system=self.system_prompt,
             user_payload=payload,
             fallback=fallback.model_dump(),
+            model_profile=model_profile,
         )
         result = _validate_model(ReportWriterResult, fallback, raw)
         normalized_markdown = _ensure_release_note_markdown(
@@ -613,10 +636,29 @@ def _ensure_release_note_markdown(
     return "\n".join(lines)
 
 
-async def _structured_response(llm, *, system: str, user_payload: dict, fallback: dict) -> dict:
+async def _structured_response(
+    llm,
+    *,
+    system: str,
+    user_payload: dict,
+    fallback: dict,
+    model_profile: str | None = None,
+) -> dict:
     if not hasattr(llm, "structured_response"):
         return fallback
-    raw = await llm.structured_response(system=system, user_payload=user_payload, fallback=fallback)
+    if model_profile is not None:
+        raw = await llm.structured_response(
+            system=system,
+            user_payload=user_payload,
+            fallback=fallback,
+            model_profile=model_profile,
+        )
+    else:
+        raw = await llm.structured_response(
+            system=system,
+            user_payload=user_payload,
+            fallback=fallback,
+        )
     if not isinstance(raw, dict):
         return fallback
     return raw

@@ -53,6 +53,7 @@ class PostgresLogger:
         reasoning_summary: str,
         final_answer: str = "",
         workflow_type: str = "health_check_diagnostic",
+        model_deployment: str | None = None,
     ) -> None:
         if not self.settings.llm_review_logging_enabled:
             return
@@ -66,6 +67,7 @@ class PostgresLogger:
             reasoning_summary,
             final_answer,
             workflow_type,
+            model_deployment,
         )
 
     async def tool(
@@ -134,6 +136,7 @@ class PostgresLogger:
         reasoning_summary: str,
         final_answer: str,
         workflow_type: str,
+        model_deployment: str | None = None,
     ) -> None:
         with self.database.session() as db:
             db.add(
@@ -143,7 +146,7 @@ class PostgresLogger:
                     user_id=user_id,
                     workflow_type=workflow_type,
                     graph_node=graph_node,
-                    model_deployment=self.settings.azure_deployment_name or "not_configured",
+                    model_deployment=model_deployment or self.settings.azure_deployment_name or "not_configured",
                     prompt_version=str(plan.get("prompt_version", "planner_v1")),
                     prompt_hash=str(plan.get("prompt_hash", "not_implemented")),
                     user_intent=user_intent,

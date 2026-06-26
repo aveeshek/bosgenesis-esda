@@ -153,6 +153,7 @@ releaseNoteForm.addEventListener("submit", async (event) => {
     tag: valueOf("tag"),
     commit_sha: valueOf("commit_sha"),
     analysis_depth: valueOf("analysis_depth") || "fast",
+    model_profile: valueOf("model_profile"),
   };
 
   const response = await fetch("/api/release-notes", {
