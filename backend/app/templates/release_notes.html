@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 
 {% block body %}
-<main class="container-fluid py-3">
-  <div class="row g-3">
-    <section class="col-12 col-xl-4">
-      <div class="panel">
+<main class="container-fluid release-workspace py-3">
+  <div class="row g-3 align-items-stretch release-grid">
+    <section class="col-12 col-xl-3 release-side-panel">
+      <div class="panel release-form-panel">
         <h2>Release Notes</h2>
         <form id="release-note-form">
           <div class="mb-3">
@@ -19,18 +19,18 @@
           <div class="source-ref-group">
             <div class="source-ref-hint small text-secondary mb-2">Use one source ref. Commit overrides tag; tag overrides branch.</div>
             <div class="row g-2">
-            <div class="col-12 col-md-4">
-              <label class="form-label" for="branch">Branch</label>
-              <input class="form-control" id="branch" placeholder="main">
-            </div>
-            <div class="col-12 col-md-4">
-              <label class="form-label" for="tag">Tag</label>
-              <input class="form-control" id="tag" placeholder="v1.0.0">
-            </div>
-            <div class="col-12 col-md-4">
-              <label class="form-label" for="commit_sha">Commit</label>
-              <input class="form-control" id="commit_sha" placeholder="abcdef1">
-            </div>
+              <div class="col-12 source-ref-field">
+                <label class="form-label" for="branch">Branch</label>
+                <input class="form-control" id="branch" placeholder="main">
+              </div>
+              <div class="col-12 source-ref-field">
+                <label class="form-label" for="tag">Tag</label>
+                <input class="form-control" id="tag" placeholder="v1.0.0">
+              </div>
+              <div class="col-12 source-ref-field">
+                <label class="form-label" for="commit_sha">Commit</label>
+                <input class="form-control" id="commit_sha" placeholder="abcdef1">
+              </div>
             </div>
           </div>
           <div class="mb-3 mt-3">
@@ -45,21 +45,43 @@
         </form>
       </div>
     </section>
-    <section class="col-12 col-xl-4">
-      <div class="panel progress-panel">
+
+    <section class="col-12 col-xl-6 release-progress-column">
+      <div class="panel progress-panel release-progress-panel is-idle" id="release-progress-panel">
         <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
           <h2 class="mb-0">Live Progress</h2>
           <button id="copy-progress" class="btn btn-sm btn-outline-secondary" type="button">Copy Progress</button>
         </div>
         <div id="run-status" class="badge text-bg-secondary mb-2 align-self-start">Idle</div>
+
+        <div class="release-sphere-stage" id="release-sphere-stage" aria-live="polite">
+          <div class="release-sphere-dock" id="release-sphere-dock" aria-hidden="true">
+            <div class="release-sphere-glow"></div>
+            <canvas id="release-sphere-canvas" width="640" height="640"></canvas>
+          </div>
+          <div class="release-thinking-pill" id="release-thinking-pill" aria-hidden="true">
+            <span class="mini-sphere" aria-hidden="true"></span>
+            <span>Thinking</span>
+            <span class="thinking-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+          </div>
+          <div class="release-sphere-copy">
+            <div class="release-sphere-eyebrow">
+              <span class="pulse-dot" aria-hidden="true"></span>
+              <span id="release-sphere-phase">Ready for release analysis</span>
+            </div>
+            <div class="release-sphere-title" id="release-sphere-title">Release intelligence is standing by.</div>
+          </div>
+        </div>
+
         <div id="timeline-scroll" class="timeline-scroll" tabindex="0" aria-label="Live progress events">
           <ol id="timeline" class="timeline"></ol>
         </div>
         <div id="copy-progress-status" class="copy-feedback small text-secondary mt-2" aria-live="polite"></div>
       </div>
     </section>
-    <section class="col-12 col-xl-4">
-      <div class="panel">
+
+    <section class="col-12 col-xl-3 release-side-panel">
+      <div class="panel draft-panel">
         <h2>Draft Artifact</h2>
         <div id="artifact-links" class="artifact-links mb-3"></div>
         <pre id="final-report" class="report-box">No release-note run yet.</pre>

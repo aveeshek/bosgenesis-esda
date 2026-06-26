@@ -104,3 +104,6 @@ def test_release_notes_page_renders_model_selectors(tmp_path, monkeypatch) -> No
         assert 'id="llm-model-profile"' not in response.text
         assert "GPT 5 Pro" in response.text
         assert "Llama70B" in response.text
+        assert 'id="release-progress-panel"' in response.text
+        assert 'id="release-sphere-canvas"' in response.text
+        assert "col-xl-6 release-progress-column" in response.text
