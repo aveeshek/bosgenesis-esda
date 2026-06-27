@@ -40,7 +40,7 @@ def test_default_azure_credential_mode_does_not_require_api_key() -> None:
 
 
 def test_model_profiles_include_requested_azure_and_ollama_profiles() -> None:
-    service = AzureGpt5Service(Settings())
+    service = AzureGpt5Service(Settings(azure_openai_auth_mode="default_azure_credential"))
     profiles = {profile["profile_id"]: profile for profile in service.model_profiles()}
 
     assert profiles["azure_gpt5_pro"]["deployment"] == "bos-trainium-gpt-5.0"
@@ -75,8 +75,27 @@ def test_azure_cli_auth_mode_uses_azure_chat_openai_path(monkeypatch) -> None:
     assert called["azure_cli"] is True
 
 
+def test_gpt5_profile_honors_azure_cli_auth_mode(monkeypatch) -> None:
+    settings = Settings(azure_openai_auth_mode="azure_cli")
+    service = AzureGpt5Service(settings)
+    profiles = {profile["profile_id"]: profile for profile in service.model_profiles()}
+    called = {"azure_cli": False}
+
+    def fake_cli_model(profile):
+        called["azure_cli"] = True
+        assert profile.profile_id == "azure_gpt5_pro"
+        assert profile.auth_mode == "azure_cli"
+        return object()
+
+    monkeypatch.setattr(service, "_azure_chat_openai_with_cli_token", fake_cli_model)
+
+    assert profiles["azure_gpt5_pro"]["auth_mode"] == "azure_cli"
+    assert service._model("azure_gpt5_pro") is not None
+    assert called["azure_cli"] is True
+
+
 def test_gpt5_profile_uses_default_azure_credential_path(monkeypatch) -> None:
-    service = AzureGpt5Service(Settings())
+    service = AzureGpt5Service(Settings(azure_openai_auth_mode="default_azure_credential"))
     called = {"default_credential": False}
 
     def fake_default_model(profile):

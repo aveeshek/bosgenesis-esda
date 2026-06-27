@@ -61,6 +61,22 @@
           </div>
         </div>
       </header>
+      <button id="transaction-sidebar-toggle" class="transaction-sidebar-toggle" type="button" aria-controls="transaction-sidebar" aria-expanded="false">
+        <span aria-hidden="true">|||</span>
+        <span class="visually-hidden">Open transaction history</span>
+      </button>
+      <aside id="transaction-sidebar" class="transaction-sidebar" aria-hidden="true" aria-label="Workflow transaction history">
+        <div class="transaction-sidebar-header">
+          <div>
+            <div class="transaction-sidebar-eyebrow">History</div>
+            <h2>Workflow Runs</h2>
+          </div>
+          <button id="transaction-sidebar-close" class="transaction-sidebar-close" type="button" aria-label="Close transaction history">x</button>
+        </div>
+        <div id="transaction-sidebar-status" class="transaction-sidebar-status">Loading transactions...</div>
+        <div id="transaction-list" class="transaction-list" role="list"></div>
+      </aside>
+      <div id="transaction-sidebar-backdrop" class="transaction-sidebar-backdrop" aria-hidden="true"></div>
     {% endif %}
 
     {% block body %}{% endblock %}

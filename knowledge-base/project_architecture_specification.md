@@ -30,6 +30,7 @@ Implemented and verified:
 - Release-note-agent output is treated as the initial document/evidence source; ESDA GPT finalizes the Markdown draft from that evidence.
 - Final Markdown artifact and release-note-agent-rendered PDF artifact are saved and exposed through download links.
 - Live progress is scrollable and copyable for review/debugging.
+- Next architecture requirement: progress, current run state, and transaction history must be refresh-safe and backed by PostgreSQL for all workflow pages.
 - Unit/integration tests cover release-note chains, adapter mapping, artifact handling, graph execution, policy, logging, and core app behavior.
 
 Current V1 scope decision:
@@ -93,6 +94,24 @@ Accepted architecture decision:
 | LangGraph checkpointing owns live thread and workflow state. | Accepted | It is the correct runtime mechanism for resumable graph state, interruptions, retries, and active run context. |
 | LangMem is the memory-management layer, not the state store. | Accepted | LangMem should extract, summarize, search, and maintain memories while relying on backing stores and LangGraph state. |
 | MongoDB is excluded from V1. | Accepted | PostgreSQL and Qdrant cover transactional memory, semantic recall, and high-volume logs without adding another datastore early. |
+| PostgreSQL owns workflow transactions and UI rehydration state. | Accepted | Runs must survive refresh/navigation and remain auditable after the user clears them from the visible sidebar. |
+| Browser UX is a state-machine client, not the workflow owner. | Accepted | Agents, models, and tools continue in background workers while pages restore progress from persisted snapshots and events. |
+
+### 3.1 Persisted Workflow UX and Background Execution Direction
+
+The ESDA Console must make persistence the default behavior for every page and workflow.
+
+Required behavior:
+
+- When a user starts a workflow, the backend creates a PostgreSQL run transaction before invoking any LLM, MCP, REST, or PowerShell tool.
+- The workflow runs in a backend worker or background task controlled by LangGraph state/checkpointing.
+- The browser subscribes to progress, but the browser never owns the source of truth.
+- All progress events are persisted with a per-run sequence before being streamed over SSE.
+- On refresh or navigation back to a workflow page, the UI loads the latest run snapshot and event history, then reconnects to SSE from the last event sequence.
+- In-flight work continues even if the user leaves the page.
+- A ChatGPT-style floating left sidebar lists prior transactions and can restore any visible transaction into the current page.
+- Clearing a transaction is a user-level hide/archive action; audit events, artifacts, tool calls, and LLM review logs remain stored for governance.
+- This applies to release notes first and then becomes a shared UX/runtime contract for health-check diagnostics, MoP creation, MoP execution, Helm, Kubernetes, approvals, and L4 audit pages.
 
 ---
 
@@ -188,6 +207,7 @@ Recommended:
 - CSS under `frontend/static/css/`.
 - Server-rendered Jinja2 templates or static HTML served by FastAPI.
 - SSE for live run updates.
+- Replayable SSE using persisted event ids/sequences so progress survives refresh and page navigation.
 - Fetch API for REST calls.
 - jQuery allowed where it makes modal/table/event code simpler.
 - Chart.js for run metrics and tool-call distribution.
@@ -199,8 +219,9 @@ Recommended:
 |---|---|---|
 | Login | `/login` | User authentication. |
 | Chat Console | `/` | Main chatbot workspace. |
-| Release Notes | `/release-notes` | Generate draft release notes from GitHub URLs using GPT-5 and `release-note-agent`, with live progress and PostgreSQL audit logs. |
-| Run Detail | `/runs/{run_id}` | Plan, tool calls, approvals, evidence, final report. |
+| Floating Transaction Sidebar | Shared component | Hidden-by-default left drawer listing previous transactions and restoring selected runs. |
+| Release Notes | `/release-notes` | Generate draft release notes from GitHub URLs using GPT-5 and `release-note-agent`, with refresh-safe live progress and PostgreSQL audit logs. |
+| Run Detail | `/runs/{run_id}` | Plan, tool calls, approvals, evidence, final report restored from persisted run state. |
 | Approval Queue | `/approvals` | Pending approvals and historical decisions. |
 | Artifacts | `/artifacts` | Release notes, MoPs, execution reports. |
 | Memory Review | `/memory` | Search memory, known fixes, procedures. |
@@ -214,7 +235,9 @@ Recommended:
 |---|---|
 | `ChatComposer` | Submit user request, workflow type, environment, autonomy mode. |
 | `ConversationPanel` | Render user/assistant/tool messages. |
-| `RunTimeline` | Show current LangGraph node, step status, and progress. |
+| `RunTimeline` | Show current LangGraph node, step status, and progress from replayable run events. |
+| `TransactionSidebar` | Floating hidden-by-default history drawer for prior workflow transactions. |
+| `RunStateController` | Page-level state machine that hydrates snapshots, replays events, and reconnects SSE. |
 | `PlanPanel` | Display plan and risk classification. |
 | `ToolEvidencePanel` | Display tool inputs, outputs, redactions, and validation. |
 | `ApprovalModal` | Approve/reject/modify gated actions. |
@@ -319,7 +342,10 @@ backend/
 | `GET` | `/api/auth/me` | Current user, roles, permissions. |
 | `POST` | `/api/chat` | Submit chatbot request and create run. |
 | `GET` | `/api/runs/{run_id}` | Run state and final report. |
-| `GET` | `/api/runs/{run_id}/events` | SSE stream for run events. |
+| `GET` | `/api/runs/{run_id}/snapshot` | Latest persisted run snapshot for page rehydration. |
+| `GET` | `/api/runs/{run_id}/events` | SSE stream for run events; supports resume after event id/sequence. |
+| `GET` | `/api/transactions` | Sidebar list of current user's visible workflow transactions. |
+| `POST` | `/api/transactions/{run_id}/clear` | Hide/archive a transaction for the current user without deleting audit data. |
 | `POST` | `/api/runs/{run_id}/stop` | Stop run. |
 | `POST` | `/api/approvals/{approval_id}/approve` | Approve gated action. |
 | `POST` | `/api/approvals/{approval_id}/reject` | Reject gated action. |
@@ -386,6 +412,7 @@ Do not attempt to capture hidden raw chain-of-thought. The architecture should r
 LangGraph is the workflow runtime. It manages:
 
 - Workflow state.
+- Durable run snapshots and checkpoint-backed resumability.
 - Conditional routing.
 - Tool execution nodes.
 - Verification nodes.
@@ -429,6 +456,44 @@ Each workflow graph should use the same node pattern:
 10. `write_memory`
 11. `write_logs`
 12. `final_report`
+
+---
+
+### 10.4 Background Execution and Rehydration Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant UX as Browser UX
+    participant API as FastAPI API
+    participant Worker as Workflow Worker
+    participant PG as PostgreSQL
+    participant Agent as LLM/Tool Graph
+
+    User->>UX: Start workflow
+    UX->>API: POST workflow request
+    API->>PG: Create run transaction and first event
+    API->>Worker: Enqueue/start LangGraph run
+    API-->>UX: run_id and events_url
+    UX->>API: Subscribe SSE from sequence 0
+    Worker->>Agent: Execute model/tool state machine
+    Agent-->>Worker: Node/tool result
+    Worker->>PG: Persist snapshot and ordered event
+    Worker-->>API: Notify event stream
+    API-->>UX: SSE event
+    User->>UX: Refresh or navigate away/back
+    UX->>API: GET run snapshot and events after last seen sequence
+    API->>PG: Load durable state and replay events
+    API-->>UX: Restored page state
+    UX->>API: Reconnect SSE from latest sequence
+```
+
+Implementation rules:
+
+- Workers may be in-process background tasks for V1, but the state contract must allow a separate worker process later.
+- Every workflow event must be persisted before broadcast.
+- Snapshot APIs must be sufficient to redraw the page without depending on browser memory.
+- In-progress runs remain visible in the transaction sidebar until completed, failed, cancelled, or user-cleared.
 
 ---
 
@@ -712,7 +777,7 @@ Blocked by default:
 
 | Store | Use |
 |---|---|
-| PostgreSQL | Users, sessions, runs, episodic memory, procedural memory, approvals, artifact metadata. |
+| PostgreSQL | Users, sessions, runs, run events, run snapshots, user transaction visibility, episodic memory, procedural memory, approvals, artifact metadata. |
 | Qdrant | Semantic memory and similarity search. |
 | PostgreSQL | Logs, tool events, LLM explanations, review analytics. |
 | Redis | Optional cache, locks, run event buffers, rate limiting. |
@@ -776,6 +841,7 @@ For the first version, frontend files may live under `backend/app/templates` and
 - Azure GPT-5 connectivity through LangChain.
 - LangGraph router graph.
 - SSE run streaming.
+- Replayable run event streaming and page rehydration from PostgreSQL.
 - PostgreSQL event logging.
 
 ### Phase 2: Read-Only Agent
@@ -785,6 +851,7 @@ For the first version, frontend files may live under `backend/app/templates` and
 - Kubernetes read-only graph.
 - Helm read-only graph.
 - Tool registry, including the MCP-first `bosgenesis-release-note-agent` adapter.
+- Persistent transaction sidebar and refresh-safe workflow restore for release-note generation.
 - Policy guard.
 - PostgreSQL run/event/tool/LLM-review/artifact records.
 - Qdrant semantic memory.
@@ -990,6 +1057,10 @@ prompt_templates/
 
 Every run must log:
 
+- `run_id`
+- `event_sequence`
+- `state_snapshot_version`
+
 - `prompt_version`
 - `prompt_hash`
 - `model_deployment`
@@ -1001,7 +1072,21 @@ Every run must log:
 
 The system must store available reasoning summaries, plans, decisions, explanations, observations, and policy rationales instead of hidden chain-of-thought.
 
-### 18.8 Phase Acceptance Tests
+### 18.8 Persistent Workflow State Contract
+
+All workflow pages must implement the same persistence contract:
+
+1. Create a PostgreSQL run transaction before workflow execution begins.
+2. Persist every state-machine transition as an ordered event.
+3. Persist enough snapshot data to rebuild the active page after refresh.
+4. Run model/tool work in backend background execution, not in browser-owned promises.
+5. Support SSE resume by last event id or sequence.
+6. Keep artifacts, tool calls, LLM review records, and audit events linked to the run id.
+7. Expose a user transaction list for the floating sidebar.
+8. Treat user clear as a `user_run_views.hidden_at` or equivalent soft-hide record, not data deletion.
+9. Apply the same contract to every workflow page, starting with release notes.
+
+### 18.9 Phase Acceptance Tests
 
 V1 acceptance tests:
 

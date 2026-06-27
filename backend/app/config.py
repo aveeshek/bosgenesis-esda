@@ -19,7 +19,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://esda:esda@localhost:5432/esda"
     postgres_log_schema: str = "public"
     artifact_storage_dir: str = "var/artifacts"
-
+    artifact_git_publish_enabled: bool = True
+    artifact_git_repo_url: str = "https://github.com/aveeshek/bosgenesis-artifacts.git"
+    artifact_git_branch: str = "main"
+    artifact_git_workspace_dir: str = "var/artifact-git-publisher"
+    artifact_git_user_name: str = "BOS Genesis ESDA"
+    artifact_git_user_email: str = "bosgenesis-esda@local"
+    artifact_git_command_timeout_seconds: int = 120
     qdrant_url: str = "http://localhost:6333"
     redis_url: str = ""
 

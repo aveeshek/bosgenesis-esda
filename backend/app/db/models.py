@@ -95,6 +95,7 @@ class Artifact(Base):
 
     run: Mapped[AgentRun] = relationship(back_populates="artifacts")
 
+
 class RunEvent(Base):
     __tablename__ = "run_events"
 
@@ -106,6 +107,16 @@ class RunEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     run: Mapped[AgentRun] = relationship(back_populates="events")
+
+
+class UserRunView(Base):
+    __tablename__ = "user_run_views"
+
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.user_id"), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), ForeignKey("agent_runs.run_id"), primary_key=True)
+    hidden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PlanStep(Base):

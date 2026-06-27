@@ -59,18 +59,42 @@
             <div class="release-sphere-glow"></div>
             <canvas id="release-sphere-canvas" width="640" height="640"></canvas>
           </div>
-          <div class="release-thinking-pill" id="release-thinking-pill" aria-hidden="true">
-            <span class="mini-sphere" aria-hidden="true"></span>
-            <span>Thinking</span>
-            <span class="thinking-dots" aria-hidden="true"><span></span><span></span><span></span></span>
-          </div>
+
           <div class="release-sphere-copy">
             <div class="release-sphere-eyebrow">
               <span class="pulse-dot" aria-hidden="true"></span>
               <span id="release-sphere-phase">Ready for release analysis</span>
             </div>
-            <div class="release-sphere-title" id="release-sphere-title">Release intelligence is standing by.</div>
+            <div class="release-sphere-title" id="release-sphere-title"></div>
           </div>
+        </div>
+
+        <div class="autonomy-stream-shell" aria-live="polite">
+          <section id="ephemeral-working-panel" class="working-stream-panel is-empty" aria-label="Ephemeral live working stream">
+            <div class="stream-panel-header">
+              <div>
+                <div class="stream-eyebrow">Ephemeral</div>
+                <h3>Live Working Stream</h3>
+              </div>
+              <span class="stream-privacy-badge">not stored</span>
+            </div>
+            <div id="ephemeral-working-stream" class="working-stream-list">
+              <div class="stream-empty-state">Live model and agent working notes will appear only while this page is connected.</div>
+            </div>
+          </section>
+
+          <section id="safe-summary-panel" class="safe-summary-panel is-hidden" aria-label="Persisted safe reasoning summaries">
+            <div class="stream-panel-header">
+              <div>
+                <div class="stream-eyebrow">Persisted</div>
+                <h3>Safe Reasoning Summaries</h3>
+              </div>
+              <span class="stream-privacy-badge is-persisted">audit safe</span>
+            </div>
+            <div id="safe-summary-list" class="safe-summary-list">
+              <div class="stream-empty-state">Safe summaries will appear after the run completes or when a saved run is restored.</div>
+            </div>
+          </section>
         </div>
 
         <div id="timeline-scroll" class="timeline-scroll" tabindex="0" aria-label="Live progress events">
@@ -88,6 +112,21 @@
       </div>
     </section>
   </div>
+
+  <section id="agent-activity-rail" class="agent-activity-rail is-dormant is-collapsed" aria-label="Agent activity feed" aria-expanded="false" data-auto-hide-ms="30000">
+    <div class="activity-rail-header">
+      <div>
+        <div class="stream-eyebrow">Autonomy Map</div>
+        <h2>Agent Activity Feed</h2>
+      </div>
+      <div class="activity-rail-actions">
+        <div id="agent-activity-status" class="activity-rail-status">Awaiting run</div>
+        <button id="agent-activity-toggle" class="activity-rail-button" type="button" aria-controls="agent-activity-graph" aria-expanded="false">Show</button>
+        <button id="agent-activity-pin" class="activity-rail-button" type="button" aria-pressed="false">Pin</button>
+      </div>
+    </div>
+    <div id="agent-activity-graph" class="agent-activity-graph" role="list"></div>
+  </section>
 </main>
 {% endblock %}
 

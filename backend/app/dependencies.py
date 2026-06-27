@@ -1,10 +1,12 @@
 from collections.abc import Callable
 
 from fastapi import Depends, HTTPException, Request
+from sqlalchemy import select
 
 from backend.app.auth.security import SessionPrincipal, read_session_cookie
 from backend.app.config import Settings
 from backend.app.db.database import Database, RunRepository
+from backend.app.db.models import User
 from backend.app.logging.postgres_logger import PostgresLogger
 
 
@@ -29,7 +31,22 @@ def get_postgres_logger(request: Request) -> PostgresLogger:
 
 def get_current_user_or_none(request: Request) -> SessionPrincipal | None:
     settings: Settings = request.app.state.settings
-    return read_session_cookie(request.cookies.get(SESSION_COOKIE_NAME), settings.secret_key)
+    principal = read_session_cookie(request.cookies.get(SESSION_COOKIE_NAME), settings.secret_key)
+    if not principal:
+        return None
+
+    database: Database = request.app.state.database
+    with database.session() as db:
+        user = db.get(User, principal.user_id)
+        if not user:
+            user = db.scalar(select(User).where(User.username == principal.username))
+        if not user or not user.is_active:
+            return None
+        return SessionPrincipal(
+            user_id=user.user_id,
+            username=user.username,
+            roles=list(user.roles or []),
+        )
 
 
 def get_current_user(request: Request) -> SessionPrincipal:

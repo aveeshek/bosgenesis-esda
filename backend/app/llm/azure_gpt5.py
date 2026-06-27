@@ -145,8 +145,16 @@ class AzureGpt5Service:
             ),
             "steps": [
                 {"title": "Run REST GET", "tool": "rest.get", "risk": "low"},
-                {"title": "Run PowerShell GET template", "tool": "powershell.ps_http_get", "risk": "low"},
-                {"title": "Inspect Kubernetes via MCP", "tool": "mcp.k8s_inspector", "risk": "medium"},
+                {
+                    "title": "Run PowerShell GET template",
+                    "tool": "powershell.ps_http_get",
+                    "risk": "low",
+                },
+                {
+                    "title": "Inspect Kubernetes via MCP",
+                    "tool": "mcp.k8s_inspector",
+                    "risk": "medium",
+                },
                 {"title": "Validate and report", "tool": "validation", "risk": "low"},
             ],
         }
@@ -191,9 +199,21 @@ class AzureGpt5Service:
             ),
             "steps": [
                 {"title": "Validate GitHub URL", "tool": "policy.github_url", "risk": "low"},
-                {"title": "Collect release evidence", "tool": "release_notes.agent_scan", "risk": "low"},
-                {"title": "Draft Markdown release notes", "tool": "llm.selected_model", "risk": "low"},
-                {"title": "Validate source evidence and sections", "tool": "validation", "risk": "low"},
+                {
+                    "title": "Collect release evidence",
+                    "tool": "release_notes.agent_scan",
+                    "risk": "low",
+                },
+                {
+                    "title": "Draft Markdown release notes",
+                    "tool": "llm.selected_model",
+                    "risk": "low",
+                },
+                {
+                    "title": "Validate source evidence and sections",
+                    "tool": "validation",
+                    "risk": "low",
+                },
             ],
         }
         return await self._json_response(
@@ -285,7 +305,9 @@ class AzureGpt5Service:
             except json.JSONDecodeError:
                 parsed = fallback | {"reasoning_summary": content[:2000]}
             parsed.setdefault("prompt_version", fallback.get("prompt_version", "planner_v1"))
-            parsed.setdefault("prompt_hash", hashlib.sha256((system + user).encode("utf-8")).hexdigest())
+            parsed.setdefault(
+                "prompt_hash", hashlib.sha256((system + user).encode("utf-8")).hexdigest()
+            )
             parsed.setdefault("model_profile", profile.profile_id)
             parsed.setdefault("model_label", profile.label)
             return parsed
@@ -346,6 +368,7 @@ class AzureGpt5Service:
 
     def _azure_chat_openai_with_cli_token(self, profile: LlmModelProfile):
         from azure.identity import AzureCliCredential, get_bearer_token_provider
+
         credential = AzureCliCredential()
         token_provider = get_bearer_token_provider(
             credential,
@@ -396,8 +419,15 @@ class AzureGpt5Service:
         }
 
     def _profiles(self) -> dict[str, LlmModelProfile]:
-        azure_endpoint = self.settings.azure_openai_endpoint or self.settings.azure_openai_gpt5_endpoint
-        azure_api_version = self.settings.azure_api_version or self.settings.azure_openai_gpt5_api_version
+        azure_endpoint = (
+            self.settings.azure_openai_endpoint or self.settings.azure_openai_gpt5_endpoint
+        )
+        azure_api_version = (
+            self.settings.azure_api_version or self.settings.azure_openai_gpt5_api_version
+        )
+        gpt5_auth_mode = self.settings.azure_openai_auth_mode
+        if gpt5_auth_mode == "api_key" and not self.settings.azure_openai_api_key:
+            gpt5_auth_mode = "default_azure_credential"
         return {
             "azure_gpt5_pro": LlmModelProfile(
                 profile_id="azure_gpt5_pro",
@@ -411,7 +441,8 @@ class AzureGpt5Service:
                 ),
                 model_name=self.settings.azure_openai_gpt5_model_name,
                 api_version=self.settings.azure_openai_gpt5_api_version or azure_api_version,
-                auth_mode="default_azure_credential",
+                auth_mode=gpt5_auth_mode,
+                api_key=self.settings.azure_openai_api_key,
             ),
             "azure_gpt41_mini": LlmModelProfile(
                 profile_id="azure_gpt41_mini",

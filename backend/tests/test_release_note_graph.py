@@ -10,6 +10,23 @@ from backend.app.logging.postgres_logger import PostgresLogger
 from backend.app.tools.contracts import ToolExecutionResult
 from backend.app.tools.registry import default_tool_registry
 
+RICH_AGENT_MARKDOWN = """# Bosgenesis Mop Creation Agent Release Notes
+
+## Summary
+Rich release-note-agent document with detailed repository evidence.
+
+## Architecture Evidence
+Agent-only deployment graph details, Mermaid diagrams, and component matrix are preserved here.
+
+## Operational Metrics
+| Area | Detail |
+| --- | --- |
+| Workflow coverage | Release, MOP, and execution planning |
+
+## Source Evidence
+- https://github.com/example/repo
+"""
+
 
 class FakeReleaseNoteAgent:
     async def execute(self, request):
@@ -24,6 +41,15 @@ class FakeReleaseNoteAgent:
         )
 
 
+class CapturingRunEventBus(RunEventBus):
+    def __init__(self) -> None:
+        super().__init__()
+        self.published: list[dict] = []
+
+    async def publish(self, run_id, event):
+        self.published.append(event)
+        await super().publish(run_id, event)
+
 
 class FakePdfReleaseNoteAgent:
     async def execute(self, request):
@@ -33,7 +59,12 @@ class FakePdfReleaseNoteAgent:
                 output={
                     "job_id": "job_pdf_1",
                     "artifacts": [
-                        {"artifact_id": "artifact_md", "artifact_type": "markdown", "name": "release-note.md"},
+                        {
+                            "artifact_id": "artifact_md",
+                            "artifact_type": "markdown",
+                            "name": "release-note.md",
+                            "content": RICH_AGENT_MARKDOWN,
+                        },
                         {
                             "artifact_id": "artifact_pdf",
                             "artifact_type": "pdf",
@@ -53,6 +84,7 @@ class FakePdfReleaseNoteAgent:
         assert artifact_id == "artifact_pdf"
         return b"%PDF-1.4\nagent pdf\n", "application/pdf"
 
+
 class FakeFailedReleaseNoteAgent:
     async def execute(self, request):
         return (
@@ -63,6 +95,108 @@ class FakeFailedReleaseNoteAgent:
             ),
             5,
         )
+
+
+class FakeRepoAnalyzer:
+    async def analyze(self, **kwargs):
+        github_url = kwargs["github_url"]
+        return {
+            "status": "completed",
+            "repository": {"url": github_url, "ref_label": "default branch"},
+            "clone": {
+                "status": "success",
+                "message": "Repository cloned into temporary workspace.",
+            },
+            "inventory": {"primary_language": "python", "code_file_count": 3, "manifest_count": 1},
+            "vulnerability_findings": [],
+            "vulnerability_matrix": [
+                {
+                    "category": "Common vulnerability scan",
+                    "severity": "low",
+                    "findings": 0,
+                    "evidence": "No high-confidence static findings in scanned files.",
+                    "recommendation": "Keep dependency and SAST checks in CI before release.",
+                }
+            ],
+            "quality": {
+                "status": "completed",
+                "tool": "pylint",
+                "issue_count": 0,
+                "summary": "No quality issues.",
+            },
+            "quality_matrix": [
+                {
+                    "area": "Code quality",
+                    "tool": "pylint",
+                    "result": "completed",
+                    "findings": 0,
+                    "notes": "No quality issues.",
+                }
+            ],
+            "cleanup": {"status": "removed", "removed": True},
+            "llm_review": {
+                "overall_risk": "low",
+                "executive_summary": "No high-confidence issues were found.",
+                "reasoning_summary": "Reviewed static scan output for common vulnerability themes.",
+            },
+            "limitations": [],
+        }
+
+    def format_markdown(self, scan):
+        return "\n".join(
+            [
+                "## Repository Scan",
+                "- Repository: https://github.com/example/repo",
+                "- Clone status: `success`",
+                "",
+                "### Vulnerability Matrix",
+                "| Category | Severity | Findings | Evidence | Recommendation |",
+                "| --- | --- | ---: | --- | --- |",
+                "| Common vulnerability scan | low | 0 | No high-confidence static findings | Keep dependency scanning in CI |",
+                "",
+                "### Code Quality Matrix",
+                "| Area | Tool | Result | Findings | Notes |",
+                "| --- | --- | --- | ---: | --- |",
+                "| Code quality | pylint | completed | 0 | No quality issues. |",
+                "",
+                "### LLM Security Review Summary",
+                "- Overall risk: `low`",
+                "- Safe reasoning summary: Reviewed static scan output for common vulnerability themes.",
+            ]
+        )
+
+
+class FakeArtifactPublisher:
+    is_enabled = True
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def target_summary(self) -> dict:
+        return {
+            "enabled": True,
+            "repo_url": "https://github.com/aveeshek/bosgenesis-artifacts.git",
+            "branch": "main",
+        }
+
+    async def publish_release_artifacts(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "status": "success",
+            "repo_url": "https://github.com/aveeshek/bosgenesis-artifacts.git",
+            "branch": "main",
+            "folder_name": "260627_173012_Test",
+            "folder_path": "260627_173012_Test",
+            "tree_url": "https://github.com/aveeshek/bosgenesis-artifacts/tree/main/260627_173012_Test",
+            "commit_hash": "abc123",
+            "files": [
+                {
+                    "filename": kwargs["markdown"].filename,
+                    "artifact_id": kwargs["markdown"].artifact_id,
+                },
+                {"filename": kwargs["pdf"].filename, "artifact_id": kwargs["pdf"].artifact_id},
+            ],
+        }
 
 
 class FakeLlm:
@@ -112,7 +246,15 @@ class ExplodingPlanner:
         raise RuntimeError("planner exploded")
 
 
-def create_release_note_graph(tmp_path, llm, release_note_agent, run_id):
+def create_release_note_graph(
+    tmp_path,
+    llm,
+    release_note_agent,
+    run_id,
+    event_bus=None,
+    repo_analyzer=None,
+    artifact_publisher=None,
+):
     settings = Settings(
         database_url=f"sqlite+pysqlite:///{tmp_path / f'{run_id}.db'}",
         artifact_storage_dir=str(tmp_path / f"{run_id}_artifacts"),
@@ -132,12 +274,16 @@ def create_release_note_graph(tmp_path, llm, release_note_agent, run_id):
     )
     graph = ReleaseNoteGraph(
         repository=repository,
-        event_bus=RunEventBus(),
+        event_bus=event_bus or RunEventBus(),
         logger=PostgresLogger(database, settings),
         llm=llm,
         release_note_agent=release_note_agent,
-        artifact_service=ArtifactService(repository=repository, storage_root=settings.artifact_storage_dir),
+        artifact_service=ArtifactService(
+            repository=repository, storage_root=settings.artifact_storage_dir
+        ),
         tool_registry=default_tool_registry(),
+        repo_analyzer=repo_analyzer or FakeRepoAnalyzer(),
+        artifact_publisher=artifact_publisher,
     )
     return graph, repository, user_id
 
@@ -165,14 +311,102 @@ def test_release_note_graph_saves_markdown_artifact(tmp_path) -> None:
     artifacts = repository.list_artifacts("run_release_note_1")
     events = repository.list_events("run_release_note_1")
 
+    artifact_types = {artifact["artifact_type"] for artifact in artifacts}
+    markdown_artifact = next(
+        artifact for artifact in artifacts if artifact["artifact_type"] == "release_note"
+    )
+    pdf_artifact = next(
+        artifact for artifact in artifacts if artifact["artifact_type"] == "release_note_pdf"
+    )
+    pdf_bytes = graph.artifact_service.read_artifact_bytes(pdf_artifact["storage_path"])
+
     assert run.status == "completed"
-    assert len(artifacts) == 1
-    assert artifacts[0]["artifact_type"] == "release_note"
-    assert artifacts[0]["metadata"]["classification"]["workflow_type"] == "release_note_creation"
-    assert artifacts[0]["metadata"]["validation"]["valid"] is True
+    assert artifact_types == {"release_note", "release_note_pdf"}
+    assert "## Repository Scan" in run.final_report
+    assert "### Vulnerability Matrix" in run.final_report
+    assert "### Code Quality Matrix" in run.final_report
+    assert (
+        markdown_artifact["metadata"]["classification"]["workflow_type"] == "release_note_creation"
+    )
+    assert markdown_artifact["metadata"]["validation"]["valid"] is True
+    assert markdown_artifact["metadata"]["repository_scan"]["status"] == "completed"
+    assert pdf_artifact["metadata"]["generated_from_markdown"] is True
+    assert pdf_artifact["metadata"]["source_agent_pdf_preserved"] is False
+    assert b"REPOSITORY SCAN" in pdf_bytes
+    assert b"VULNERABILITY MATRIX" in pdf_bytes
+    assert b"CODE QUALITY MATRIX" in pdf_bytes
     assert any(event["event_type"] == "workflow_classified" for event in events)
+    assert any(event["event_type"] == "repo_clone_completed" for event in events)
+    assert any(event["event_type"] == "vulnerability_scan_completed" for event in events)
+    assert any(event["event_type"] == "quality_scan_completed" for event in events)
+    assert any(event["event_type"] == "repo_cleanup_completed" for event in events)
     assert any(event["event_type"] == "recovery_recommendation" for event in events)
     assert any(event["event_type"] == "artifact_created" for event in events)
+
+
+def test_release_note_graph_publishes_artifacts_after_success(tmp_path) -> None:
+    publisher = FakeArtifactPublisher()
+    graph, repository, user_id = create_release_note_graph(
+        tmp_path,
+        FakeLlm(),
+        FakeReleaseNoteAgent(),
+        "run_release_note_publish",
+        artifact_publisher=publisher,
+    )
+
+    asyncio.run(
+        graph.run(
+            ReleaseNoteInput(
+                run_id="run_release_note_publish",
+                user_id=user_id,
+                github_url="https://github.com/example/repo",
+                release_name="Test",
+            )
+        )
+    )
+
+    run = repository.get_run("run_release_note_publish")
+    events = repository.list_events("run_release_note_publish")
+    publish_event = next(
+        event for event in events if event["event_type"] == "artifact_publish_completed"
+    )
+    final_event = next(event for event in events if event["event_type"] == "run_completed")
+
+    assert run.status == "completed"
+    assert len(publisher.calls) == 1
+    assert publisher.calls[0]["job_name"] == "Test"
+    assert publisher.calls[0]["markdown"].filename == "release-notes.md"
+    assert publisher.calls[0]["pdf"].filename == "release-notes.pdf"
+    assert publish_event["payload"]["artifact_publish"]["folder_name"] == "260627_173012_Test"
+    assert final_event["payload"]["artifact_publish"]["commit_hash"] == "abc123"
+
+
+def test_release_note_graph_streams_ephemeral_working_notes_without_persisting(tmp_path) -> None:
+    event_bus = CapturingRunEventBus()
+    graph, repository, user_id = create_release_note_graph(
+        tmp_path,
+        FakeLlm(),
+        FakeReleaseNoteAgent(),
+        "run_release_note_ephemeral",
+        event_bus=event_bus,
+    )
+
+    asyncio.run(
+        graph.run(
+            ReleaseNoteInput(
+                run_id="run_release_note_ephemeral",
+                user_id=user_id,
+                github_url="https://github.com/example/repo",
+                release_name="Test",
+            )
+        )
+    )
+
+    persisted_events = repository.list_events("run_release_note_ephemeral")
+
+    assert any(event["event_type"] == "ephemeral_working_note" for event in event_bus.published)
+    assert not any(event["event_type"] == "ephemeral_working_note" for event in persisted_events)
+    assert any(event["event_type"] == "reasoning_summary" for event in persisted_events)
 
 
 def test_release_note_graph_completes_with_normalized_draft_when_agent_fails(tmp_path) -> None:
@@ -205,6 +439,7 @@ def test_release_note_graph_completes_with_normalized_draft_when_agent_fails(tmp
     assert artifacts[0]["metadata"]["agent_status"] == "failed"
     assert artifacts[0]["metadata"]["validation"]["valid"] is True
 
+
 def test_release_note_graph_marks_run_failed_on_unhandled_node_error(tmp_path) -> None:
     graph, repository, user_id = create_release_note_graph(
         tmp_path,
@@ -232,6 +467,7 @@ def test_release_note_graph_marks_run_failed_on_unhandled_node_error(tmp_path) -
     assert "planner exploded" in run.final_report
     assert any(event["event_type"] == "run_failed" for event in events)
 
+
 def test_release_note_graph_saves_agent_pdf_artifact(tmp_path) -> None:
     graph, repository, user_id = create_release_note_graph(
         tmp_path,
@@ -254,10 +490,23 @@ def test_release_note_graph_saves_agent_pdf_artifact(tmp_path) -> None:
     run = repository.get_run("run_release_note_pdf")
     artifacts = repository.list_artifacts("run_release_note_pdf")
     artifact_types = {artifact["artifact_type"] for artifact in artifacts}
-    pdf_artifact = next(artifact for artifact in artifacts if artifact["artifact_type"] == "release_note_pdf")
+    pdf_artifact = next(
+        artifact for artifact in artifacts if artifact["artifact_type"] == "release_note_pdf"
+    )
 
     assert run.status == "completed"
     assert artifact_types == {"release_note", "release_note_pdf"}
+    assert "## Architecture Evidence" in run.final_report
+    assert "Agent-only deployment graph details" in run.final_report
+    assert "## Repository Scan" in run.final_report
+    assert "### Vulnerability Matrix" in run.final_report
     assert pdf_artifact["mime_type"] == "application/pdf"
     assert pdf_artifact["metadata"]["source_agent_artifact_id"] == "artifact_pdf"
+    assert pdf_artifact["metadata"]["source_agent_pdf_preserved"] is True
+    assert pdf_artifact["metadata"]["generated_from_markdown"] is False
+    assert pdf_artifact["metadata"]["repository_scan"]["status"] == "completed"
+    assert pdf_artifact["metadata"]["repository_scan_in_markdown_artifact"] is True
+    pdf_bytes = graph.artifact_service.read_artifact_bytes(pdf_artifact["storage_path"])
+
+    assert pdf_bytes == b"%PDF-1.4\nagent pdf\n"
     assert pdf_artifact["metadata"]["paired_markdown_artifact_id"].startswith("art_")

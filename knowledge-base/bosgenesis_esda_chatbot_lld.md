@@ -51,6 +51,7 @@ Current configuration additions:
 Current data-store position:
 
 - PostgreSQL is the active store for runs, logs, LLM review records, approvals, policies, procedures, and artifact metadata.
+- The next required UX/runtime enhancement is refresh-safe progress: every workflow page must restore active and historical transactions from PostgreSQL and keep backend work running after refresh/navigation.
 - Artifact bytes are stored in the configured artifact storage directory.
 - Qdrant remains optional for V1 and should only be enabled once semantic memory lookup is needed.
 - ClickHouse and SQLite are excluded from the current V1 path.
@@ -107,6 +108,7 @@ LLM provider standardization:
 | Human approval for risk | Destructive or state-changing operations require explicit approval. |
 | Evidence first | Operational workflows must collect evidence before and after actions. |
 | Trace everything | User prompts, plans, tool calls, approvals, and outputs must be auditable. |
+| Refresh-safe by default | Browser pages render persisted state; workflow truth lives in PostgreSQL and backend workers. |
 | Least privilege | Tools are scoped by user role, environment, namespace, and workflow type. |
 | Artifact-oriented | Release notes, MoPs, execution logs, and reports are durable artifacts. |
 | Provider configurable | Azure GPT-5 configuration is injected through environment variables or secret manager. |
@@ -132,6 +134,7 @@ LLM provider standardization:
 - Policy guard and approval workflow.
 - Artifact generation and storage.
 - Audit log and run history.
+- Persistent transaction history, replayable progress events, and page rehydration for all workflow pages.
 - Memory/context retrieval for known fixes, project facts, prior MoPs, previous release notes, traces, and analytics.
 - Basic admin settings for model configuration, tool configuration, policies, and environments.
 
@@ -171,6 +174,8 @@ LLM provider standardization:
 15. MongoDB is not recommended for the initial build unless a future document-native trace store is required.
 16. Object storage can be local filesystem in development and S3-compatible/Azure Blob storage in deployed environments.
 17. Kubernetes and Helm tools will default to read-only mode unless the user role, policy, and autonomy/approval rules all allow mutation.
+18. The browser may be refreshed or navigated away at any time; workflow execution and progress state must remain durable in PostgreSQL.
+19. Clearing a transaction from the UI means hiding it for that user, not deleting audit records, artifacts, or run evidence.
 
 ---
 
@@ -220,7 +225,9 @@ flowchart TD
     U[User] --> B[Browser UX]
     B --> AUTH[Auth API]
     B --> CHAT[Chat API]
+    B --> TX[Transaction History API]
     CHAT --> ORCH[Agent Orchestrator]
+    TX --> RUNSTATE[Run State Service]
     ORCH --> LLM[Azure GPT-5 Client]
     ORCH --> POLICY[Policy Guard]
     ORCH --> TOOLS[Tool Registry]
@@ -228,6 +235,7 @@ flowchart TD
     ORCH --> ART[Artifact Service]
     ORCH --> AUDIT[Audit Service]
     ORCH --> OBS[Observability Layer]
+    ORCH --> RUNSTATE
 
     TOOLS --> RN[Release Note Adapter]
     TOOLS --> MOPC[MoP Creation Adapter]
@@ -244,6 +252,7 @@ flowchart TD
     MEMORY --> REDIS[(Redis Optional Cache/Locks)]
     MEMORY --> QDRANT[(Qdrant Semantic Memory)]
     MEMORY --> CH[(PostgreSQL Logs and Review Analytics)]
+    RUNSTATE --> PG
     ART --> OBJ[(Artifact Storage)]
     AUDIT --> PG
     OBS --> OTEL[OpenTelemetry Optional]
@@ -325,6 +334,15 @@ sequenceDiagram
     UX-->>User: Plan, progress, approval prompts, final output
 ```
 
+Refresh/navigation recovery flow:
+
+1. Page loads and requests the user's visible transactions.
+2. If the page has a selected or active run, the page requests `/api/runs/{run_id}/snapshot`.
+3. The page renders the persisted snapshot immediately.
+4. The page requests missed events after the last stored sequence.
+5. If the run is still active, the page opens SSE with `after_event_id` or `after_sequence` and continues live rendering.
+6. If the user moves to another page, the backend worker keeps executing and persists events until terminal state.
+
 ---
 
 ## 10. Recommended Technology Stack
@@ -342,8 +360,9 @@ sequenceDiagram
 | Agent runtime | LangGraph | Workflow state machines, conditional edges, interrupts, checkpointing, recovery. |
 | Memory framework | LangMem | Memory extraction, search, summarization, and procedure/profile management. |
 | Tool schema | Pydantic models | Strong validation for tool inputs, outputs, and policy decisions. |
-| Streaming | Server-Sent Events first, WebSocket optional | SSE is sufficient for run progress. |
-| Primary DB | PostgreSQL | Users, chats, runs, artifacts, approvals, episodic memory, procedural memory. |
+| Streaming | Server-Sent Events first, WebSocket optional | SSE is sufficient for run progress and must support event replay/resume. |
+| Background execution | FastAPI background tasks first; separate Python worker later | Keeps model/tool work alive after browser refresh or navigation. |
+| Primary DB | PostgreSQL | Users, chats, runs, run events, user transaction views, artifacts, approvals, episodic memory, procedural memory. |
 | Short-term memory | LangMem + LangGraph checkpointing | Current run state, summaries, conversation context, working memory. |
 | Semantic memory | Qdrant | Similar issue, known fix, prior artifact and runbook retrieval. |
 | Procedural memory | PostgreSQL source of truth, Qdrant semantic index optional | Procedures, workflow templates, safe remediation recipes. |
@@ -361,9 +380,10 @@ sequenceDiagram
 |---|---|---|
 | `/login` | Login | Authenticate the user. |
 | `/` | Chat Console | Main chatbot workspace. |
+| Shared floating drawer | Transaction Sidebar | Hidden-by-default left drawer that lists and restores prior workflow transactions. |
 | `/sessions` | Chat Sessions | List and resume previous sessions. |
 | `/runs/{run_id}` | Run Detail | Show plan, steps, tool calls, evidence, approvals, final report. |
-| `/release-notes` | Release Notes | Generate release notes from GitHub URLs, stream progress/reasoning summaries, and browse generated artifacts. |
+| `/release-notes` | Release Notes | Generate release notes from GitHub URLs, stream refresh-safe progress/reasoning summaries, and browse generated artifacts. |
 | `/mops` | MoP Library | Browse generated MoPs and execution reports. |
 | `/approvals` | Approval Queue | Review pending high-risk actions. |
 | `/helm` | Helm Console | Read Helm releases and trigger approved workflows. |
@@ -393,13 +413,31 @@ sequenceDiagram
 | `WorkflowSelector` | Release note, MoP creation, MoP execution, Helm, Kubernetes, general BOS Genesis task. |
 | `EnvironmentSelector` | Selects allowed environment/cluster/namespace. |
 | `RunStatusBar` | Shows run status, current step, elapsed time. |
+| `TransactionSidebar` | Floating ChatGPT-style left drawer for historical and in-progress transactions. |
+| `RunStateMachineController` | Hydrates snapshots, replays events, reconnects SSE, and prevents refresh data loss. |
 | `PlanPanel` | Shows generated plan and risk labels. |
 | `ToolTimeline` | Shows tool calls, inputs, outputs, status, evidence. |
 | `ApprovalModal` | Handles approve/reject/modify for guarded actions. |
 | `ArtifactPanel` | Shows generated release notes, MoPs, reports, and download links. |
 | `MemoryPanel` | Shows relevant facts or prior issues used by the agent. |
 
-### 12.3 Admin Components
+### 12.3 Persistent Transaction Sidebar
+
+The transaction sidebar is a shared UX component used by every authenticated workflow page.
+
+Behavior:
+
+- Collapsed/hidden by default, with a compact launcher on the left edge.
+- Opens as a floating drawer above the page content.
+- Lists visible transactions for the logged-in user, newest first.
+- Shows workflow icon/type, generated title, status, started/updated time, model label, agent/tool family, and artifact badges.
+- Supports filtering by workflow type and status in a later iteration.
+- Selecting a transaction loads the appropriate page state and run snapshot.
+- Active transactions reconnect to live SSE automatically.
+- Clear hides the item from the user's sidebar but keeps audit data, artifacts, and logs.
+- Closing the drawer returns it to the hidden launcher state.
+
+### 12.4 Admin Components
 
 | Component | Responsibility |
 |---|---|
@@ -455,6 +493,30 @@ type RunEvent = {
     | "run_failed";
   payload: Record<string, unknown>;
   timestamp: string;
+  sequence?: number;
+};
+
+type TransactionSummary = {
+  runId: string;
+  sessionId: string;
+  workflowType: WorkflowType;
+  title: string;
+  status: "created" | "planning" | "running" | "waiting_for_approval" | "completed" | "failed" | "cancelled";
+  modelLabel?: string;
+  agentLabel?: string;
+  artifactCount: number;
+  lastEventSequence: number;
+  startedAt: string;
+  updatedAt: string;
+};
+
+type WorkflowPageState = {
+  selectedRunId?: string;
+  status: TransactionSummary["status"] | "idle";
+  snapshotLoaded: boolean;
+  lastEventSequence: number;
+  events: RunEvent[];
+  artifacts: Artifact[];
 };
 ```
 
@@ -707,6 +769,7 @@ Login response:
 | `POST` | `/api/chat` | HLD-compatible shortcut for submitting a bounded user task. |
 | `POST` | `/api/chat/sessions` | Create a new chat session. |
 | `GET` | `/api/chat/sessions` | List user chat sessions. |
+| `GET` | `/api/transactions` | List visible workflow transactions for the floating sidebar. |
 | `GET` | `/api/chat/sessions/{session_id}` | Get session with messages. |
 | `POST` | `/api/chat/sessions/{session_id}/messages` | Send user message and start/continue run. |
 | `DELETE` | `/api/chat/sessions/{session_id}` | Archive a session. |
@@ -741,7 +804,9 @@ Send message response:
 |---|---|---|
 | `POST` | `/api/runs` | Start a new workflow run directly. |
 | `GET` | `/api/runs/{run_id}` | Get run state and final report. |
-| `GET` | `/api/runs/{run_id}/events` | Stream run events via SSE. |
+| `GET` | `/api/runs/{run_id}/snapshot` | Get latest durable run snapshot for page rehydration. |
+| `GET` | `/api/runs/{run_id}/events` | Stream run events via SSE; supports `after_event_id` or `after_sequence`. |
+| `POST` | `/api/transactions/{run_id}/clear` | Hide/archive a transaction for the current user without deleting audit records. |
 | `POST` | `/api/runs/{run_id}/stop` | Stop a running workflow. |
 | `POST` | `/api/runs/{run_id}/cancel` | HLD-compatible alias for stopping/cancelling a run. |
 | `POST` | `/api/runs/{run_id}/approve` | HLD-compatible run-scoped approval endpoint. |
@@ -853,11 +918,39 @@ class AgentRun(BaseModel):
     ]
     goal: str
     final_summary: str | None
+    current_node: str | None
+    last_event_sequence: int
+    worker_status: Literal["queued", "running", "idle", "failed"]
+    state_snapshot: dict
     created_at: datetime
     updated_at: datetime
 ```
 
-### 17.5 Plan Step
+### 17.5 Run Event
+
+```python
+class RunEventRecord(BaseModel):
+    event_id: str
+    run_id: str
+    sequence: int
+    event_type: str
+    message: str
+    payload: dict
+    created_at: datetime
+```
+
+### 17.6 User Transaction View
+
+```python
+class UserTransactionView(BaseModel):
+    user_id: str
+    run_id: str
+    hidden_at: datetime | None
+    pinned: bool
+    last_opened_at: datetime | None
+```
+
+### 17.7 Plan Step
 
 ```python
 class PlanStep(BaseModel):
@@ -873,7 +966,7 @@ class PlanStep(BaseModel):
     status: Literal["pending", "running", "completed", "failed", "skipped"]
 ```
 
-### 17.6 Tool Call
+### 17.8 Tool Call
 
 ```python
 class ToolCallRecord(BaseModel):
@@ -891,7 +984,7 @@ class ToolCallRecord(BaseModel):
     error_message: str | None
 ```
 
-### 17.7 Artifact
+### 17.9 Artifact
 
 ```python
 class Artifact(BaseModel):
@@ -975,8 +1068,40 @@ CREATE TABLE agent_runs (
     status TEXT NOT NULL,
     goal TEXT NOT NULL,
     final_summary TEXT,
+    current_node TEXT,
+    last_event_sequence INT NOT NULL DEFAULT 0,
+    worker_status TEXT NOT NULL DEFAULT 'queued',
+    state_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### 18.4.1 `run_events`
+
+```sql
+CREATE TABLE run_events (
+    event_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES agent_runs(run_id),
+    sequence INT NOT NULL,
+    event_type TEXT NOT NULL,
+    message TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (run_id, sequence)
+);
+```
+
+### 18.4.2 `user_transaction_views`
+
+```sql
+CREATE TABLE user_transaction_views (
+    user_id TEXT NOT NULL REFERENCES users(user_id),
+    run_id TEXT NOT NULL REFERENCES agent_runs(run_id),
+    hidden_at TIMESTAMP,
+    pinned BOOLEAN NOT NULL DEFAULT FALSE,
+    last_opened_at TIMESTAMP,
+    PRIMARY KEY (user_id, run_id)
 );
 ```
 
@@ -1212,6 +1337,23 @@ CREATE TABLE llm_reasoning_review_logs (
 ENGINE = MergeTree
 ORDER BY (timestamp, workflow_type, run_id, graph_node);
 ```
+
+---
+
+### 18.15 Persistent Progress and Rehydration Rules
+
+PostgreSQL is the source of truth for page state.
+
+Rules:
+
+- `agent_runs.state_snapshot` stores the latest compact page/workflow state.
+- `run_events` stores ordered replayable events for the progress panel.
+- SSE may use in-memory fanout for live delivery, but every event must already be persisted.
+- `user_transaction_views` controls sidebar visibility without deleting records.
+- Page refresh must call snapshot + events APIs before opening SSE.
+- Completed, failed, cancelled, and approval-waiting runs must all be restorable.
+- Active runs must reconnect to SSE and continue showing new progress.
+- All workflow pages must share this contract.
 
 ---
 

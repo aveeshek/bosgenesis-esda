@@ -5,15 +5,23 @@ import logging
 from time import perf_counter
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from backend.app.approvals import ApprovalService
+from backend.app.artifact_publisher import ArtifactGitPublisher
 from backend.app.artifacts import ArtifactService
 from backend.app.auth.security import SessionPrincipal, create_session_cookie, verify_password
 from backend.app.chains.release_notes import ReleaseNoteIntentClassifierChain
@@ -37,6 +45,7 @@ from backend.app.l4 import (
 from backend.app.llm.azure_gpt5 import AzureGpt5Service
 from backend.app.logging.postgres_logger import PostgresLogger
 from backend.app.policy.evaluator import PolicyGuard
+from backend.app.repo_analysis import RepoAnalysisService
 from backend.app.tools.contracts import ToolExecutionRequest
 from backend.app.tools.mcp_client import K8sInspectorMcpTool
 from backend.app.tools.powershell_get import PowerShellGetTemplateTool
@@ -57,7 +66,6 @@ class DiagnosticRequest(BaseModel):
     goal: str
     target_url: str
     namespace: str | None = None
-
 
 
 class LlmChatRequest(BaseModel):
@@ -104,7 +112,10 @@ def create_app() -> FastAPI:
     repository = RunRepository(database)
     event_bus = RunEventBus()
     pg_logger = PostgresLogger(database, settings)
-    artifact_service = ArtifactService(repository=repository, storage_root=settings.artifact_storage_dir)
+    artifact_service = ArtifactService(
+        repository=repository, storage_root=settings.artifact_storage_dir
+    )
+    artifact_publisher = ArtifactGitPublisher(settings)
     tool_registry = default_tool_registry()
     policy_guard = PolicyGuard(settings=settings, tool_registry=tool_registry)
     approval_service = ApprovalService(
@@ -119,6 +130,7 @@ def create_app() -> FastAPI:
         tool_registry=tool_registry,
     )
     llm = AzureGpt5Service(settings)
+    repo_analyzer = RepoAnalysisService(llm=llm)
     workflow_classifier = ReleaseNoteIntentClassifierChain(llm)
     graph = DiagnosticGraph(
         repository=repository,
@@ -139,9 +151,11 @@ def create_app() -> FastAPI:
         llm=llm,
         release_note_agent=ReleaseNoteAgentTool(settings),
         artifact_service=artifact_service,
+        artifact_publisher=artifact_publisher,
         tool_registry=tool_registry,
         policy_guard=policy_guard,
         approval_service=approval_service,
+        repo_analyzer=repo_analyzer,
     )
 
     @asynccontextmanager
@@ -151,6 +165,7 @@ def create_app() -> FastAPI:
         pg_logger.init()
         logger.info("settings_loaded %s", settings.redacted_summary())
         yield
+
     app = FastAPI(
         title=settings.app_name,
         lifespan=lifespan,
@@ -172,6 +187,7 @@ def create_app() -> FastAPI:
     app.state.event_bus = event_bus
     app.state.logger = pg_logger
     app.state.artifact_service = artifact_service
+    app.state.artifact_publisher = artifact_publisher
     app.state.tool_registry = tool_registry
     app.state.policy_guard = policy_guard
     app.state.approval_service = approval_service
@@ -179,10 +195,10 @@ def create_app() -> FastAPI:
     app.state.graph = graph
     app.state.release_note_graph = release_note_graph
     app.state.workflow_classifier = workflow_classifier
+    app.state.repo_analyzer = repo_analyzer
 
     templates = Jinja2Templates(directory="backend/app/templates")
     app.mount("/static", StaticFiles(directory="backend/app/static"), name="static")
-
 
     @app.middleware("http")
     async def request_context_middleware(request: Request, call_next):
@@ -223,7 +239,10 @@ def create_app() -> FastAPI:
         )
         return JSONResponse(
             status_code=500,
-            content={"error": "internal_server_error", "request_id": getattr(request.state, "request_id", None)},
+            content={
+                "error": "internal_server_error",
+                "request_id": getattr(request.state, "request_id", None),
+            },
         )
 
     def authenticate(username: str, password: str) -> SessionPrincipal | None:
@@ -242,7 +261,11 @@ def create_app() -> FastAPI:
         )
 
     def public_user(principal: SessionPrincipal) -> dict:
-        return {"user_id": principal.user_id, "username": principal.username, "roles": principal.roles}
+        return {
+            "user_id": principal.user_id,
+            "username": principal.username,
+            "roles": principal.roles,
+        }
 
     def template_context(principal: SessionPrincipal, **extra) -> dict:
         context = {
@@ -284,8 +307,6 @@ def create_app() -> FastAPI:
             "profiles": llm.model_profiles(),
             "user": principal.username,
         }
-
-
 
     @app.post("/api/llm/chat", tags=["system"])
     async def llm_chat(
@@ -338,7 +359,9 @@ def create_app() -> FastAPI:
         return {"user": public_user(principal)}
 
     @app.post("/api/auth/logout", tags=["auth"])
-    def api_logout(response: Response, principal: SessionPrincipal = Depends(get_current_user)) -> dict:
+    def api_logout(
+        response: Response, principal: SessionPrincipal = Depends(get_current_user)
+    ) -> dict:
         response.delete_cookie(SESSION_COOKIE_NAME)
         return {"status": "logged_out", "user": public_user(principal)}
 
@@ -362,7 +385,9 @@ def create_app() -> FastAPI:
         principal = get_current_user_or_none(request)
         if not principal:
             return RedirectResponse("/login", status_code=303)
-        return templates.TemplateResponse(request, "release_notes.html", template_context(principal))
+        return templates.TemplateResponse(
+            request, "release_notes.html", template_context(principal)
+        )
 
     @app.get("/approvals", response_class=HTMLResponse, tags=["pages"])
     def approvals_page(request: Request) -> HTMLResponse:
@@ -373,13 +398,13 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=403, detail="Approver role required")
         return templates.TemplateResponse(request, "approvals.html", template_context(principal))
 
-
     @app.get("/l4-audit", response_class=HTMLResponse, tags=["pages"])
     def l4_audit_page(request: Request) -> HTMLResponse:
         principal = get_current_user_or_none(request)
         if not principal:
             return RedirectResponse("/login", status_code=303)
         return templates.TemplateResponse(request, "l4_audit.html", template_context(principal))
+
     @app.post("/api/policy/evaluate", tags=["policy"])
     def evaluate_policy(
         request: PolicyEvaluateRequest,
@@ -460,7 +485,6 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Approval not found")
         return {"approval": approval}
 
-
     @app.post("/api/l4/eligibility", tags=["l4"])
     def evaluate_l4_eligibility(
         request: L4EligibilityRequest,
@@ -510,6 +534,7 @@ def create_app() -> FastAPI:
     ) -> dict:
         require_approver(principal)
         return {"procedure": l4_service.create_procedure(request, owner_user_id=principal.user_id)}
+
     @app.post("/api/workflows/classify", tags=["workflows"])
     async def classify_workflow(
         request: WorkflowClassifyRequest,
@@ -524,6 +549,7 @@ def create_app() -> FastAPI:
         result = classification.model_dump()
         result["user"] = principal.username
         return result
+
     @app.post("/api/chat", tags=["workflows"])
     async def start_diagnostic(
         request: DiagnosticRequest,
@@ -572,13 +598,6 @@ def create_app() -> FastAPI:
         request: ReleaseNoteRequest,
         principal: SessionPrincipal = Depends(get_current_user),
     ) -> dict:
-        classification = await workflow_classifier.run(
-            user_text=f"Generate release notes for {request.github_url}",
-            github_url=request.github_url,
-            release_name=request.release_name,
-            model_profile=request.model_profile,
-        )
-        classification_payload = classification.model_dump()
         run_id = f"run_{uuid4().hex}"
         release_goal = f"Generate release notes for {request.github_url}"
         repository.create_run(
@@ -605,17 +624,44 @@ def create_app() -> FastAPI:
         return {
             "run_id": run_id,
             "events_url": f"/api/runs/{run_id}/events",
-            "classification": classification_payload,
             "model_profile": request.model_profile or settings.llm_default_model_profile,
         }
 
-    @app.get("/api/runs/{run_id}", tags=["runs"])
-    def get_run(run_id: str, principal: SessionPrincipal = Depends(get_current_user)) -> dict:
+    def require_run_access(run_id: str, principal: SessionPrincipal):
         run = repository.get_run(run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         if run.user_id != principal.user_id and "admin" not in principal.roles:
             raise HTTPException(status_code=403, detail="Forbidden")
+        return run
+
+    @app.get("/api/transactions", tags=["runs"])
+    def list_transactions(
+        workflow_type: str | None = None,
+        include_hidden: bool = False,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict:
+        transactions = repository.list_transactions(
+            user_id=principal.user_id, include_hidden=include_hidden
+        )
+        if workflow_type:
+            transactions = [item for item in transactions if item["workflow_type"] == workflow_type]
+        return {"transactions": transactions}
+
+    @app.post("/api/transactions/{run_id}/clear", tags=["runs"])
+    def clear_transaction(
+        run_id: str, principal: SessionPrincipal = Depends(get_current_user)
+    ) -> dict:
+        run = require_run_access(run_id, principal)
+        if run.user_id != principal.user_id:
+            raise HTTPException(status_code=403, detail="Only the owner can clear this transaction")
+        if not repository.clear_transaction(user_id=principal.user_id, run_id=run_id):
+            raise HTTPException(status_code=404, detail="Run not found")
+        return {"run_id": run_id, "status": "hidden"}
+
+    @app.get("/api/runs/{run_id}", tags=["runs"])
+    def get_run(run_id: str, principal: SessionPrincipal = Depends(get_current_user)) -> dict:
+        run = require_run_access(run_id, principal)
         return {
             "run_id": run.run_id,
             "workflow_type": run.workflow_type,
@@ -626,6 +672,19 @@ def create_app() -> FastAPI:
             "final_report": run.final_report,
         }
 
+    @app.get("/api/runs/{run_id}/snapshot", tags=["runs"])
+    def get_run_snapshot(
+        run_id: str, principal: SessionPrincipal = Depends(get_current_user)
+    ) -> dict:
+        require_run_access(run_id, principal)
+        snapshot = repository.get_run_snapshot(run_id)
+        if not snapshot:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if principal.user_id == snapshot["run"]["user_id"]:
+            repository.mark_transaction_opened(user_id=principal.user_id, run_id=run_id)
+        snapshot["events_url"] = f"/api/runs/{run_id}/events"
+        return snapshot
+
     @app.post("/api/runs/{run_id}/stop", tags=["runs"])
     def stop_run(run_id: str, principal: SessionPrincipal = Depends(get_current_user)) -> dict:
         run = repository.get_run(run_id)
@@ -634,9 +693,10 @@ def create_app() -> FastAPI:
         if run.user_id != principal.user_id and "admin" not in principal.roles:
             raise HTTPException(status_code=403, detail="Forbidden")
         repository.update_status(run_id, "stopped")
-        repository.add_event(run_id, "run_stopped", "Run stop requested", {"requested_by": principal.user_id})
+        repository.add_event(
+            run_id, "run_stopped", "Run stop requested", {"requested_by": principal.user_id}
+        )
         return {"run_id": run_id, "status": "stopped"}
-
 
     @app.get("/api/runs/{run_id}/artifacts", tags=["runs"])
     def list_run_artifacts(
@@ -671,18 +731,29 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/api/runs/{run_id}/events", tags=["runs"])
-    async def run_events(run_id: str, principal: SessionPrincipal = Depends(get_current_user)):
-        run = repository.get_run(run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail="Run not found")
-        if run.user_id != principal.user_id and "admin" not in principal.roles:
-            raise HTTPException(status_code=403, detail="Forbidden")
+    async def run_events(
+        run_id: str,
+        after_event_id: str | None = Query(default=None),
+        after_sequence: int | None = Query(default=None),
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+        principal: SessionPrincipal = Depends(get_current_user),
+    ):
+        require_run_access(run_id, principal)
+
+        def sse(event: dict) -> str:
+            event_id = event.get("event_id", "")
+            return f"id: {event_id}\ndata: {json.dumps(event)}\n\n"
 
         async def stream():
-            for event in repository.list_events(run_id):
-                yield f"data: {json.dumps(event)}\n\n"
+            replay_after_event_id = after_event_id or last_event_id
+            for event in repository.list_events(
+                run_id,
+                after_event_id=replay_after_event_id,
+                after_sequence=after_sequence,
+            ):
+                yield sse(event)
             async for event in event_bus.subscribe(run_id):
-                yield f"data: {json.dumps(event)}\n\n"
+                yield sse(event)
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 

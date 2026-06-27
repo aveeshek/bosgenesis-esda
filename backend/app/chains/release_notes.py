@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from urllib.parse import urlparse
 
 from pydantic import ValidationError
@@ -183,8 +184,9 @@ class ReleaseNoteVerifierChain:
     prompt_version = "release_note_verifier_v1"
     system_prompt = (
         "Verify a Markdown release-note draft. Return JSON only with valid, confidence, message, "
-        "missing_sections, evidence_gaps, policy_notes, and checks. Require title, Summary, and "
-        "Source Evidence sections."
+        "missing_sections, evidence_gaps, policy_notes, and checks. Require a title, "
+        "a summary-equivalent section, and source-evidence references. Accept rich release-note-agent "
+        "headings such as Executive Summary, Release Overview, Appendix, and evidence tables."
     )
 
     def __init__(self, llm) -> None:
@@ -199,17 +201,22 @@ class ReleaseNoteVerifierChain:
         plan: dict,
         model_profile: str | None = None,
     ) -> VerificationResult:
-        payload = {
+        prompt_payload = {
             "github_url": github_url,
             "markdown": markdown[:6000],
             "agent_result": agent_result,
             "plan": plan,
         }
-        deterministic = self._fallback(payload)
+        deterministic = self._fallback(
+            {
+                **prompt_payload,
+                "markdown": markdown,
+            }
+        )
         raw = await _structured_response(
             self.llm,
             system=self.system_prompt,
-            user_payload=payload,
+            user_payload=prompt_payload,
             fallback=deterministic.model_dump(),
             model_profile=model_profile,
         )
@@ -227,13 +234,9 @@ class ReleaseNoteVerifierChain:
 
     def _fallback(self, payload: dict) -> VerificationResult:
         markdown = str(payload.get("markdown") or "")
-        required_sections = ["## Summary", "## Source Evidence"]
-        missing_sections = [section for section in required_sections if section not in markdown]
-        has_title = markdown.lstrip().startswith("# ")
-        has_subsection = "## " in markdown
-        mentions_source = str(payload.get("github_url") or "") in markdown
-        evidence_gaps = [] if mentions_source else ["Draft does not cite the requested GitHub URL."]
-        valid = has_title and has_subsection and not missing_sections and not evidence_gaps
+        github_url = str(payload.get("github_url") or "")
+        validation = _release_note_structure(markdown, github_url)
+        valid = validation["valid"]
         return VerificationResult(
             prompt_version=self.prompt_version,
             prompt_hash=prompt_hash(
@@ -241,7 +244,9 @@ class ReleaseNoteVerifierChain:
                 system_prompt=self.system_prompt,
                 payload=payload,
             ),
-            reasoning_summary="Checked required Markdown sections and basic source evidence references.",
+            reasoning_summary=(
+                "Checked required Markdown title, summary-equivalent sections, and source evidence references."
+            ),
             valid=valid,
             confidence=0.95 if valid else 0.7,
             message=(
@@ -249,14 +254,10 @@ class ReleaseNoteVerifierChain:
                 if valid
                 else "Release-note draft needs review before completion."
             ),
-            missing_sections=missing_sections,
-            evidence_gaps=evidence_gaps,
+            missing_sections=validation["missing_sections"],
+            evidence_gaps=validation["evidence_gaps"],
             policy_notes=["Draft is read-only. Publishing remains approval-gated."],
-            checks={
-                "has_title": has_title,
-                "has_subsection": has_subsection,
-                "mentions_source": mentions_source,
-            },
+            checks=validation["checks"],
         )
 
 
@@ -338,9 +339,9 @@ class ReleaseNoteRecoveryRecommendationChain:
 class ReleaseNoteReportWriterChain:
     prompt_version = "release_note_report_writer_v1"
     system_prompt = (
-        "Draft concise Markdown release notes using only supplied release-note-agent evidence. "
-        "Use hydrated release-note-agent Markdown artifact content as the initial document when present; "
-        "then refine it into the final GPT draft without inventing unsupported facts. "
+        "Draft complete Markdown release notes using only supplied release-note-agent evidence. "
+        "When hydrated release-note-agent Markdown content is present, preserve its sections, tables, "
+        "headings, graph references, metrics, and operational details; enrich only where evidence supports it. "
         "Return JSON only with markdown, source_evidence_summary, limitations, and reasoning_summary. "
         "Markdown must start with a single # title and include ## Summary and ## Source Evidence. "
         "Do not invent features, fixes, issue IDs, or deployment notes."
@@ -443,7 +444,9 @@ class ReleaseNoteReportWriterChain:
         if not has_evidence:
             feature_line = "- No feature evidence was confirmed by the current source analysis."
             fix_line = "- No fix evidence was confirmed by the current source analysis."
-            ops_line = "- No operational-change evidence was confirmed by the current source analysis."
+            ops_line = (
+                "- No operational-change evidence was confirmed by the current source analysis."
+            )
             known_issue_line = "- Generated as a read-only draft with limited evidence."
         markdown_lines = [
             f"# Release Notes: {release_name or repo_name or 'Draft'}",
@@ -484,6 +487,7 @@ class ReleaseNoteReportWriterChain:
             limitations=limitations,
         )
 
+
 def _agent_artifact_records(agent_result: dict) -> list[dict]:
     output = agent_result.get("output") or {}
     artifacts = output.get("artifacts") or []
@@ -513,7 +517,14 @@ def _extract_agent_markdown(agent_result: dict) -> str | None:
             continue
         identity = " ".join(
             str(artifact.get(key) or "")
-            for key in ("artifact_type", "content_type", "mime_type", "name", "relative_path", "path")
+            for key in (
+                "artifact_type",
+                "content_type",
+                "mime_type",
+                "name",
+                "relative_path",
+                "path",
+            )
         ).lower()
         if "markdown" in identity or ".md" in identity or clean.startswith("# "):
             return clean
@@ -523,7 +534,9 @@ def _extract_agent_markdown(agent_result: dict) -> str | None:
 def _validate_model(model_type, fallback, raw: dict, normalizer=None):
     fallback_payload = fallback.model_dump()
     raw_payload = raw if isinstance(raw, dict) else {}
-    payload = normalizer(fallback_payload, raw_payload) if normalizer else fallback_payload | raw_payload
+    payload = (
+        normalizer(fallback_payload, raw_payload) if normalizer else fallback_payload | raw_payload
+    )
     try:
         return model_type.model_validate(payload)
     except ValidationError:
@@ -564,13 +577,66 @@ def _normalize_plan_payload(fallback_payload: dict, raw_payload: dict) -> dict:
     return payload
 
 
-def _has_required_release_note_structure(markdown: str, github_url: str) -> bool:
-    return (
-        markdown.lstrip().startswith("# ")
-        and "## Summary" in markdown
-        and "## Source Evidence" in markdown
-        and github_url in markdown
+def _markdown_heading_labels(markdown: str) -> list[str]:
+    labels: list[str] = []
+    for line in markdown.splitlines():
+        match = re.match(r"^\s*#{2,6}\s+(.+?)\s*$", line)
+        if match:
+            labels.append(match.group(1).strip().lower())
+    return labels
+
+
+def _has_summary_equivalent(markdown: str) -> bool:
+    headings = _markdown_heading_labels(markdown)
+    return any(
+        heading == "summary"
+        or "executive summary" in heading
+        or "release overview" in heading
+        or heading == "overview"
+        for heading in headings
     )
+
+
+def _has_source_evidence_equivalent(markdown: str, github_url: str) -> bool:
+    headings = _markdown_heading_labels(markdown)
+    lowered = markdown.lower()
+    has_evidence_heading = any(
+        "evidence" in heading or heading == "appendix" for heading in headings
+    )
+    has_evidence_refs = "`ev_" in lowered or re.search(r"\bev_[a-f0-9]{8,}\b", lowered) is not None
+    mentions_source = bool(github_url) and github_url in markdown
+    return has_evidence_heading or (mentions_source and has_evidence_refs)
+
+
+def _release_note_structure(markdown: str, github_url: str) -> dict:
+    has_title = markdown.lstrip().startswith("# ")
+    has_subsection = bool(_markdown_heading_labels(markdown))
+    has_summary = _has_summary_equivalent(markdown)
+    has_source_evidence = _has_source_evidence_equivalent(markdown, github_url)
+    mentions_source = bool(github_url) and github_url in markdown
+    missing_sections = []
+    if not has_summary:
+        missing_sections.append("## Summary")
+    if not has_source_evidence:
+        missing_sections.append("## Source Evidence")
+    evidence_gaps = [] if mentions_source else ["Draft does not cite the requested GitHub URL."]
+    valid = has_title and has_subsection and not missing_sections and not evidence_gaps
+    return {
+        "valid": valid,
+        "missing_sections": missing_sections,
+        "evidence_gaps": evidence_gaps,
+        "checks": {
+            "has_title": has_title,
+            "has_subsection": has_subsection,
+            "has_summary": has_summary,
+            "has_source_evidence": has_source_evidence,
+            "mentions_source": mentions_source,
+        },
+    }
+
+
+def _has_required_release_note_structure(markdown: str, github_url: str) -> bool:
+    return bool(_release_note_structure(markdown, github_url)["valid"])
 
 
 def _ensure_release_note_markdown(

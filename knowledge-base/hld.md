@@ -110,6 +110,37 @@ Current release-note MCP tools used:
 | `github_release_get_artifact` | Retrieve generated artifact metadata and content references. |
 
 ---
+## 3.3 Persistent Transaction UX and Background Execution
+
+All workflow pages must behave as durable state-machine clients over server-side workflow transactions. A browser tab is only a viewer/controller; it must not own workflow truth.
+
+Default behavior for every page:
+
+- Starting a workflow creates a durable PostgreSQL transaction/run record before model or tool work begins.
+- The LangGraph workflow continues in the backend even if the user refreshes, closes the tab, or navigates to another page.
+- Every progress update is written as an ordered PostgreSQL event before it is streamed to the browser.
+- The browser rehydrates from PostgreSQL on page load by reading the latest run snapshot and replayable event history.
+- SSE streams resume from the last observed event sequence or event id.
+- Users can clear/hide a transaction from their own history, but clear is a user-level archive action; audit records and artifacts remain durable.
+- This refresh-safe behavior applies to release notes, health checks, MoP creation, MoP execution, Helm, Kubernetes, approvals, L4 audit, and future workflow pages.
+
+The UX must include a ChatGPT-style transaction sidebar:
+
+- Hidden/collapsed by default.
+- Opens as a floating left-side drawer.
+- Lists past workflow transactions for the logged-in user.
+- Shows workflow type, title, status, timestamps, model/agent used, and artifact availability.
+- Clicking a transaction restores that run into the current page, including live progress if it is still running.
+- Closing the drawer returns it to the hidden state without losing the selected run.
+
+Backend responsibility:
+
+- Workers execute workflow state transitions.
+- API routes expose snapshots, events, artifacts, and clear/archive actions.
+- PostgreSQL is the source of truth for session data, transactional data, run state, UI replay events, and user-specific history visibility.
+- Redis may later optimize event buffering/locks, but it must not be the only state store.
+
+---
 ## 4. Target Users
 
 | User Type | Usage |
@@ -285,7 +316,10 @@ Suggested endpoints:
 | `/api/chat` | POST | Submit a user message/task |
 | `/api/runs` | POST | Start a new workflow run |
 | `/api/runs/{run_id}` | GET | Get run status |
-| `/api/runs/{run_id}/events` | GET | Stream live run events |
+| `/api/runs/{run_id}/snapshot` | GET | Get latest durable run snapshot for page rehydration |
+| `/api/runs/{run_id}/events` | GET | Stream live run events; supports resume by last event id/sequence |
+| `/api/transactions` | GET | List current user's visible workflow transactions for the floating sidebar |
+| `/api/transactions/{run_id}/clear` | POST | Hide/archive a transaction for the current user without deleting audit data |
 | `/api/runs/{run_id}/approve` | POST | Approve a sensitive action |
 | `/api/runs/{run_id}/cancel` | POST | Cancel run |
 | `/api/tools` | GET | List available tools |
@@ -643,6 +677,22 @@ sequenceDiagram
 | `started_at` | Timestamp | Start time |
 | `completed_at` | Timestamp | End time |
 | `final_summary` | Text | Final answer/report summary |
+| `current_node` | Text | Last known graph node/state-machine step |
+| `last_event_sequence` | Integer | Highest persisted event sequence for replay/resume |
+| `worker_status` | Text | queued/running/idle/failed for background execution visibility |
+| `cleared_by_user_at` | Timestamp | User-level hidden/archive timestamp; audit data remains intact |
+
+### `agent_run_events`
+
+| Column | Type | Description |
+|---|---|---|
+| `event_id` | UUID | Unique durable event ID |
+| `run_id` | UUID | Parent workflow run ID |
+| `sequence` | Integer | Monotonic event number per run |
+| `event_type` | Text | run_started, node_started, tool_completed, artifact_created, etc. |
+| `message` | Text | User-safe progress text |
+| `payload` | JSONB | Redacted event data used to rebuild the UI |
+| `created_at` | Timestamp | Event creation time |
 
 ### `agent_tool_call_history`
 
@@ -712,12 +762,12 @@ The backend should also pass runtime constraints:
 
 ```text
 Developer Laptop
-  ÃƒÂ¢Ã¢â‚¬ÂÃ…â€œÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Web UI
-  ÃƒÂ¢Ã¢â‚¬ÂÃ…â€œÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ FastAPI Agent Backend
-  ÃƒÂ¢Ã¢â‚¬ÂÃ…â€œÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MCP Client
-  ÃƒÂ¢Ã¢â‚¬ÂÃ…â€œÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ PowerShell Runner
-  ÃƒÂ¢Ã¢â‚¬ÂÃ…â€œÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ PostgreSQL / Qdrant / PostgreSQL using Docker/Podman
-  ÃƒÂ¢Ã¢â‚¬ÂÃ¢â‚¬ÂÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Azure OpenAI GPT-5 endpoint over approved network path
+  - Web UI
+  - FastAPI Agent Backend
+  - MCP Client
+  - PowerShell Runner
+  - PostgreSQL / Qdrant using Docker/Podman or reachable internal services
+  - Azure OpenAI GPT-5 endpoint over approved network path
 ```
 
 ### Kubernetes Deployment
@@ -809,6 +859,8 @@ Current V1 release-note success criteria:
 - Agent downloads and saves the release-note-agent PDF artifact.
 - UI shows live progress plus Markdown/PDF download buttons.
 - PostgreSQL records the run, events, tool summaries, LLM review metadata, and artifact metadata.
+- Refreshing or leaving the page does not lose progress; the run continues in the backend and the page restores from PostgreSQL when reopened.
+- The floating transaction sidebar lists and restores prior release-note attempts until the user clears/hides them.
 
 Original broader read-only success criteria:
 

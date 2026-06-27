@@ -19,6 +19,7 @@ The target project is a Python-based web application with:
 - [ ] PostgreSQL for transactional data, episodic memory, and procedural memory.
 - [ ] Qdrant for semantic memory.
 - [x] PostgreSQL for detailed logs, LLM explanations, tool events, and review analytics.
+- [x] PostgreSQL-backed transaction replay state for refresh-safe workflow UX.
 - [ ] Conditional L4 autonomy inside an approved operational design domain.
 
 ## 2. Accepted Architecture Decisions
@@ -32,6 +33,7 @@ The target project is a Python-based web application with:
 - [x] PostgreSQL will store episodic and procedural memory.
 - [x] Qdrant will store semantic memory.
 - [x] PostgreSQL will store detailed logs and LLM review records.
+- [x] PostgreSQL will be the source of truth for refresh-safe workflow transactions and UI state restoration.
 - [x] MongoDB is excluded from V1.
 - [x] Hidden raw chain-of-thought will not be stored.
 - [x] Model-provided reasoning summaries, plans, explanations, and decisions will be stored for review.
@@ -67,7 +69,8 @@ Phases:
 - [x] Release-note-agent produces the initial document/evidence; ESDA GPT produces the final Markdown draft from that source material.
 - [x] ESDA saves both Markdown and PDF artifacts and exposes separate download buttons.
 - [x] Release-note live progress is scrollable and copyable.
-- [x] Latest backend verification for this slice: `python -m ruff check .` passed and `python -m pytest backend\tests -q` reported 64 passing tests.
+- [x] Release-note progress is refresh-safe and restores active/historical transactions from PostgreSQL.
+- [x] Latest backend verification for this slice: `node --check backend\app\static\js\release_notes.js`, `python -m py_compile backend\app\main.py backend\app\db\database.py backend\app\db\models.py`, `python -m ruff check .`, and `python -m pytest backend\tests -q` passed with 71 tests.
 
 ## 4. Phase 1 Checklist: Foundation and Read-Only Agent
 
@@ -364,6 +367,13 @@ Phases:
 
 ### 5.8 Frontend Diagnostic UI
 
+- [x] Add shared hidden-by-default floating transaction sidebar.
+- [x] List prior workflow transactions from PostgreSQL.
+- [x] Restore selected run state from backend snapshot.
+- [x] Replay missed progress events after refresh/navigation.
+- [x] Reconnect live SSE for active runs.
+- [x] Add user-level clear/hide action for transaction history.
+
 - [ ] Add workflow selector.
 - [ ] Add environment selector.
 - [x] Add namespace selector.
@@ -422,13 +432,33 @@ Phases:
 - [x] Add release-note-agent adapter tests for MCP URL mapping, MCP envelope handling, and preserving all artifact metadata.
 - [x] Add artifact service and release-note graph tests for PDF binary artifact save.
 
-### 5.10 Phase 2 Exit Checks
+### 5.10 Persistent Transaction State and Refresh-Safe UX
+
+- [x] Add durable run event replay using the existing `run_events` table with computed per-run event sequence.
+- [ ] Add compact run `state_snapshot` cache in PostgreSQL if composed snapshots become too expensive.
+- [x] Add user transaction visibility table or equivalent soft-hide field.
+- [x] Add background execution boundary so workflow continues after page refresh/navigation.
+- [x] Persist progress event before broadcasting over SSE.
+- [x] Add `/api/transactions` endpoint for sidebar history.
+- [x] Add `/api/runs/{run_id}/snapshot` endpoint for rehydration.
+- [x] Add SSE resume support using `after_event_id` or `after_sequence`.
+- [x] Add `/api/transactions/{run_id}/clear` endpoint that hides without deleting audit data.
+- [x] Update release-note page to hydrate existing active run on load.
+- [x] Update release-note page to replay persisted events below the working sphere.
+- [x] Keep generated Markdown/PDF artifacts visible after refresh.
+- [ ] Generalize the release-note state-machine into a shared controller for all workflow pages.
+- [x] Add backend tests for snapshot, event replay cursor, transaction listing, and soft clear with mocked active run.
+- [x] Add tests that cleared transactions disappear from sidebar but remain auditable.
+
+### 5.11 Phase 2 Exit Checks
 
 - [x] Agent can classify workflow type.
 - [x] Agent creates a plan before tools execute.
 - [x] Agent can call at least one registered read-only tool.
 - [x] Agent validates tool output.
 - [x] Agent stores useful episode in PostgreSQL.
+- [x] Agent restores active release-note run progress after browser refresh/navigation.
+- [x] Agent exposes prior release-note workflow transactions through the floating sidebar.
 - [ ] Agent writes searchable memory to Qdrant.
 - [x] Agent produces a release-note or MoP draft artifact.
 - [x] PostgreSQL captures plan, tool explanation, validation explanation, and final answer.
@@ -696,11 +726,14 @@ Phases:
 - [x] Login page.
 - [x] Chat console and LLM chat modal.
 - [x] SSE event handling.
+- [x] Replayable SSE resume after last persisted event sequence.
 - [x] Run timeline.
 - [x] Plan panel.
 - [x] Tool evidence panel.
 - [x] Approval modal.
 - [ ] Artifact browser.
+- [x] Floating transaction history sidebar.
+- [x] Persisted page-state hydration on the release-note workflow page.
 - [ ] Memory search page.
 - [ ] LLM review page.
 - [ ] Logs dashboard.
@@ -710,6 +743,7 @@ Phases:
 ### 8.3 Data
 
 - [ ] PostgreSQL migrations.
+- [x] PostgreSQL run event and transaction visibility schema.
 - [ ] Qdrant collection setup.
 - [x] PostgreSQL DDL.
 - [x] Seed admin user.
@@ -721,6 +755,8 @@ Phases:
 ### 8.4 Agent Workflows
 
 - [x] Router graph.
+- [x] Background workflow execution boundary.
+- [ ] Persisted state snapshot writer per graph transition.
 - [x] Release-note creation graph.
 - [ ] MoP creation graph.
 - [ ] MoP execution graph.
@@ -825,6 +861,9 @@ Phases:
 - [x] S1-23: Implement PowerShell template request contract with no raw command field.
 - [ ] S1-24: Log why retrieved memory was used in a run.
 - [x] S1-25: Add authenticated LLM chat modal and `/api/llm/chat` endpoint.
+- [x] S1-26: Add durable run event replay table and writer.
+- [x] S1-27: Add transaction sidebar API and soft-clear behavior.
+- [x] S1-28: Add release-note page rehydration and SSE resume.
 
 ## 12. Guardrail Checklist
 
@@ -859,6 +898,8 @@ Phases:
 - [x] UI reflects backend status correctly.
 - [x] PostgreSQL receives review-grade events when applicable.
 - [x] PostgreSQL stores durable state when applicable.
+- [x] Browser refresh/navigation does not lose active release-note workflow progress.
+- [x] User can restore prior release-note transactions from the floating sidebar.
 - [ ] Qdrant stores semantic memory when applicable.
 - [x] Documentation is updated.
 

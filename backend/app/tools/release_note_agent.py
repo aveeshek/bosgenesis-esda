@@ -8,7 +8,7 @@ from backend.app.config import Settings
 from backend.app.tools.contracts import ToolExecutionRequest, ToolExecutionResult
 
 
-MAX_HYDRATED_ARTIFACT_CHARS = 60000
+MAX_HYDRATED_ARTIFACT_CHARS = 250000
 TEXT_ARTIFACT_TYPES = {"analytics", "evidence", "json", "markdown", "metadata", "observability"}
 TERMINAL_STATUSES = {"completed", "complete", "succeeded", "success", "finished", "failed", "error"}
 

@@ -10,8 +10,43 @@ const progressPanel = document.getElementById("release-progress-panel");
 const sphereCanvas = document.getElementById("release-sphere-canvas");
 const spherePhase = document.getElementById("release-sphere-phase");
 const sphereTitle = document.getElementById("release-sphere-title");
+const transactionToggle = document.getElementById("transaction-sidebar-toggle");
+const transactionSidebar = document.getElementById("transaction-sidebar");
+const transactionClose = document.getElementById("transaction-sidebar-close");
+const transactionBackdrop = document.getElementById("transaction-sidebar-backdrop");
+const transactionList = document.getElementById("transaction-list");
+const transactionStatus = document.getElementById("transaction-sidebar-status");
+const activeRunStorageKey = "bosgenesis.releaseNotes.activeRunId";
+const activityRailPinnedStorageKey = "bosgenesis.releaseNotes.activityRailPinned";
+const activityRailAutoHideMs = 30000;
+const ephemeralWorkingPanel = document.getElementById("ephemeral-working-panel");
+const ephemeralWorkingStream = document.getElementById("ephemeral-working-stream");
+const safeSummaryPanel = document.getElementById("safe-summary-panel");
+const safeSummaryList = document.getElementById("safe-summary-list");
+const agentActivityRail = document.getElementById("agent-activity-rail");
+const agentActivityGraph = document.getElementById("agent-activity-graph");
+const agentActivityStatus = document.getElementById("agent-activity-status");
+const agentActivityToggle = document.getElementById("agent-activity-toggle");
+const agentActivityPin = document.getElementById("agent-activity-pin");
 
 let timelineEvents = [];
+let activeRunId = null;
+let currentEventSource = null;
+let lastEventId = null;
+let lastEventSequence = 0;
+let transactionLoadFailed = false;
+let workingNoteCounter = 0;
+let workingNotePhases = new Set();
+let safeSummaryItems = [];
+let activityState = {};
+let activityRailAutoHideTimer = null;
+let activityRevealDelayTimer = null;
+let activityRevealDelayUntil = 0;
+let delayedActivityRevealReason = "";
+let planningWarmupTimer = null;
+let activityRailPinned = false;
+const seenEventIds = new Set();
+const safeSummaryKeys = new Set();
 
 function valueOf(id) {
   const value = document.getElementById(id).value.trim();
@@ -21,7 +56,7 @@ function valueOf(id) {
 function timelineText() {
   if (!timelineEvents.length) return "No progress events yet.";
   return timelineEvents.map((event, index) => {
-    const payload = JSON.stringify(event.payload || {}, null, 2);
+    const payload = JSON.stringify(displayPayloadForTimeline(event), null, 2);
     return `${index + 1}. ${event.event_type}: ${event.message}\n${payload}`;
   }).join("\n\n");
 }
@@ -40,7 +75,7 @@ function setProgressVisualState(state) {
   const copy = {
     idle: {
       phase: "Ready for release analysis",
-      title: "Release intelligence is standing by.",
+      title: "",
     },
     working: {
       phase: "Thinking through release evidence",
@@ -57,7 +92,7 @@ function setProgressVisualState(state) {
   }[state] || {};
 
   if (spherePhase && copy.phase) spherePhase.textContent = copy.phase;
-  if (sphereTitle && copy.title) sphereTitle.textContent = copy.title;
+  if (sphereTitle) sphereTitle.textContent = copy.title || "";
   scheduleSphereResize();
 }
 
@@ -384,6 +419,603 @@ async function initReleaseSphere() {
     progressPanel.classList.add("sphere-fallback");
   }
 }
+
+const activityDefinitions = [
+  { id: "start", label: "Intake", hint: "Run accepted and boundaries loaded." },
+  { id: "classify", label: "Classify", hint: "Identify workflow and confidence." },
+  { id: "plan", label: "Plan", hint: "Create evidence-first action plan." },
+  { id: "evidence", label: "Evidence", hint: "Call release-note-agent." },
+  { id: "clone", label: "Clone", hint: "Download a temporary local checkout." },
+  { id: "security", label: "Security", hint: "Scan common vulnerability signals and summarize through the selected LLM." },
+  { id: "quality", label: "Quality", hint: "Run pylint for Python or a safe static fallback for other projects." },
+  { id: "cleanup", label: "Cleanup", hint: "Remove temporary checkout after analysis." },
+  { id: "draft", label: "Draft", hint: "Write from collected evidence and scan results." },
+  { id: "validate", label: "Validate", hint: "Check structure and support." },
+  { id: "recover", label: "Recover", hint: "Continue, retry, or escalate." },
+  { id: "artifacts", label: "Artifacts", hint: "Save Markdown/PDF outputs." },
+  { id: "publish", label: "Publish", hint: "Commit MD/PDF outputs to bosgenesis-artifacts." },
+  { id: "complete", label: "Complete", hint: "Finalize run status." },
+];
+
+function clonePlain(value) {
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+function scrubReasoningFields(value) {
+  if (Array.isArray(value)) return value.map(scrubReasoningFields);
+  if (!value || typeof value !== "object") return value;
+  const scrubbed = {};
+  Object.entries(value).forEach(([key, child]) => {
+    if (key === "reasoning_summary") return;
+    scrubbed[key] = scrubReasoningFields(child);
+  });
+  return scrubbed;
+}
+
+function displayPayloadForTimeline(event) {
+  return scrubReasoningFields(clonePlain(event?.payload));
+}
+
+function resetActivityState() {
+  activityState = Object.fromEntries(
+    activityDefinitions.map((definition) => [
+      definition.id,
+      {
+        status: "pending",
+        detail: definition.hint,
+        label: definition.label,
+      },
+    ])
+  );
+  setActivityStatus("Awaiting run");
+  renderActivityGraph();
+  if (!activityRailPinned) collapseActivityRail({ force: true });
+}
+function setActivityStatus(message) {
+  if (agentActivityStatus) agentActivityStatus.textContent = message;
+}
+function updateActivityRailControls() {
+  if (!agentActivityRail) return;
+  const collapsed = agentActivityRail.classList.contains("is-collapsed");
+  agentActivityRail.setAttribute("aria-expanded", String(!collapsed));
+  agentActivityRail.dataset.autoHideMs = String(activityRailAutoHideMs);
+  if (agentActivityToggle) {
+    agentActivityToggle.textContent = collapsed ? "Show" : "Hide";
+    agentActivityToggle.setAttribute("aria-expanded", String(!collapsed));
+    agentActivityToggle.setAttribute(
+      "aria-label",
+      collapsed ? "Show agent activity feed" : "Collapse agent activity feed"
+    );
+  }
+  if (agentActivityPin) {
+    agentActivityPin.textContent = activityRailPinned ? "Pinned" : "Pin";
+    agentActivityPin.setAttribute("aria-pressed", String(activityRailPinned));
+    agentActivityPin.classList.toggle("is-active", activityRailPinned);
+    agentActivityPin.setAttribute(
+      "aria-label",
+      activityRailPinned ? "Unpin agent activity feed" : "Pin agent activity feed open"
+    );
+  }
+}
+
+function clearActivityRailAutoHide() {
+  if (!activityRailAutoHideTimer) return;
+  window.clearTimeout(activityRailAutoHideTimer);
+  activityRailAutoHideTimer = null;
+}
+
+function clearDelayedActivityReveal() {
+  if (activityRevealDelayTimer) {
+    window.clearTimeout(activityRevealDelayTimer);
+    activityRevealDelayTimer = null;
+  }
+  activityRevealDelayUntil = 0;
+  delayedActivityRevealReason = "";
+}
+
+function clearPlanningWarmupTimer() {
+  if (planningWarmupTimer) {
+    window.clearTimeout(planningWarmupTimer);
+    planningWarmupTimer = null;
+  }
+}
+
+function deferActivityReveal(delayMs) {
+  clearDelayedActivityReveal();
+  activityRevealDelayUntil = Date.now() + Math.max(0, delayMs);
+}
+
+function scheduleDelayedActivityReveal(reason, delayMs) {
+  delayedActivityRevealReason = reason || delayedActivityRevealReason;
+  if (activityRevealDelayTimer) return;
+  activityRevealDelayTimer = window.setTimeout(() => {
+    activityRevealDelayTimer = null;
+    activityRevealDelayUntil = 0;
+    revealActivityRail(delayedActivityRevealReason || "Execution plan is being composed.");
+    delayedActivityRevealReason = "";
+  }, Math.max(0, delayMs));
+}
+
+function revealActivityRailForEvent(reason) {
+  const delayMs = Math.max(0, activityRevealDelayUntil - Date.now());
+  if (delayMs > 0) {
+    scheduleDelayedActivityReveal(reason, delayMs);
+    return;
+  }
+  revealActivityRail(reason);
+}
+
+function revealPlanningWarmupActivity(payload) {
+  const event = {
+    event_type: "planning_started",
+    message: "Creating release-note plan",
+    payload: payload || {},
+    created_at: new Date().toISOString(),
+  };
+  if (activityState.start?.status === "pending") {
+    markActivity("start", "success", event, "Request received; ESDA is preparing the workflow envelope.");
+  }
+  if (activityState.classify?.status === "pending") {
+    markActivity("classify", "running", event, "Classifying the request before tool execution.");
+  }
+  if (activityState.plan?.status === "pending") {
+    markActivity("plan", "running", event, "Creating a read-only evidence plan and source-reference strategy.");
+  }
+  setActivityStatus("Creating execution plan");
+  renderActivityGraph();
+  revealActivityRail("Execution plan is being composed.");
+}
+
+function schedulePlanningWarmupActivity(payload, delayMs) {
+  clearPlanningWarmupTimer();
+  planningWarmupTimer = window.setTimeout(() => {
+    planningWarmupTimer = null;
+    revealPlanningWarmupActivity(payload);
+  }, delayMs);
+}
+
+function addPlanningWarmupNote(payload) {
+  const githubUrl = payload?.github_url || "the selected repository";
+  addWorkingNote({
+    event_type: "ephemeral_working_note",
+    message: "Creating execution plan.",
+    payload: {
+      phase: "CREATING PLAN",
+      display_index: "00",
+      detail: `Reading ${githubUrl}, source refs, selected model, and guardrails before the autonomy map is revealed.`,
+      ephemeral: true,
+      persisted: false,
+    },
+  });
+}
+function hideActivityRailUntilRun() {
+  if (!agentActivityRail) return;
+  clearActivityRailAutoHide();
+  clearDelayedActivityReveal();
+  clearPlanningWarmupTimer();
+  agentActivityRail.classList.add("is-dormant", "is-collapsed");
+  agentActivityRail.classList.remove("is-revealed");
+  updateActivityRailControls();
+}
+
+function collapseActivityRail(options = {}) {
+  if (!agentActivityRail) return;
+  if (activityRailPinned && !options.force) return;
+  clearActivityRailAutoHide();
+  agentActivityRail.classList.add("is-collapsed");
+  agentActivityRail.classList.remove("is-revealed");
+  updateActivityRailControls();
+}
+
+function scheduleActivityRailAutoHide() {
+  if (!agentActivityRail || activityRailPinned) return;
+  clearActivityRailAutoHide();
+  activityRailAutoHideTimer = window.setTimeout(() => {
+    collapseActivityRail();
+  }, activityRailAutoHideMs);
+}
+
+function revealActivityRail(reason = "", options = {}) {
+  if (!agentActivityRail) return;
+  agentActivityRail.classList.remove("is-dormant", "is-collapsed");
+  agentActivityRail.classList.add("is-revealed");
+  if (reason) agentActivityRail.dataset.lastRevealReason = reason;
+  updateActivityRailControls();
+  if (options.autoHide !== false) scheduleActivityRailAutoHide();
+}
+
+function setActivityRailPinned(pinned) {
+  activityRailPinned = Boolean(pinned);
+  window.localStorage.setItem(activityRailPinnedStorageKey, activityRailPinned ? "true" : "false");
+  agentActivityRail?.classList.toggle("is-pinned", activityRailPinned);
+  if (activityRailPinned) {
+    clearActivityRailAutoHide();
+    revealActivityRail("Pinned by user.", { autoHide: false });
+  } else if (agentActivityRail && !agentActivityRail.classList.contains("is-collapsed")) {
+    scheduleActivityRailAutoHide();
+  }
+  updateActivityRailControls();
+}
+
+function initializeActivityRail() {
+  activityRailPinned = window.localStorage.getItem(activityRailPinnedStorageKey) === "true";
+  agentActivityRail?.classList.toggle("is-pinned", activityRailPinned);
+  agentActivityRail?.setAttribute("data-auto-hide-ms", String(activityRailAutoHideMs));
+  hideActivityRailUntilRun();
+  updateActivityRailControls();
+}
+
+function bindActivityRailControls() {
+  agentActivityToggle?.addEventListener("click", () => {
+    if (!agentActivityRail) return;
+    if (agentActivityRail.classList.contains("is-collapsed")) {
+      revealActivityRail("Opened manually.");
+      return;
+    }
+    if (activityRailPinned) setActivityRailPinned(false);
+    collapseActivityRail({ force: true });
+  });
+  agentActivityPin?.addEventListener("click", () => {
+    setActivityRailPinned(!activityRailPinned);
+  });
+}
+
+function shouldRevealActivityEvent(event) {
+  return [
+    "run_started",
+    "workflow_classified",
+    "plan_created",
+    "tool_call_started",
+    "tool_call_completed",
+    "repo_clone_started",
+    "repo_clone_completed",
+    "vulnerability_scan_completed",
+    "quality_scan_completed",
+    "repo_cleanup_completed",
+    "draft_started",
+    "validation_completed",
+    "recovery_recommendation",
+    "artifact_created",
+    "artifact_warning",
+    "artifact_publish_started",
+    "artifact_publish_completed",
+    "artifact_publish_failed",
+    "run_completed",
+    "run_failed",
+  ].includes(event?.event_type);
+}
+
+function markActivity(id, status, event, detail = null) {
+  if (!activityState[id]) return;
+  const previous = activityState[id];
+  activityState[id] = {
+    ...previous,
+    status,
+    detail: detail || summarizeEvent(event) || previous.detail,
+    eventType: event?.event_type || previous.eventType,
+    timestamp: event?.created_at || previous.timestamp,
+  };
+}
+
+function markFirstRunningAsFailed(event) {
+  const current = activityDefinitions.find((definition) => activityState[definition.id]?.status === "running");
+  if (current) markActivity(current.id, "failed", event, summarizeEvent(event));
+}
+
+function applyActivityEvent(event, options = {}) {
+  if (!event || event.event_type === "ephemeral_working_note") return;
+  switch (event.event_type) {
+    case "run_started":
+      markActivity("start", "success", event);
+      markActivity("classify", "running", event, "Classifying the request against allowed workflow families.");
+      setActivityStatus("Autonomy sequence running");
+      break;
+    case "workflow_classified":
+      markActivity("classify", "success", event);
+      markActivity("plan", "running", event, "Creating an evidence-first plan.");
+      break;
+    case "planning_started":
+      markActivity("plan", "running", event);
+      break;
+    case "plan_created":
+      markActivity("plan", "success", event);
+      markActivity("evidence", "running", event, "Preparing release-note-agent evidence collection.");
+      break;
+    case "tool_call_started":
+      markActivity("evidence", "running", event);
+      break;
+    case "tool_call_completed":
+      markActivity("evidence", event.payload?.result?.status === "success" ? "success" : "recovered", event);
+      markActivity("clone", "running", event, "Downloading a temporary repository checkout.");
+      break;
+    case "repo_clone_started":
+      markActivity("clone", "running", event);
+      break;
+    case "repo_clone_completed":
+      markActivity("clone", event.payload?.clone?.status === "success" ? "success" : "recovered", event);
+      markActivity("security", "running", event, "Scanning common vulnerability signals.");
+      break;
+    case "vulnerability_scan_completed":
+      markActivity("security", event.payload?.status === "completed" ? "success" : "recovered", event);
+      markActivity("quality", "running", event, "Running code quality checks.");
+      break;
+    case "quality_scan_completed":
+      markActivity("quality", event.payload?.quality?.status === "completed" ? "success" : "recovered", event);
+      markActivity("cleanup", "running", event, "Removing temporary repository checkout.");
+      break;
+    case "repo_cleanup_completed":
+      markActivity("cleanup", event.payload?.cleanup?.removed === false ? "recovered" : "success", event);
+      markActivity("draft", "running", event, "Drafting from release-note-agent output and repository scan results.");
+      break;
+    case "draft_started":
+      markActivity("draft", "running", event);
+      break;
+    case "validation_completed":
+      markActivity("draft", "success", event, "Draft generated and ready for validation.");
+      markActivity("validate", event.payload?.valid === false ? "failed" : "success", event);
+      markActivity("recover", "running", event, "Selecting bounded recovery or continue action.");
+      break;
+    case "recovery_recommendation":
+      markActivity("recover", event.payload?.action === "escalate" ? "recovered" : "success", event);
+      markActivity("artifacts", "running", event, "Saving reviewable output artifacts.");
+      break;
+    case "artifact_created":
+      markActivity("artifacts", "success", event);
+      break;
+    case "artifact_warning":
+      markActivity("artifacts", "recovered", event);
+      break;
+    case "artifact_publish_started":
+      markActivity("publish", "running", event, "Committing Markdown and PDF files to the configured artifact repository.");
+      setActivityStatus("Publishing artifacts");
+      break;
+    case "artifact_publish_completed":
+      markActivity("publish", "success", event);
+      markActivity("complete", "running", event, "Finalizing run after artifact repo commit.");
+      setActivityStatus("Artifacts published");
+      break;
+    case "artifact_publish_failed":
+      markActivity("publish", "failed", event);
+      setActivityStatus("Artifact publish failed");
+      break;
+    case "run_completed":
+      markActivity("complete", "success", event);
+      setActivityStatus("Autonomy sequence completed");
+      break;
+    case "run_failed":
+      markFirstRunningAsFailed(event);
+      markActivity("complete", "failed", event);
+      setActivityStatus("Autonomy sequence needs review");
+      break;
+    default:
+      break;
+  }
+  renderActivityGraph();
+  if (options.reveal !== false && shouldRevealActivityEvent(event)) {
+    revealActivityRailForEvent(summarizeEvent(event));
+  }
+}
+
+function renderActivityGraph() {
+  if (!agentActivityGraph) return;
+  agentActivityGraph.innerHTML = "";
+  activityDefinitions.forEach((definition, index) => {
+    const state = activityState[definition.id] || { status: "pending", detail: definition.hint };
+    const node = document.createElement("div");
+    node.className = `activity-node is-${state.status}`;
+    node.setAttribute("role", "listitem");
+    node.tabIndex = 0;
+
+    const dot = document.createElement("span");
+    dot.className = "activity-node-dot";
+    dot.textContent = index + 1;
+    const label = document.createElement("span");
+    label.className = "activity-node-label";
+    label.textContent = definition.label;
+    const popover = document.createElement("span");
+    popover.className = "activity-node-popover";
+    popover.textContent = state.detail || definition.hint;
+
+    node.appendChild(dot);
+    node.appendChild(label);
+    node.appendChild(popover);
+    agentActivityGraph.appendChild(node);
+
+    if (index < activityDefinitions.length - 1) {
+      const connector = document.createElement("span");
+      connector.className = `activity-connector is-${state.status}`;
+      agentActivityGraph.appendChild(connector);
+    }
+  });
+}
+
+function extractSummaryCandidates(event) {
+  const payload = event?.payload || {};
+  const candidates = [];
+  if (payload.reasoning_summary) candidates.push(payload.reasoning_summary);
+  if (payload.llm_review?.reasoning_summary) candidates.push(payload.llm_review.reasoning_summary);
+  if (payload.repository_scan?.llm_review?.reasoning_summary) {
+    candidates.push(payload.repository_scan.llm_review.reasoning_summary);
+  }
+  ["classification", "validation", "recovery"].forEach((key) => {
+    if (payload[key]?.reasoning_summary) candidates.push(payload[key].reasoning_summary);
+  });
+  return candidates.filter(Boolean).map((summary) => String(summary).trim()).filter(Boolean);
+}
+
+function safeSummaryLabel(event) {
+  const labels = {
+    workflow_classified: "Classifier",
+    plan_created: "Planner",
+    reasoning_summary: "Planner",
+    validation_completed: "Verifier",
+    vulnerability_scan_completed: "Security Scan",
+    quality_scan_completed: "Quality Scan",
+    recovery_recommendation: "Recovery",
+    run_completed: "Final",
+    run_failed: "Final",
+  };
+  return labels[event?.event_type] || "Agent";
+}
+
+function collectSafeSummaries(event) {
+  extractSummaryCandidates(event).forEach((summary) => {
+    const key = `${safeSummaryLabel(event)}:${summary}`;
+    if (safeSummaryKeys.has(key)) return;
+    safeSummaryKeys.add(key);
+    safeSummaryItems.push({ label: safeSummaryLabel(event), summary, eventType: event.event_type });
+  });
+}
+
+function renderSafeSummaries(show = false) {
+  if (!safeSummaryList || !safeSummaryPanel) return;
+  safeSummaryList.innerHTML = "";
+  if (!safeSummaryItems.length) {
+    const empty = document.createElement("div");
+    empty.className = "stream-empty-state";
+    empty.textContent = "No safe reasoning summaries are available yet.";
+    safeSummaryList.appendChild(empty);
+  } else {
+    safeSummaryItems.forEach((item, index) => {
+      const row = document.createElement("article");
+      row.className = "safe-summary-item";
+      const label = document.createElement("div");
+      label.className = "safe-summary-label";
+      label.textContent = `${index + 1}. ${item.label}`;
+      const text = document.createElement("p");
+      text.textContent = item.summary;
+      row.appendChild(label);
+      row.appendChild(text);
+      safeSummaryList.appendChild(row);
+    });
+  }
+  safeSummaryPanel.classList.toggle("is-hidden", !show);
+}
+
+function resetSafeSummaries() {
+  safeSummaryItems = [];
+  safeSummaryKeys.clear();
+  renderSafeSummaries(false);
+}
+
+function setWorkingStreamVisible(visible) {
+  if (!ephemeralWorkingPanel) return;
+  ephemeralWorkingPanel.classList.toggle("is-hidden", !visible);
+}
+
+function resetWorkingStream() {
+  workingNoteCounter = 0;
+  workingNotePhases = new Set();
+  if (!ephemeralWorkingStream || !ephemeralWorkingPanel) return;
+  ephemeralWorkingStream.innerHTML = '<div class="stream-empty-state">Live model and agent working notes will appear only while this page is connected.</div>';
+  ephemeralWorkingPanel.classList.add("is-empty");
+  setWorkingStreamVisible(true);
+}
+
+function appendStreamingText(element, text) {
+  let index = 0;
+  element.textContent = "";
+  const timer = window.setInterval(() => {
+    index += Math.max(1, Math.ceil(text.length / 38));
+    element.textContent = text.slice(0, index);
+    if (index >= text.length) window.clearInterval(timer);
+  }, 18);
+}
+
+function addWorkingNote(event) {
+  if (!ephemeralWorkingStream || !ephemeralWorkingPanel) return;
+  const phaseKey = event.payload?.phase;
+  if (phaseKey && workingNotePhases.has(phaseKey)) return;
+  if (phaseKey) workingNotePhases.add(phaseKey);
+  if (ephemeralWorkingPanel.classList.contains("is-hidden")) setWorkingStreamVisible(true);
+  if (ephemeralWorkingPanel.classList.contains("is-empty")) {
+    ephemeralWorkingStream.innerHTML = "";
+    ephemeralWorkingPanel.classList.remove("is-empty");
+  }
+  const payload = event.payload || {};
+  const item = document.createElement("article");
+  item.className = "working-note-item";
+  const label = document.createElement("div");
+  label.className = "working-note-label";
+  const displayIndex = payload.display_index || String(++workingNoteCounter).padStart(2, "0");
+  label.textContent = `${displayIndex} / ${payload.phase || "agent"}`;
+  const text = document.createElement("p");
+  const noteText = payload.detail ? `${event.message} ${payload.detail}` : event.message;
+  item.appendChild(label);
+  item.appendChild(text);
+  ephemeralWorkingStream.appendChild(item);
+  appendStreamingText(text, noteText);
+  ephemeralWorkingStream.scrollTop = ephemeralWorkingStream.scrollHeight;
+}
+
+
+function liveWorkingNoteForEvent(event) {
+  const payload = event?.payload || {};
+  const notes = {
+    run_started: ["start", "Starting autonomous release-note workflow.", "Preparing selected model context and read-only execution boundaries."],
+    workflow_classified: ["classify", "Workflow classified.", "The request matched the release-note creation workflow."],
+    plan_created: ["plan", "Evidence-first release-note plan created.", "The agent selected the source-reference and verification path."],
+    tool_call_started: ["evidence", "Calling release-note-agent for source evidence.", "The external agent is collecting release evidence."],
+    repo_clone_started: ["clone", "Downloading repository for local analysis.", "The checkout is temporary and read-only."],
+    vulnerability_scan_completed: ["security", "Repository vulnerability scan completed.", `${payload.finding_count ?? 0} common vulnerability signal(s) identified for review.`],
+    quality_scan_completed: ["quality", "Repository code quality scan completed.", payload.quality?.summary || "Quality checks finished."],
+    repo_cleanup_completed: ["cleanup", "Temporary repository checkout removed.", payload.cleanup?.status || "Cleanup completed."],
+    draft_started: ["draft", "Drafting release notes from evidence and scan results.", "The model is combining release-note-agent output with repository scan findings."],
+    validation_completed: ["validate", "Validating release-note structure and evidence.", payload.message || "Verifier finished."],
+    recovery_recommendation: ["recover", "Selecting continue, recovery, or escalation behavior.", payload.action ? `Recommended action: ${payload.action}.` : "Recovery decision recorded."],
+    artifact_created: ["artifacts", "Saving reviewable release-note artifacts.", payload.artifact?.title || "Artifact saved."],
+    artifact_publish_started: ["publish", "Publishing release-note artifacts.", "Committing Markdown and PDF files into the configured bosgenesis-artifacts folder."],
+    artifact_publish_completed: ["publish", "Release-note artifacts published.", payload.artifact_publish?.folder_name ? `Folder: ${payload.artifact_publish.folder_name}.` : "Artifact repository commit completed."],
+    artifact_publish_failed: ["publish", "Release-note artifact publish failed.", payload.artifact_publish?.error?.message || "Review Git credentials and repository access."],
+    run_completed: ["finalize", "Finalizing run status.", "Live working notes will be replaced by persisted safe summaries."],
+    run_failed: ["finalize", "Finalizing failed run status.", "Review the persisted event log and safe summaries."],
+  };
+  const note = notes[event?.event_type];
+  if (!note) return null;
+  return {
+    event_type: "ephemeral_working_note",
+    message: note[1],
+    payload: {
+      phase: note[0],
+      detail: note[2],
+      ephemeral: true,
+      persisted: false,
+    },
+  };
+}
+
+function addLiveWorkingNoteForEvent(event) {
+  const note = liveWorkingNoteForEvent(event);
+  if (note) addWorkingNote(note);
+}
+function finalizeWorkingStream() {
+  if (ephemeralWorkingStream) ephemeralWorkingStream.innerHTML = "";
+  if (ephemeralWorkingPanel) {
+    ephemeralWorkingPanel.classList.add("is-empty", "is-hidden");
+  }
+  renderSafeSummaries(true);
+}
+
+function summarizeEvent(event) {
+  if (!event) return "";
+  const payload = event.payload || {};
+  if (payload.reasoning_summary) return payload.reasoning_summary;
+  if (payload.message) return payload.message;
+  if (payload.tool_name) return `${event.message}: ${payload.tool_name}`;
+  if (payload.result?.status) return `${event.message}: ${payload.result.status}`;
+  if (payload.clone?.status) return `${event.message}: ${payload.clone.status}`;
+  if (typeof payload.finding_count !== "undefined") return `${event.message}: ${payload.finding_count} finding(s)`;
+  if (payload.quality?.summary) return payload.quality.summary;
+  if (payload.cleanup?.status) return `${event.message}: ${payload.cleanup.status}`;
+  if (payload.validation?.message) return payload.validation.message;
+  if (payload.action) return `${event.message}: ${payload.action}`;
+  if (payload.artifact?.title) return `${event.message}: ${payload.artifact.title}`;
+  if (payload.artifact_publish?.folder_name) return `${event.message}: ${payload.artifact_publish.folder_name}`;
+  if (payload.artifact_publish?.error?.message) return payload.artifact_publish.error.message;
+  if (payload.error?.message) return payload.error.message;
+  return event.message || "No detail available.";
+}
+
 async function copyText(text) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -400,15 +1032,30 @@ async function copyText(text) {
   document.body.removeChild(textarea);
 }
 
-function addTimeline(event) {
+function addTimeline(event, options = {}) {
+  if (!event) return;
+  if (event.event_type === "ephemeral_working_note") {
+    addWorkingNote(event);
+    return;
+  }
+  if (event.event_id && seenEventIds.has(event.event_id)) return;
+  if (event.event_id) {
+    seenEventIds.add(event.event_id);
+    lastEventId = event.event_id;
+  }
+  if (Number.isFinite(Number(event.sequence))) {
+    lastEventSequence = Number(event.sequence);
+  }
   timelineEvents.push(event);
+  collectSafeSummaries(event);
+  applyActivityEvent(event, { reveal: options.revealActivity !== false });
   const item = document.createElement("li");
   const title = document.createElement("div");
   title.className = "fw-semibold";
   title.textContent = `${event.event_type}: ${event.message}`;
   const detail = document.createElement("pre");
   detail.className = "small text-secondary mb-0";
-  detail.textContent = JSON.stringify(event.payload || {}, null, 2);
+  detail.textContent = JSON.stringify(displayPayloadForTimeline(event), null, 2);
   item.appendChild(title);
   item.appendChild(detail);
   timeline.appendChild(item);
@@ -472,15 +1119,60 @@ async function refreshArtifacts(runId) {
   renderArtifactLinks(result.artifacts || []);
 }
 
+function resetTimelineState() {
+  timelineEvents = [];
+  seenEventIds.clear();
+  lastEventId = null;
+  lastEventSequence = 0;
+  timeline.innerHTML = "";
+  resetSafeSummaries();
+  resetActivityState();
+  resetWorkingStream();
+}
+
+function setActiveRun(runId) {
+  activeRunId = runId;
+  if (runId) {
+    window.localStorage.setItem(activeRunStorageKey, runId);
+  } else {
+    window.localStorage.removeItem(activeRunStorageKey);
+  }
+}
+
+function isTerminalStatus(status) {
+  return ["completed", "failed", "cancelled", "stopped"].includes(status);
+}
+
+function isFreshTransaction(transaction, maxAgeMinutes = 120) {
+  if (!transaction) return false;
+  const timestamp = Date.parse(transaction.updated_at || transaction.created_at || "");
+  if (!Number.isFinite(timestamp)) return false;
+  return Date.now() - timestamp <= maxAgeMinutes * 60 * 1000;
+}
+
+function shouldAutoRestoreTransaction(transaction) {
+  if (!transaction) return false;
+  return !isTerminalStatus(transaction.status) && isFreshTransaction(transaction);
+}
+
+function visualStateForStatus(status) {
+  if (status === "completed") return "complete";
+  if (["failed", "cancelled", "stopped"].includes(status)) return "failed";
+  if (["created", "planning", "running", "waiting_for_approval"].includes(status)) return "working";
+  return "idle";
+}
+
 async function refreshRun(runId) {
   const response = await fetch(`/api/runs/${runId}`);
-  if (!response.ok) return;
+  if (!response.ok) return null;
   const run = await response.json();
   setStatus(run.status);
+  setProgressVisualState(visualStateForStatus(run.status));
   if (run.final_report) {
     finalReport.textContent = run.final_report;
   }
   await refreshArtifacts(runId);
+  return run;
 }
 
 if (copyProgressButton) {
@@ -494,16 +1186,242 @@ if (copyProgressButton) {
   });
 }
 
-releaseNoteForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  timelineEvents = [];
-  timeline.innerHTML = "";
-  artifactLinks.innerHTML = "";
-  finalReport.textContent = "Generating release-note draft...";
-  setCopyStatus("");
-  setStatus("created");
-  setProgressVisualState("working");
+function setSidebarOpen(open) {
+  if (!transactionSidebar) return;
+  document.body.classList.toggle("transaction-sidebar-open", open);
+  transactionSidebar.setAttribute("aria-hidden", open ? "false" : "true");
+  transactionToggle?.setAttribute("aria-expanded", open ? "true" : "false");
+}
 
+function transactionTime(value) {
+  if (!value) return "";
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
+  } catch (_error) {
+    return value;
+  }
+}
+
+function renderTransactions(transactions) {
+  if (!transactionList) return;
+  transactionList.innerHTML = "";
+  if (!transactions.length) {
+    transactionStatus.textContent = "No release-note transactions yet.";
+    return;
+  }
+  transactionStatus.textContent = `${transactions.length} release-note transaction${transactions.length === 1 ? "" : "s"}`;
+  transactions.forEach((transaction) => {
+    const card = document.createElement("article");
+    card.className = `transaction-card${transaction.run_id === activeRunId ? " is-active" : ""}`;
+    card.tabIndex = 0;
+    card.setAttribute("role", "listitem");
+
+    const row = document.createElement("div");
+    row.className = "transaction-card-row";
+    const status = document.createElement("span");
+    status.className = "transaction-status-pill";
+    status.textContent = transaction.status || "unknown";
+    const clear = document.createElement("button");
+    clear.className = "transaction-clear";
+    clear.type = "button";
+    clear.textContent = "Clear";
+    clear.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await clearTransaction(transaction.run_id);
+    });
+    row.appendChild(status);
+    row.appendChild(clear);
+
+    const title = document.createElement("div");
+    title.className = "transaction-card-title";
+    title.textContent = transaction.title || transaction.goal || transaction.run_id;
+
+    const subtitle = document.createElement("div");
+    subtitle.className = "transaction-card-subtitle";
+    subtitle.textContent = transaction.target_url || transaction.workflow_type || "release_note_creation";
+
+    const meta = document.createElement("div");
+    meta.className = "transaction-card-meta";
+    const artifacts = Number(transaction.artifact_count || 0);
+    meta.textContent = `${transactionTime(transaction.updated_at)} | ${artifacts} artifact${artifacts === 1 ? "" : "s"}`;
+
+    card.appendChild(row);
+    card.appendChild(title);
+    card.appendChild(subtitle);
+    card.appendChild(meta);
+    card.addEventListener("click", () => openRun(transaction.run_id, { closeSidebar: true }));
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openRun(transaction.run_id, { closeSidebar: true });
+      }
+    });
+    transactionList.appendChild(card);
+  });
+}
+
+async function loadTransactions() {
+  if (!transactionList) return [];
+  try {
+    const response = await fetch("/api/transactions?workflow_type=release_note_creation");
+    if (!response.ok) {
+      transactionLoadFailed = true;
+      throw new Error(`HTTP ${response.status}`);
+    }
+    transactionLoadFailed = false;
+    const result = await response.json();
+    const transactions = result.transactions || [];
+    renderTransactions(transactions);
+    return transactions;
+  } catch (error) {
+    transactionStatus.textContent = `Could not load transactions: ${error.message}`;
+    return [];
+  }
+}
+
+async function clearTransaction(runId) {
+  const response = await fetch(`/api/transactions/${runId}/clear`, { method: "POST" });
+  if (!response.ok) {
+    clearDelayedActivityReveal();
+    clearPlanningWarmupTimer();
+    transactionStatus.textContent = `Clear failed: HTTP ${response.status}`;
+    return;
+  }
+  await loadTransactions();
+  if (runId === activeRunId) {
+    setActiveRun(null);
+    resetRunView("Transaction hidden from history. Start a new run or choose another transaction.");
+    setStatus("Idle");
+    setProgressVisualState("idle");
+  }
+}
+
+function latestPreviewFromEvents(events) {
+  const previewEvent = [...events].reverse().find((event) => event.payload?.preview || event.payload?.final_report);
+  return previewEvent?.payload?.preview || previewEvent?.payload?.final_report || null;
+}
+
+function applySnapshot(snapshot) {
+  const run = snapshot.run;
+  setActiveRun(run.run_id);
+  resetTimelineState();
+  (snapshot.events || []).forEach((event) => addTimeline(event, { revealActivity: false }));
+  setStatus(run.status);
+  setProgressVisualState(visualStateForStatus(run.status));
+  renderArtifactLinks(snapshot.artifacts || []);
+  finalReport.textContent = run.final_report || latestPreviewFromEvents(snapshot.events || []) || (
+    (snapshot.events || []).length ? "Run is still in progress. Live updates will continue here." : "No progress events yet."
+  );
+  if (run.target_url) {
+    const githubInput = document.getElementById("github_url");
+    if (githubInput && !githubInput.value) githubInput.value = run.target_url;
+  }
+}
+
+async function openRun(runId, options = {}) {
+  if (!runId) return;
+  if (currentEventSource) {
+    currentEventSource.close();
+    currentEventSource = null;
+  }
+  finalReport.textContent = "Loading persisted run state...";
+  const response = await fetch(`/api/runs/${runId}/snapshot`);
+  if (!response.ok) {
+    clearDelayedActivityReveal();
+    clearPlanningWarmupTimer();
+    if (response.status === 404) {
+      setActiveRun(null);
+      resetRunView("Saved run was not found. Start a new run or choose another transaction from history.");
+      setStatus("Idle");
+      setProgressVisualState("idle");
+      await loadTransactions();
+      return;
+    }
+    finalReport.textContent = `Could not restore run: HTTP ${response.status}`;
+    setStatus("failed");
+    setProgressVisualState("failed");
+    return;
+  }
+  const snapshot = await response.json();
+  applySnapshot(snapshot);
+  await loadTransactions();
+  if (options.closeSidebar) setSidebarOpen(false);
+  if (!isTerminalStatus(snapshot.run.status)) {
+    connectRunEvents(runId, snapshot.last_event_id || lastEventId);
+  }
+}
+
+function connectRunEvents(runId, afterEventId = null) {
+  if (currentEventSource) currentEventSource.close();
+  const params = afterEventId ? `?after_event_id=${encodeURIComponent(afterEventId)}` : "";
+  currentEventSource = new EventSource(`/api/runs/${runId}/events${params}`);
+  currentEventSource.onmessage = async (message) => {
+    const eventData = JSON.parse(message.data);
+    await handleRunEvent(eventData, runId);
+  };
+  currentEventSource.onerror = async () => {
+    currentEventSource?.close();
+    currentEventSource = null;
+    const run = await refreshRun(runId);
+    if (!run || isTerminalStatus(run.status)) return;
+    setCopyStatus("Live connection paused; persisted progress is still available after refresh.");
+  };
+}
+
+async function handleRunEvent(eventData, runId) {
+  if (eventData.event_type === "ephemeral_working_note") {
+    addWorkingNote(eventData);
+    return;
+  }
+  addLiveWorkingNoteForEvent(eventData);
+  addTimeline(eventData);
+  if (["run_started", "plan_created", "tool_call_started", "workflow_classified", "repo_clone_started", "vulnerability_scan_completed", "quality_scan_completed", "draft_started"].includes(eventData.event_type)) {
+    setStatus("running");
+    setProgressVisualState("working");
+  }
+  if (eventData.event_type === "artifact_created") {
+    if (eventData.payload?.preview) {
+      finalReport.textContent = eventData.payload.preview;
+    }
+    await refreshArtifacts(runId);
+  }
+  if (eventData.event_type === "run_completed" || eventData.event_type === "run_failed") {
+    clearDelayedActivityReveal();
+    clearPlanningWarmupTimer();
+    setProgressVisualState(eventData.event_type === "run_completed" ? "complete" : "failed");
+    if (eventData.payload?.artifact) {
+      renderArtifactLinks(eventData.payload.artifacts || [eventData.payload.artifact]);
+    }
+    currentEventSource?.close();
+    currentEventSource = null;
+    finalizeWorkingStream();
+    await refreshRun(runId);
+    await loadTransactions();
+  }
+}
+
+function resetRunView(message) {
+  if (currentEventSource) {
+    currentEventSource.close();
+    currentEventSource = null;
+  }
+  resetTimelineState();
+  hideActivityRailUntilRun();
+  artifactLinks.innerHTML = "";
+  finalReport.textContent = message;
+  setCopyStatus("");
+}
+
+async function startReleaseNoteRun(event) {
+  event.preventDefault();
+  resetRunView("Generating release-note draft...");
+  setStatus("planning");
+  setProgressVisualState("working");
   const payload = {
     github_url: valueOf("github_url"),
     release_name: valueOf("release_name"),
@@ -513,6 +1431,12 @@ releaseNoteForm.addEventListener("submit", async (event) => {
     analysis_depth: valueOf("analysis_depth") || "fast",
     model_profile: valueOf("model_profile"),
   };
+  setWorkingStreamVisible(true);
+  renderSafeSummaries(false);
+  const planningDelayMs = 2400 + Math.floor(Math.random() * 1600);
+  deferActivityReveal(planningDelayMs);
+  addPlanningWarmupNote(payload);
+  schedulePlanningWarmupActivity(payload, planningDelayMs);
 
   const response = await fetch("/api/release-notes", {
     method: "POST",
@@ -521,6 +1445,8 @@ releaseNoteForm.addEventListener("submit", async (event) => {
   });
 
   if (!response.ok) {
+    clearDelayedActivityReveal();
+    clearPlanningWarmupTimer();
     finalReport.textContent = `Failed to start release-note run: ${response.status}`;
     setStatus("failed");
     setProgressVisualState("failed");
@@ -528,33 +1454,48 @@ releaseNoteForm.addEventListener("submit", async (event) => {
   }
 
   const created = await response.json();
-  const source = new EventSource(created.events_url);
+  setActiveRun(created.run_id);
+  await loadTransactions();
+  connectRunEvents(created.run_id);
+}
 
-  source.onmessage = async (message) => {
-    const eventData = JSON.parse(message.data);
-    addTimeline(eventData);
-    if (eventData.event_type === "artifact_created") {
-      if (eventData.payload?.preview) {
-        finalReport.textContent = eventData.payload.preview;
-      }
-      await refreshArtifacts(created.run_id);
-    }
-    if (eventData.event_type === "run_completed" || eventData.event_type === "run_failed") {
-      setProgressVisualState(eventData.event_type === "run_completed" ? "complete" : "failed");
-      if (eventData.payload?.artifact) {
-        renderArtifactLinks(eventData.payload.artifacts || [eventData.payload.artifact]);
-      }
-      source.close();
-      await refreshRun(created.run_id);
-    }
-  };
+function bindTransactionSidebar() {
+  transactionToggle?.addEventListener("click", () => setSidebarOpen(true));
+  transactionClose?.addEventListener("click", () => setSidebarOpen(false));
+  transactionBackdrop?.addEventListener("click", () => setSidebarOpen(false));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setSidebarOpen(false);
+  });
+}
 
-  source.onerror = () => {
-    setProgressVisualState("failed");
-    source.close();
-    refreshRun(created.run_id);
-  };
-});
+async function bootReleaseNotesPage() {
+  setProgressVisualState("idle");
+  await initReleaseSphere();
+  initializeActivityRail();
+  resetActivityState();
+  resetWorkingStream();
+  renderSafeSummaries(false);
+  bindTransactionSidebar();
+  bindActivityRailControls();
+  const transactions = await loadTransactions();
+  if (transactionLoadFailed) return;
+  const storedRunId = window.localStorage.getItem(activeRunStorageKey);
+  const storedTransaction = transactions.find((item) => item.run_id === storedRunId);
+  const activeTransaction = transactions.find(
+    (item) => !isTerminalStatus(item.status) && isFreshTransaction(item)
+  );
+  const runToOpen = shouldAutoRestoreTransaction(storedTransaction)
+    ? storedTransaction.run_id
+    : activeTransaction?.run_id;
+  if (runToOpen) {
+    await openRun(runToOpen);
+  } else {
+    setActiveRun(null);
+    resetRunView("No release-note run yet.");
+    setStatus("Idle");
+    setProgressVisualState("idle");
+  }
+}
 
-setProgressVisualState("idle");
-initReleaseSphere();
+releaseNoteForm.addEventListener("submit", startReleaseNoteRun);
+bootReleaseNotesPage();

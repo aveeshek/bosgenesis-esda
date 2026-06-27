@@ -1,9 +1,10 @@
 from collections.abc import Iterator
-from datetime import UTC, datetime
 from contextlib import contextmanager
+from datetime import UTC, datetime
+from urllib.parse import urlparse
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.auth.security import hash_password
@@ -24,6 +25,7 @@ from backend.app.db.models import (
     RunEvent,
     ToolCall,
     User,
+    UserRunView,
 )
 
 
@@ -117,6 +119,7 @@ class RunRepository:
                     status="created",
                 )
             )
+            db.add(UserRunView(user_id=user_id, run_id=run_id))
 
     def update_status(self, run_id: str, status: str, final_report: str | None = None) -> None:
         with self.database.session() as db:
@@ -136,10 +139,14 @@ class RunRepository:
             payload=payload,
         )
         with self.database.session() as db:
+            sequence = int(
+                db.scalar(select(func.count()).select_from(RunEvent).where(RunEvent.run_id == run_id)) or 0
+            ) + 1
             db.add(event)
         return {
             "event_id": event.event_id,
             "run_id": run_id,
+            "sequence": sequence,
             "event_type": event_type,
             "message": message,
             "payload": payload,
@@ -187,22 +194,99 @@ class RunRepository:
         with self.database.session() as db:
             return db.get(AgentRun, run_id)
 
-    def list_events(self, run_id: str) -> list[dict]:
+    def list_events(
+        self,
+        run_id: str,
+        *,
+        after_event_id: str | None = None,
+        after_sequence: int | None = None,
+    ) -> list[dict]:
         with self.database.session() as db:
             events = db.scalars(
-                select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.created_at)
+                select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.created_at, RunEvent.event_id)
             ).all()
-            return [
-                {
-                    "event_id": event.event_id,
-                    "run_id": event.run_id,
-                    "event_type": event.event_type,
-                    "message": event.message,
-                    "payload": event.payload,
-                    "created_at": event.created_at.isoformat(),
-                }
-                for event in events
-            ]
+            serialized = [self._event_to_dict(event, sequence=index) for index, event in enumerate(events, start=1)]
+        if after_sequence is not None:
+            return [event for event in serialized if int(event["sequence"]) > after_sequence]
+        if after_event_id:
+            for index, event in enumerate(serialized):
+                if event["event_id"] == after_event_id:
+                    return serialized[index + 1 :]
+        return serialized
+
+    def get_run_snapshot(self, run_id: str) -> dict | None:
+        run = self.get_run(run_id)
+        if not run:
+            return None
+        events = self.list_events(run_id)
+        artifacts = self.list_artifacts(run_id)
+        return {
+            "run": self._run_to_dict(run),
+            "events": events,
+            "artifacts": artifacts,
+            "last_event_id": events[-1]["event_id"] if events else None,
+            "last_event_sequence": events[-1]["sequence"] if events else 0,
+        }
+
+    def list_transactions(self, *, user_id: str, include_hidden: bool = False, limit: int = 50) -> list[dict]:
+        with self.database.session() as db:
+            runs = db.scalars(
+                select(AgentRun)
+                .where(AgentRun.user_id == user_id)
+                .order_by(AgentRun.updated_at.desc(), AgentRun.created_at.desc())
+                .limit(limit)
+            ).all()
+            result = []
+            for run in runs:
+                view = db.get(UserRunView, {"user_id": user_id, "run_id": run.run_id})
+                hidden_at = view.hidden_at if view else None
+                if hidden_at and not include_hidden:
+                    continue
+                artifact_count = int(
+                    db.scalar(select(func.count()).select_from(Artifact).where(Artifact.run_id == run.run_id)) or 0
+                )
+                event_count = int(
+                    db.scalar(select(func.count()).select_from(RunEvent).where(RunEvent.run_id == run.run_id)) or 0
+                )
+                result.append(
+                    {
+                        "run_id": run.run_id,
+                        "workflow_type": run.workflow_type,
+                        "title": self._generate_session_name(run),
+                        "session_name": self._generate_session_name(run),
+                        "goal": run.goal,
+                        "status": run.status,
+                        "target_url": run.target_url,
+                        "namespace": run.namespace,
+                        "artifact_count": artifact_count,
+                        "last_event_sequence": event_count,
+                        "hidden_at": hidden_at.isoformat() if hidden_at else None,
+                        "created_at": run.created_at.isoformat(),
+                        "updated_at": run.updated_at.isoformat(),
+                    }
+                )
+            return result
+
+    def mark_transaction_opened(self, *, user_id: str, run_id: str) -> None:
+        with self.database.session() as db:
+            view = db.get(UserRunView, {"user_id": user_id, "run_id": run_id})
+            if not view:
+                db.add(UserRunView(user_id=user_id, run_id=run_id, last_opened_at=datetime.now(UTC)))
+                return
+            view.last_opened_at = datetime.now(UTC)
+
+    def clear_transaction(self, *, user_id: str, run_id: str) -> bool:
+        with self.database.session() as db:
+            run = db.get(AgentRun, run_id)
+            if not run or run.user_id != user_id:
+                return False
+            view = db.get(UserRunView, {"user_id": user_id, "run_id": run_id})
+            if not view:
+                db.add(UserRunView(user_id=user_id, run_id=run_id, hidden_at=datetime.now(UTC)))
+                return True
+            view.hidden_at = datetime.now(UTC)
+            return True
+
     def create_artifact(
         self,
         *,
@@ -242,6 +326,7 @@ class RunRepository:
             if not artifact:
                 return None
             return self._artifact_to_dict(artifact)
+
     def create_approval_request(
         self,
         *,
@@ -501,6 +586,84 @@ class RunRepository:
             if not audit:
                 return None
             return self._l4_audit_to_dict(audit)
+
+    @staticmethod
+    def _generate_session_name(run: AgentRun) -> str:
+        adjectives = [
+            "Coral",
+            "Aurora",
+            "Nova",
+            "Pulse",
+            "Orbit",
+            "Signal",
+            "Vertex",
+            "Prism",
+            "Beacon",
+            "Comet",
+            "Nimbus",
+            "Vector",
+        ]
+        nouns = [
+            "Sprint",
+            "Forge",
+            "Scout",
+            "Relay",
+            "Atlas",
+            "Pilot",
+            "Quest",
+            "Spark",
+            "Beacon",
+            "Trail",
+            "Launch",
+            "Echo",
+        ]
+        seed = sum(ord(character) for character in run.run_id)
+        adjective = adjectives[seed % len(adjectives)]
+        noun = nouns[(seed // len(adjectives)) % len(nouns)]
+        suffix = run.run_id.rsplit("_", 1)[-1][-5:].upper()
+        target = RunRepository._target_slug(run.target_url)
+        if target:
+            return f"{adjective} {noun} - {target} - {suffix}"
+        return f"{adjective} {noun} - {suffix}"
+
+    @staticmethod
+    def _target_slug(target_url: str | None) -> str:
+        if not target_url:
+            return ""
+        parsed = urlparse(target_url)
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if path_parts:
+            slug = path_parts[-1]
+        else:
+            slug = parsed.netloc or target_url
+        return slug[:42]
+
+    @staticmethod
+    def _run_to_dict(run: AgentRun) -> dict:
+        return {
+            "run_id": run.run_id,
+            "user_id": run.user_id,
+            "workflow_type": run.workflow_type,
+            "status": run.status,
+            "goal": run.goal,
+            "target_url": run.target_url,
+            "namespace": run.namespace,
+            "final_report": run.final_report,
+            "created_at": run.created_at.isoformat(),
+            "updated_at": run.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _event_to_dict(event: RunEvent, *, sequence: int) -> dict:
+        return {
+            "event_id": event.event_id,
+            "run_id": event.run_id,
+            "sequence": sequence,
+            "event_type": event.event_type,
+            "message": event.message,
+            "payload": event.payload,
+            "created_at": event.created_at.isoformat(),
+        }
     @staticmethod
     def _procedure_to_dict(
         procedure: Procedure,
