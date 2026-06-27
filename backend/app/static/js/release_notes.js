@@ -98,11 +98,11 @@ async function initReleaseSphere() {
     const ambient = new THREE.AmbientLight(0xffffff, 0.72);
     scene.add(ambient);
 
-    const keyLight = new THREE.PointLight(0x7ed8ff, 2.0, 16);
+    const keyLight = new THREE.PointLight(0xff9aa8, 1.75, 16);
     keyLight.position.set(3.4, 2.8, 5.4);
     scene.add(keyLight);
 
-    const goldLight = new THREE.PointLight(0xd8ba68, 1.0, 12);
+    const goldLight = new THREE.PointLight(0xf1c977, 1.15, 12);
     goldLight.position.set(-3.7, -1.6, 3.4);
     scene.add(goldLight);
 
@@ -161,17 +161,17 @@ async function initReleaseSphere() {
         float shade = 0.08 + facing * 0.78 + rim * 0.30;
         shade -= stripe * 0.055;
 
-        vec3 deepBlue = vec3(0.010, 0.058, 0.160);
-        vec3 midBlue = vec3(0.012, 0.190, 0.520);
-        vec3 electricBlue = vec3(0.045, 0.520, 1.000);
-        vec3 iceBlue = vec3(0.720, 0.925, 1.000);
-        vec3 gold = vec3(0.820, 0.660, 0.270);
+        vec3 deepPlum = vec3(0.055, 0.035, 0.155);
+        vec3 midViolet = vec3(0.330, 0.170, 0.520);
+        vec3 warmCoral = vec3(0.980, 0.315, 0.300);
+        vec3 softRose = vec3(0.980, 0.620, 0.700);
+        vec3 champagne = vec3(0.945, 0.760, 0.440);
 
-        vec3 color = mix(deepBlue, midBlue, clamp(shade, 0.0, 1.0));
-        color = mix(color, electricBlue, rim * 0.42 + liquid * 0.06);
-        color = mix(color, iceBlue, pow(facing, 4.0) * 0.16);
-        color = mix(color, gold, stripe * 0.08);
-        color += stripe * vec3(0.010, 0.060, 0.120);
+        vec3 color = mix(deepPlum, midViolet, clamp(shade, 0.0, 1.0));
+        color = mix(color, warmCoral, rim * 0.34 + liquid * 0.055);
+        color = mix(color, softRose, pow(facing, 4.0) * 0.18);
+        color = mix(color, champagne, stripe * 0.10);
+        color += stripe * vec3(0.075, 0.020, 0.070);
 
         gl_FragColor = vec4(color, uOpacity);
       }
@@ -193,25 +193,25 @@ async function initReleaseSphere() {
     root.add(sphere);
 
     const fishnetMaterial = new THREE.MeshBasicMaterial({
-      color: 0xdfe8f3,
+      color: 0xffd6e4,
       transparent: true,
-      opacity: 0.52,
+      opacity: 0.48,
       wireframe: true,
     });
     const fishnet = new THREE.Mesh(new THREE.SphereGeometry(1.735, 64, 64), fishnetMaterial);
     root.add(fishnet);
 
     const goldNetMaterial = new THREE.MeshBasicMaterial({
-      color: 0xd8ba68,
+      color: 0xff8f77,
       transparent: true,
-      opacity: 0.24,
+      opacity: 0.30,
       wireframe: true,
     });
     const goldNet = new THREE.Mesh(new THREE.SphereGeometry(1.755, 32, 32), goldNetMaterial);
     root.add(goldNet);
 
     const haloMaterial = new THREE.MeshBasicMaterial({
-      color: 0x42bdfd,
+      color: 0xff6f75,
       transparent: true,
       opacity: 0.085,
       depthWrite: false,
@@ -225,9 +225,9 @@ async function initReleaseSphere() {
       const ring = new THREE.Mesh(
         new THREE.TorusGeometry(2.08 + i * 0.035, 0.006, 10, 260),
         new THREE.MeshBasicMaterial({
-          color: i % 2 ? 0xd8ba68 : 0x1685ff,
+          color: i % 2 ? 0xff8f77 : 0xc5a4ff,
           transparent: true,
-          opacity: i % 2 ? 0.18 : 0.16,
+          opacity: i % 2 ? 0.20 : 0.15,
           blending: THREE.AdditiveBlending,
         })
       );
@@ -243,8 +243,8 @@ async function initReleaseSphere() {
     const labels = [];
     const nodes = [];
     const dotGeometry = new THREE.SphereGeometry(0.045, 18, 18);
-    const dotMaterial = new THREE.MeshBasicMaterial({ color: 0x005ee8, transparent: true, opacity: 0.88 });
-    const lineMaterial = new THREE.LineBasicMaterial({ color: 0x39a9ff, transparent: true, opacity: 0.20 });
+    const dotMaterial = new THREE.MeshBasicMaterial({ color: 0xff7f86, transparent: true, opacity: 0.88 });
+    const lineMaterial = new THREE.LineBasicMaterial({ color: 0xd8bbff, transparent: true, opacity: 0.18 });
     const radius = 2.75;
 
     nodeNames.forEach((nodeName, i) => {
@@ -288,7 +288,7 @@ async function initReleaseSphere() {
     particlesGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     const particles = new THREE.Points(
       particlesGeometry,
-      new THREE.PointsMaterial({ color: 0x43b8ff, size: 0.012, transparent: true, opacity: 0.38, depthWrite: false })
+      new THREE.PointsMaterial({ color: 0xff9aa8, size: 0.012, transparent: true, opacity: 0.34, depthWrite: false })
     );
     root.add(particles);
 
@@ -342,9 +342,9 @@ async function initReleaseSphere() {
         goldNet.rotation.x = Math.sin(elapsed * 0.48) * 0.10;
 
         halo.scale.setScalar(1.0 + Math.sin(elapsed * 1.9) * 0.03 + thinkingMix * 0.10);
-        haloMaterial.opacity = 0.085 + thinkingMix * 0.045;
-        fishnetMaterial.opacity = 0.52 + thinkingMix * 0.12;
-        goldNetMaterial.opacity = 0.24 + thinkingMix * 0.12;
+        haloMaterial.opacity = 0.075 + thinkingMix * 0.040;
+        fishnetMaterial.opacity = 0.48 + thinkingMix * 0.10;
+        goldNetMaterial.opacity = 0.30 + thinkingMix * 0.10;
 
         rings.forEach((ring, i) => {
           ring.rotation.x += 0.0022 + i * 0.0008 + thinkingMix * 0.0015;
