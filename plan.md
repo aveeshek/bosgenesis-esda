@@ -53,7 +53,7 @@ Phases:
 - [ ] Phase 3: Reviewable semi-autonomous agent.
 - [ ] Phase 4: Conditional L4 bounded agent.
 
-## 3.1 Current Implementation Update - 2026-06-25
+## 3.1 Current Implementation Update - 2026-06-27
 
 - [x] Actual V1 hello-world workflow is release-note generation using `bosgenesis-release-note-agent`.
 - [x] ESDA runs locally; do not deploy ESDA into the cluster for the current iteration.
@@ -64,14 +64,44 @@ Phases:
 - [x] SQLite has been removed from the active V1 target path.
 - [x] Qdrant remains optional until semantic memory lookup is needed in V1.
 - [x] Azure OpenAI works locally through LangChain and Azure CLI bearer-token auth with the provided GPT-4.1 mini deployment.
-- [ ] Final Azure GPT-5 endpoint/deployment details are still pending.
+- [x] GPT-5 model profile is configurable/selectable; local success depends on available Azure credentials for the selected profile.
 - [x] Release-note-agent is called through MCP-compatible tool endpoints first.
 - [x] Release-note-agent produces the initial document/evidence; ESDA GPT produces the final Markdown draft from that source material.
-- [x] ESDA saves both Markdown and PDF artifacts and exposes separate download buttons.
+- [x] ESDA saves both Markdown and PDF artifacts, enriches them with scan details, and exposes separate download buttons.
 - [x] Release-note live progress is scrollable and copyable.
-- [x] Release-note progress is refresh-safe and restores active/historical transactions from PostgreSQL.
-- [x] Latest backend verification for this slice: `node --check backend\app\static\js\release_notes.js`, `python -m py_compile backend\app\main.py backend\app\db\database.py backend\app\db\models.py`, `python -m ruff check .`, and `python -m pytest backend\tests -q` passed with 71 tests.
+- [x] Release-note progress is refresh-safe for active runs; completed runs reset to the initial page unless explicitly selected from the history drawer.
+- [x] Latest full backend verification for this slice: `python -m pytest -q` passed with 84 tests, with focused checks for graph execution, repo analysis, artifact publishing, Activity upload/create-overwrite behavior, and UI contracts.
 
+## 3.2 Final Release-Note Agent Implementation Checklist - 2026-06-27
+
+- [x] Use `/release-notes` as the final V1 hello-world autonomy showcase.
+- [x] Accept GitHub URL, release name, branch, tag, commit, analysis depth, and selected model profile.
+- [x] Apply source precedence: commit overrides tag; tag overrides branch.
+- [x] Generate a unique, human-friendly transaction/session title for history.
+- [x] Create a durable PostgreSQL run before any model or tool work starts.
+- [x] Show `00 / CREATING PLAN` and ephemeral Live Working Stream while the agent prepares the plan.
+- [x] Keep ephemeral working notes out of PostgreSQL.
+- [x] Persist only safe reasoning summaries, plans, validation summaries, recovery summaries, tool summaries, artifact metadata, and publish summaries.
+- [x] Hide Agent Activity Feed until the user starts a run.
+- [x] Reveal the activity rail on new activity, auto-hide after 30 seconds, and allow pinning.
+- [x] Display autonomy nodes for intake, classify, plan, evidence, clone, security, quality, cleanup, draft, validate, recover, artifacts, publish, and complete.
+- [x] Restore active in-flight runs automatically after refresh/navigation.
+- [x] Reset completed runs to the initial page after refresh unless selected from the history drawer.
+- [x] Call `bosgenesis-release-note-agent` through MCP-compatible tools as the initial evidence producer.
+- [x] Hydrate Markdown, PDF, JSON, and artifact metadata returned by release-note-agent.
+- [x] Clone the repository into a temporary local workspace for scan enrichment.
+- [x] Scan common vulnerability signals and generate a bounded LLM-assisted safe security summary.
+- [x] Run `pylint` for Python repositories when available; use `ruff` or internal static fallback when needed.
+- [x] Run safe static quality checks for non-Python repositories.
+- [x] Remove the temporary repository workspace after analysis.
+- [x] Add high-level Vulnerability Matrix and Code Quality Matrix to the final Markdown and PDF.
+- [x] Preserve release-note look and feel for PDF output while including the new scan sections.
+- [x] Save local Markdown and PDF artifacts and expose download links.
+- [x] Publish `release-notes.md` and `release-notes.pdf` to `aveeshek/bosgenesis-artifacts` after successful validation when Git publishing is enabled.
+- [x] Use artifact publish folder format `YYMMDD_HHMMSS_<job-name>`.
+- [x] Fail at the publish node when Git publishing fails, while preserving local downloadable artifacts.
+- [x] Add regression coverage to verify `ArtifactGitPublisher` is wired into `ReleaseNoteGraph`.
+- [x] Verify final release-note/Activity test suite: 84 tests passed.
 ## 4. Phase 1 Checklist: Foundation and Read-Only Agent
 
 ### 4.1 Phase Goal
@@ -425,12 +455,27 @@ Phases:
 - [x] Show generated release note in an artifact preview panel.
 - [x] Add download endpoint for release-note Markdown artifact.
 - [x] Add download endpoint/link for release-note PDF artifact.
-- [x] Add approval gate only for publish/export actions, not for draft generation.
+- [x] Keep draft generation read-only; archive publishing to `bosgenesis-artifacts` is an automated configured finalization step, not a general write-back capability.
 - [x] Add unit tests for GitHub URL validation.
 - [x] Add unit tests for release-note-agent adapter request/response mapping.
 - [x] Add integration test for release-note graph with mocked release-note-agent.
 - [x] Add release-note-agent adapter tests for MCP URL mapping, MCP envelope handling, and preserving all artifact metadata.
 - [x] Add artifact service and release-note graph tests for PDF binary artifact save.
+- [x] Clone the GitHub repository into a temporary local workspace for scan enrichment.
+- [x] Run common vulnerability scan and LLM-assisted safe security summary.
+- [x] Run `pylint` for Python projects when available, with safe quality-check fallback.
+- [x] Remove the temporary local repository after scans finish.
+- [x] Append high-level vulnerability and code-quality matrices to Markdown output.
+- [x] Include scan matrices in the PDF output.
+- [x] Add Agent Activity Feed nodes for clone, security, quality, cleanup, and publish.
+- [x] Add ephemeral Live Working Stream and persisted Safe Reasoning Summaries behavior.
+- [x] Add Git artifact publisher configuration and implementation.
+- [x] Publish successful Markdown/PDF pairs to `aveeshek/bosgenesis-artifacts` with folder format `YYMMDD_HHMMSS_<job-name>`.
+- [x] Add artifact publisher unit tests and graph publish integration tests.
+- [x] Add Activity page GitHub upload actions for reviewed Markdown/PDF replacement.
+- [x] Overwrite exact published `release-notes.md` or `release-notes.pdf` when run publish metadata exists.
+- [x] Create a stable GitHub folder for local-only runs on first Activity upload and persist publish metadata.
+- [x] Add tests for overwrite upload and local-only folder creation upload.
 
 ### 5.10 Persistent Transaction State and Refresh-Safe UX
 
@@ -450,7 +495,32 @@ Phases:
 - [x] Add backend tests for snapshot, event replay cursor, transaction listing, and soft clear with mocked active run.
 - [x] Add tests that cleared transactions disappear from sidebar but remain auditable.
 
-### 5.11 Phase 2 Exit Checks
+
+### 5.11 Activity Timeline and Artifact Chat Page
+
+- [x] Add `/activity` page to the primary navigation.
+- [x] Use the Release Note page as the baseline visual design: matte glass panels, AI background, model selector, and profile menu.
+- [x] Render a left-side animated time-series graph for release-note runs.
+- [x] Render run detail with generated title, repository, release, status, duration, model, stage chain, artifact availability, and publish state.
+- [x] Render a right-side Artifact Chat pane using the same coral/plum sphere visual language as Release Notes.
+- [x] Constrain the Artifact Chat pane within the visible viewport with internal scrolling.
+- [x] Remove the shared left transaction sidebar launcher from `/activity`; use the timeline graph as this page's historical navigation surface.
+- [x] Add Activity filters for time range, status, and publish state.
+- [x] Add `/api/activity/release-notes` timeline endpoint.
+- [x] Add `/api/activity/release-notes/{run_id}` detail endpoint.
+- [x] Add `/api/activity/release-notes/{run_id}/artifacts` artifact action endpoint.
+- [x] Add `/api/activity/release-notes/{run_id}/artifact/{kind}/download` endpoint preferring published repo and falling back to local artifacts.
+- [x] Add `/api/activity/release-notes/{run_id}/artifact/{kind}/upload` endpoint for reviewed Markdown/PDF replacement.
+- [x] Enable `Upload Markdown GITHUB` and `Upload PDF GITHUB` for selected runs with artifact actions.
+- [x] Validate upload type, size, PDF header, authenticated run access, and workflow type.
+- [x] For published runs, overwrite the exact fixed filename in the existing artifact folder.
+- [x] For local-only runs, create a stable GitHub folder and persist publish metadata before subsequent overwrite behavior.
+- [x] Persist upload lifecycle events in PostgreSQL.
+- [x] Add `/api/activity/chat` and `/api/activity/chat/{session_id}` for selected-node artifact Q&A.
+- [x] Bound Activity Chat answers to selected release-note nodes/artifacts and cite runs/artifacts/published folders.
+- [x] Add tests for Activity page shell, timeline API, detail API, chat endpoint, upload overwrite, upload create-folder, and sidebar absence.
+
+### 5.12 Phase 2 Exit Checks
 
 - [x] Agent can classify workflow type.
 - [x] Agent creates a plan before tools execute.
@@ -909,7 +979,7 @@ Phases:
 - [x] Confirm Azure OpenAI local test deployment name: `bos-trainium-sigma-gpt-4.1-mini`.
 - [x] Confirm Azure API version for local LLM test: `2024-12-01-preview`.
 - [x] Confirm local Azure auth mode: Azure CLI bearer token.
-- [ ] Confirm final Azure GPT-5 endpoint and deployment name for production configuration.
+- [x] Confirm final Azure GPT-5 endpoint/deployment target: `https://aiservicesprjbossdcdevh23aw001.openai.azure.com/` with deployment `bos-trainium-gpt-5.0`.
 - [x] Decide whether V1 auth is local only or Entra ID-ready.
 - [x] Identify first available BOS Genesis MCP server.
 - [x] Confirm first vertical slice.
@@ -924,18 +994,21 @@ Phases:
 
 Actual current first vertical slice: release-note generation. Kubernetes read-only diagnostics remains a useful next diagnostic workflow, but it is no longer the first working demo path.
 
-Current shipped hello-world vertical slice: release-note generation.
+Current shipped hello-world vertical slice: final release-note agent.
 
 - [x] User enters a GitHub repository URL and release/source details on `/release-notes`.
 - [x] Agent classifies the request as `release_note_creation`.
 - [x] Agent creates a release-note plan with prompt version and prompt hash logging.
 - [x] Agent calls the `bosgenesis-release-note-agent` MCP-compatible tools.
 - [x] Agent uses release-note-agent Markdown as the initial document/evidence source.
-- [x] Agent saves the final Markdown artifact.
-- [x] Agent downloads and saves the release-note-agent PDF artifact.
-- [x] UI displays progress, preview, and Markdown/PDF download links.
-- [x] PostgreSQL stores run, event, tool, artifact, and LLM review records.
-- [ ] Future iteration: render the GPT-final Markdown itself to PDF if exact Markdown/PDF content parity becomes required.
+- [x] Agent clones the repo temporarily, scans common vulnerability signals, runs quality checks, and removes the checkout.
+- [x] Agent adds high-level vulnerability and code-quality matrices to the generated Markdown and PDF.
+- [x] Agent saves final Markdown and PDF artifacts locally.
+- [x] Agent publishes `release-notes.md` and `release-notes.pdf` to `aveeshek/bosgenesis-artifacts` in `YYMMDD_HHMMSS_<job-name>` folders when enabled.
+- [x] Activity page can overwrite reviewed Markdown/PDF artifacts in the exact published folder, or create a stable GitHub folder for local-only runs.
+- [x] UI displays progress, preview, Markdown/PDF download links, safe reasoning summaries, Agent Activity Feed, Activity timeline, and Artifact Chat.
+- [x] PostgreSQL stores run, event, tool, artifact, publish, and LLM review records.
+- [x] Active runs survive refresh/navigation; completed runs require explicit history selection to restore.
 
 Original recommendation: start with Kubernetes read-only diagnostics.
 

@@ -65,6 +65,30 @@ class ArtifactGitPublisher:
             pdf,
         )
 
+    async def overwrite_release_artifact(
+        self,
+        *,
+        run_id: str,
+        folder_name: str,
+        filename: str,
+        content: bytes,
+        source_filename: str | None = None,
+        mime_type: str | None = None,
+        allow_create: bool = False,
+    ) -> dict:
+        if not self.is_enabled:
+            return {"status": "disabled", "message": "Artifact git publishing is disabled."}
+        return await asyncio.to_thread(
+            self._overwrite_release_artifact,
+            run_id,
+            folder_name,
+            filename,
+            content,
+            source_filename,
+            mime_type,
+            allow_create,
+        )
+
     def _publish_release_artifacts(
         self,
         run_id: str,
@@ -139,6 +163,97 @@ class ArtifactGitPublisher:
         finally:
             _remove_tree(temp_dir)
 
+    def _overwrite_release_artifact(
+        self,
+        run_id: str,
+        folder_name: str,
+        filename: str,
+        content: bytes,
+        source_filename: str | None,
+        mime_type: str | None,
+        allow_create: bool,
+    ) -> dict:
+        git = shutil.which("git")
+        if not git:
+            raise ArtifactGitPublishError("git executable was not found in PATH.")
+
+        safe_folder = _safe_repo_folder(folder_name)
+        safe_filename = _safe_repo_filename(filename)
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(
+            tempfile.mkdtemp(prefix=f"overwrite_{_safe_token(run_id)}_", dir=self.workspace_dir)
+        )
+        repo_dir = temp_dir / "repo"
+        try:
+            if allow_create:
+                self._git(git, ["clone", "--depth", "1", self.repo_url, str(repo_dir)], cwd=temp_dir)
+            else:
+                self._git(
+                    git,
+                    ["clone", "--depth", "1", "--branch", self.branch, self.repo_url, str(repo_dir)],
+                    cwd=temp_dir,
+                )
+            self._prepare_branch(git, repo_dir)
+            self._git(git, ["config", "core.autocrlf", "false"], cwd=repo_dir)
+            self._git(
+                git, ["config", "user.name", self.settings.artifact_git_user_name], cwd=repo_dir
+            )
+            self._git(
+                git,
+                ["config", "user.email", self.settings.artifact_git_user_email],
+                cwd=repo_dir,
+            )
+
+            destination = repo_dir / safe_folder / safe_filename
+            created_file = False
+            if not destination.exists() or not destination.is_file():
+                if not allow_create:
+                    raise ArtifactGitPublishError(
+                        f"Published artifact file was not found: {safe_folder}/{safe_filename}."
+                    )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                created_file = True
+            destination.write_bytes(content)
+
+            repo_relative_path = f"{safe_folder}/{safe_filename}"
+            self._git(git, ["add", repo_relative_path], cwd=repo_dir)
+            status = self._git(
+                git, ["status", "--porcelain", "--", repo_relative_path], cwd=repo_dir
+            ).stdout.strip()
+            if not status:
+                head = self._git(git, ["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
+                return {
+                    "status": "unchanged",
+                    "repo_url": _redact_url(self.repo_url),
+                    "branch": self.branch,
+                    "folder_name": safe_folder,
+                    "filename": safe_filename,
+                    "source_filename": source_filename,
+                    "mime_type": mime_type,
+                    "commit_hash": head,
+                    "tree_url": _github_tree_url(self.repo_url, self.branch, safe_folder),
+                    "message": "Uploaded file matches the current published artifact.",
+                }
+
+            action = "Upload" if created_file else "Overwrite"
+            commit_message = f"{action} {safe_filename} for {safe_folder} ({run_id})"
+            self._git(git, ["commit", "-m", commit_message], cwd=repo_dir)
+            commit_hash = self._git(git, ["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
+            self._git(git, ["push", "origin", f"HEAD:{self.branch}"], cwd=repo_dir)
+            return {
+                "status": "created" if created_file else "success",
+                "repo_url": _redact_url(self.repo_url),
+                "branch": self.branch,
+                "folder_name": safe_folder,
+                "filename": safe_filename,
+                "source_filename": source_filename,
+                "mime_type": mime_type,
+                "commit_hash": commit_hash,
+                "tree_url": _github_tree_url(self.repo_url, self.branch, safe_folder),
+            }
+        finally:
+            _remove_tree(temp_dir)
+
     def _prepare_branch(self, git: str, repo_dir: Path) -> None:
         origin_branch = self._git_allow_error(
             git,
@@ -194,6 +309,24 @@ def _safe_job_name(value: str) -> str:
     clean = clean.strip("._-")
     return (clean or "release-note")[:80]
 
+
+def _safe_repo_folder(value: str) -> str:
+    clean = str(value or "").replace("\\", "/").strip("/")
+    parts = [part for part in clean.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise ArtifactGitPublishError("Invalid artifact folder path.")
+    if any(not re.fullmatch(r"[A-Za-z0-9._-]+", part) for part in parts):
+        raise ArtifactGitPublishError("Artifact folder contains unsupported characters.")
+    return "/".join(parts)
+
+
+def _safe_repo_filename(value: str) -> str:
+    clean = Path(str(value or "")).name
+    if clean not in {"release-notes.md", "release-notes.pdf"}:
+        raise ArtifactGitPublishError(
+            "Only release-notes.md and release-notes.pdf may be overwritten."
+        )
+    return clean
 
 def _safe_token(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", value)[:48] or "run"

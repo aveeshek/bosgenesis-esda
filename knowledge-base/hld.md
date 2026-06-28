@@ -84,21 +84,24 @@ V1 standardization:
 - MongoDB is optional and out of scope for V1.
 - Redis is optional only for cache, locks, rate limiting, and SSE pressure.
 
-## 3.2 Current V1 Implementation Status (2026-06-25)
+## 3.2 Current V1 Implementation Status (2026-06-27)
 
 The working V1 vertical slice is now release-note generation through the BOS Genesis ESDA web application.
 
 Implemented behavior:
 
-- ESDA runs locally as a FastAPI web application with Bootstrap/JavaScript UI, login, run progress, approvals, L4 audit, LLM chat, and release-note pages.
+- ESDA runs locally as a FastAPI web application with Bootstrap/JavaScript UI, login, run progress, approvals, L4 audit, LLM chat, release-note pages, and the Activity observability/artifact-chat page.
 - Local execution uses the cluster ingress endpoints for existing BOS Genesis services; ESDA itself is not deployed to the cluster yet.
 - PostgreSQL is the active durable store for users, runs, events, tool calls, LLM review records, approvals, policies, procedures, and artifact metadata.
 - ClickHouse and SQLite are not part of the current V1 path.
 - Azure OpenAI is integrated through LangChain with Azure CLI bearer-token auth for local proofing. The final Azure GPT-5 deployment remains a configuration item.
 - The release-note flow uses `bosgenesis-release-note-agent` through its MCP-compatible HTTP tools first, with REST only for artifact download/hydration where needed.
 - `release-note-agent` creates the initial release-note evidence/artifacts, then the ESDA LLM chain uses that initial Markdown as the primary source for the final human-readable draft.
-- ESDA stores the final Markdown artifact and the release-note-agent-rendered PDF artifact, preserving the release-note-agent look and feel for PDF output.
-- The UI streams progress and model/tool explanations, makes the progress panel scrollable/copyable, and shows separate Markdown and PDF download buttons.
+- ESDA stores the final Markdown artifact and PDF artifact, preserving the release-note-agent look and feel when the upstream PDF is available and appending ESDA scan details when the final Markdown/PDF is produced.
+- ESDA performs a temporary local repository clone after release-note-agent evidence collection, runs a common vulnerability scan, runs `pylint` for Python projects when available, falls back to safe static quality checks when needed, appends the resulting matrices to Markdown/PDF, and removes the temporary checkout.
+- On successful completion, ESDA commits `release-notes.md` and `release-notes.pdf` to `aveeshek/bosgenesis-artifacts` under a folder named `YYMMDD_HHMMSS_<job-name>`. The Activity page can later overwrite those exact files with reviewed local Markdown/PDF uploads; if a historical run only has local artifacts, the first Activity upload creates a stable GitHub folder for that run and subsequent uploads overwrite the same file path.
+- The UI streams progress and model/tool explanations, makes the progress panel scrollable/copyable, shows separate Markdown and PDF download buttons, exposes an autonomy activity map for intake, classification, planning, evidence, clone, security, quality, cleanup, draft, validation, recovery, artifact save, publish, and completion, and provides an Activity timeline/chat page for historical release-note analysis.
+- Live working notes are ephemeral and are not persisted. After completion, the UI clears those notes and shows persisted safe reasoning summaries from PostgreSQL.
 
 Current release-note MCP tools used:
 
@@ -140,6 +143,56 @@ Backend responsibility:
 - PostgreSQL is the source of truth for session data, transactional data, run state, UI replay events, and user-specific history visibility.
 - Redis may later optimize event buffering/locks, but it must not be the only state store.
 
+---
+## 3.4 Final Release-Note Agent Design and Implementation
+
+The final release-note agent is the reference V1 implementation for ESDA's bounded autonomy pattern.
+
+High-level behavior:
+
+- The user opens `/release-notes`, enters a GitHub repository URL, release name, and source reference. Source precedence is commit, then tag, then branch.
+- ESDA classifies the request as `release_note_creation`, creates a plan, and delays revealing the activity map briefly so the UX demonstrates planning before execution.
+- ESDA calls `bosgenesis-release-note-agent` through MCP-compatible endpoints to collect release evidence and initial artifacts.
+- ESDA clones the repository into a temporary local workspace, scans common vulnerability signals, runs code quality checks, writes security and quality matrices, then removes the checkout.
+- ESDA asks the selected model to finalize the release note from collected evidence, release-note-agent Markdown, and scan summaries only.
+- ESDA validates required Markdown structure, source evidence, security/quality sections, and artifact availability.
+- ESDA saves local Markdown and PDF artifacts, then publishes both files to the configured GitHub artifact repository when publishing is enabled.
+- PostgreSQL remains the durable source of truth for runs, ordered events, tool summaries, artifact metadata, LLM review-safe summaries, and transaction history.
+
+The release-note page demonstrates the intended UX contract for all future workflow pages:
+
+- Refreshing a completed run returns the page to the initial state unless the user explicitly selects that run from the history drawer.
+- Refreshing or returning during an active run restores the current state and reconnects live progress.
+- The floating history drawer lists user-visible transactions and hides cleared items without deleting audit data.
+- The Agent Activity Feed is hidden until a run starts, appears when activity changes, auto-hides after 30 seconds, and can be pinned by the user.
+- Hovering activity nodes exposes sanitized event/log details for that step.
+- Hidden model chain-of-thought is never stored or displayed; only model-supported summaries and ESDA-authored working notes are shown.
+
+Artifact publishing is intentionally narrow:
+
+- Target repository: `https://github.com/aveeshek/bosgenesis-artifacts.git`.
+- Target branch: `main`.
+- Folder convention: `YYMMDD_HHMMSS_<job-name>` for workflow publish; Activity local-only upload creates a stable run folder based on the run timestamp and generated session title.
+- Published filenames: `release-notes.md` and `release-notes.pdf`.
+- Activity artifact upload is constrained to those two filenames, validates file type/content, requires authenticated run access, and records overwrite/create events in PostgreSQL.
+- Required safety: publishing depends on configured Git credentials, repository access, and the `ARTIFACT_GIT_PUBLISH_ENABLED` setting.
+
+## 3.5 Activity Page Baseline and Artifact Review Upload
+
+The Activity page is now part of the release-note V1 baseline. It is the analytical companion to `/release-notes` and uses the same matte-glass AI visual language while replacing the global transaction drawer with a purpose-built time-series graph.
+
+Implemented Activity behavior:
+
+- `/activity` renders a two-pane page: left release-note timeline and run detail, right artifact chatbot.
+- The left transaction sidebar launcher is not rendered on Activity; historical navigation happens through the timeline nodes.
+- The right chat pane is constrained to the visible viewport and scrolls internally, so it must not overflow the browser window on desktop.
+- Timeline nodes show release-note run status, repository, generated session title, duration, model, artifact availability, and publish state.
+- Selecting a node shows stage-chain details, Markdown/PDF download actions, published repo actions, and controlled GitHub upload actions.
+- Activity Chat answers only from selected/visible release-note run context, local Markdown text, persisted events, and published artifact metadata, with citations.
+- `Upload Markdown GITHUB` and `Upload PDF GITHUB` allow a reviewed local file to replace the exact artifact for that run.
+- If the run was already published, upload overwrites `release-notes.md` or `release-notes.pdf` in the existing published folder.
+- If the run only has local ESDA artifacts, first upload creates a stable GitHub folder for that run, records publish metadata, and writes the uploaded file there.
+- Uploads are not an arbitrary repository write capability: only `release-notes.md` and `release-notes.pdf` are accepted, and all writes go through the configured artifact repository and branch.
 ---
 ## 4. Target Users
 
@@ -221,7 +274,12 @@ flowchart TD
     REST --> EXTAPI[Internal / External APIs]
     K8S --> CLUSTER[Kubernetes Cluster]
 
-    MEM --> REDIS[Redis Optional Cache and Locks]`r`n    MEM --> PG[PostgreSQL Episodic and Procedural Memory]`r`n    MEM --> QDRANT[Qdrant Semantic Memory]`r`n    MEM --> CH[PostgreSQL Logs and Analytics]`r`n`r`n    OBS --> OTEL[OpenTelemetry Optional]
+    MEM --> REDIS[Redis Optional Cache and Locks]
+    MEM --> PG[PostgreSQL Episodic and Procedural Memory]
+    MEM --> QDRANT[Qdrant Semantic Memory]
+    MEM --> CH[PostgreSQL Logs and Analytics]
+
+    OBS --> OTEL[OpenTelemetry Optional]
 ```
 
 ---
@@ -255,7 +313,12 @@ flowchart LR
 | Workflow State | LangGraph, custom state machine, Temporal, Prefect, or n8n |
 | PowerShell Execution | Restricted Windows runner service |
 | Policy Guard | Custom policy engine first; OPA later |
-| Short-Term State | LangGraph checkpointing; optional Redis for cache, locks, rate limiting, and SSE pressure |`r`n| Episodic Memory | PostgreSQL |`r`n| Procedural Memory | PostgreSQL, with optional Qdrant semantic index |`r`n| Semantic Memory | Qdrant |`r`n| Detailed Logs and Analytics | PostgreSQL |`r`n| Platform Observability | OpenTelemetry optional |
+| Short-Term State | LangGraph checkpointing; optional Redis for cache, locks, rate limiting, and SSE pressure |
+| Episodic Memory | PostgreSQL |
+| Procedural Memory | PostgreSQL, with optional Qdrant semantic index |
+| Semantic Memory | Qdrant |
+| Detailed Logs and Analytics | PostgreSQL |
+| Platform Observability | OpenTelemetry optional |
 
 ---
 
@@ -517,7 +580,8 @@ The system should support multiple memory types.
 | Long-term exact memory | PostgreSQL | Known facts, endpoints, configs, previous fixes |
 | Episodic memory | PostgreSQL | Structured run episodes, tool evidence references, observations, and outcomes |
 | Semantic memory | Qdrant | Similar issue/fix search |
-| Log/review memory | PostgreSQL | Detailed logs, LLM review records, model explanations, tool events, metrics |`r`n| Optional cache/coordination | Redis | Cache, locks, rate limiting, and SSE pressure only |
+| Log/review memory | PostgreSQL | Detailed logs, LLM review records, model explanations, tool events, metrics |
+| Optional cache/coordination | Redis | Cache, locks, rate limiting, and SSE pressure only |
 
 ### Memory Flow
 
@@ -530,7 +594,9 @@ flowchart TD
     EXEC --> TRACE[Write Raw Trace]
     EXEC --> FACTS[Extract New Facts]
     FACTS --> PG[Write Exact Memory to PostgreSQL]
-    TRACE --> PG[Write Episodic Memory to PostgreSQL]`r`n    FACTS --> QDRANT[Write/Search Semantic Memory in Qdrant]`r`n    EXEC --> CH[Write Logs, Review Records, and Metrics to PostgreSQL]
+    TRACE --> PG[Write Episodic Memory to PostgreSQL]
+    FACTS --> QDRANT[Write/Search Semantic Memory in Qdrant]
+    EXEC --> CH[Write Logs, Review Records, and Metrics to PostgreSQL]
 ```
 
 ---
@@ -829,7 +895,12 @@ Recommended observability mapping:
 
 | Evidence | Store |
 |---|---|
-| LLM plans, reasoning summaries, explanations, and decisions | PostgreSQL |`r`n| API/service traces | OpenTelemetry optional |`r`n| Tool output summaries and evidence references | PostgreSQL + PostgreSQL references |`r`n| Run history and episodic memory | PostgreSQL |`r`n| Metrics and latency | PostgreSQL |`r`n| Similar issue retrieval | Qdrant |
+| LLM plans, reasoning summaries, explanations, and decisions | PostgreSQL |
+| API/service traces | OpenTelemetry optional |
+| Tool output summaries and evidence references | PostgreSQL + artifact references |
+| Run history and episodic memory | PostgreSQL |
+| Metrics and latency | PostgreSQL |
+| Similar issue retrieval | Qdrant |
 
 ---
 
@@ -853,13 +924,15 @@ Success criteria:
 Current V1 release-note success criteria:
 
 - User can log in and open the release-note page.
-- User can submit a GitHub repository URL and source details.
+- User can submit a GitHub repository URL, release name, source details, analysis depth, and selected model.
 - Agent calls `bosgenesis-release-note-agent` through MCP-compatible tools.
-- Agent uses the release-note-agent Markdown as the initial document and saves a GPT-finalized Markdown artifact.
-- Agent downloads and saves the release-note-agent PDF artifact.
-- UI shows live progress plus Markdown/PDF download buttons.
-- PostgreSQL records the run, events, tool summaries, LLM review metadata, and artifact metadata.
-- Refreshing or leaving the page does not lose progress; the run continues in the backend and the page restores from PostgreSQL when reopened.
+- Agent uses the release-note-agent Markdown as the initial document/evidence source.
+- Agent clones the repo temporarily, runs vulnerability and quality scans, removes the checkout, and appends scan matrices.
+- Agent saves final Markdown and PDF artifacts with release-note content plus security/quality details.
+- Agent publishes `release-notes.md` and `release-notes.pdf` to the configured artifact GitHub repo under `YYMMDD_HHMMSS_<job-name>` when enabled.
+- UI shows live progress, safe reasoning summaries, Agent Activity Feed, Markdown/PDF download buttons, and artifact preview.
+- PostgreSQL records the run, events, tool summaries, LLM review metadata, artifact metadata, and publish outcome.
+- Refreshing an active run restores progress; refreshing a completed run resets the page unless the run is selected from the history drawer.
 - The floating transaction sidebar lists and restores prior release-note attempts until the user clears/hides them.
 
 Original broader read-only success criteria:

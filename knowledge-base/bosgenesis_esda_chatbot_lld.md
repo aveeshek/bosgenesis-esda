@@ -12,32 +12,46 @@ This version is also aligned with `hld.md`. Where the HLD describes the LLM prov
 
 This LLD is additionally aligned with `project_architecture_specification.md`, which finalizes the project as a Python web application with a JavaScript/HTML/CSS frontend, Azure GPT-5, LangGraph, LangChain, LangMem, PostgreSQL episodic/procedural memory, Qdrant semantic memory, and PostgreSQL review-grade logging. If this LLD conflicts with that specification, the project architecture specification should be treated as the source of truth.
 
-## 1.1 Current Low-Level Implementation Status (2026-06-25)
+## 1.1 Current Low-Level Implementation Status (2026-06-27)
 
-The implemented V1 hello-world workflow is release-note generation. This path demonstrates the intended ESDA pattern: authenticated UI, GPT-backed classification/planning, governed MCP tool invocation, live progress, PostgreSQL audit records, and downloadable artifacts.
+The implemented V1 hello-world workflow is release-note generation. This path now demonstrates the intended ESDA autonomy pattern end to end: authenticated UI, model selection, GPT-backed classification/planning, governed MCP tool invocation, temporary source-code inspection, live progress, persisted safe summaries, downloadable Markdown/PDF artifacts, and GitHub artifact publishing.
 
 Implemented modules and responsibilities:
 
 | Module | Current responsibility |
 |---|---|
-| `backend/app/tools/release_note_agent.py` | MCP-first adapter for `bosgenesis-release-note-agent`; starts scans, polls status, generates notes, retrieves artifact metadata, and downloads binary artifacts. |
-| `backend/app/chains/release_notes.py` | Intent classifier, planner, verifier, recovery recommender, and report writer. The report writer treats release-note-agent Markdown as the initial document. |
-| `backend/app/graphs/release_notes.py` | LangGraph workflow for classification, planning, agent execution, validation, recovery, final Markdown artifact save, and PDF artifact save. |
+| `backend/app/tools/release_note_agent.py` | MCP-first adapter for `bosgenesis-release-note-agent`; starts scans, polls status, generates notes, retrieves artifact metadata, and downloads referenced artifacts. |
+| `backend/app/chains/release_notes.py` | Intent classifier, planner, verifier, recovery recommender, and report writer. The report writer treats release-note-agent Markdown as the initial document and adds ESDA safety/quality sections. |
+| `backend/app/graphs/release_notes.py` | LangGraph-style workflow for classification, planning, agent execution, repo clone, vulnerability scan, quality scan, cleanup, drafting, validation, recovery, artifact save, Git publishing, and finalization. |
+| `backend/app/repo_analysis.py` | Temporary clone and local source analysis service. It scans common vulnerability signals, runs `pylint` for Python projects when available, falls back to safe static checks, asks the selected LLM for a review-safe vulnerability summary, builds matrices, and removes the checkout. |
 | `backend/app/artifacts.py` | Artifact metadata and local file storage for Markdown and binary PDF artifacts. |
-| `backend/app/static/js/release_notes.js` | Release-note form, SSE live progress, copyable progress, preview, and multiple artifact download buttons. |
+| `backend/app/artifact_publisher.py` | Git publisher that commits `release-notes.md` and `release-notes.pdf` into `aveeshek/bosgenesis-artifacts` under `YYMMDD_HHMMSS_<job-name>`, and supports controlled Activity overwrite/create uploads for reviewed Markdown/PDF replacements. |
+| `backend/app/static/js/release_notes.js` | Release-note form, model-aware request payloads, SSE live progress, refresh-safe transaction restoration, ephemeral working stream, safe reasoning summaries, preview, copyable progress, artifact links, and Agent Activity Feed. |
+| `backend/app/activity.py` | Activity query/service layer for release-note timeline nodes, stage chains, artifact resolution, and bounded chat context. |
+| `backend/app/static/js/activity.js` | Activity timeline rendering, node selection, artifact actions, GitHub upload panel, and artifact chat interactions. |
+| `backend/app/templates/activity.html` | Activity page shell using the final matte-glass two-pane layout. |
+| `backend/app/templates/release_notes.html` | Matte glass release-note layout with release input panel, wider live progress panel, draft artifact panel, hidden history drawer, and collapsible activity rail. |
 
 Current release-note sequence:
 
-1. User submits a GitHub URL, release name, branch/tag/commit source reference, and analysis depth.
-2. ESDA classifies the request as `release_note_creation` and logs prompt version/hash plus a model-provided reasoning summary.
-3. ESDA creates a bounded plan and validates that the source URL is allowed.
-4. ESDA invokes `bosgenesis-release-note-agent` through MCP-compatible tool endpoints: `github_release_scan_start`, `github_release_scan_status`, `github_release_generate_note`, and `github_release_get_artifact`.
-5. The scan requests `markdown`, `html`, `pdf`, and `json` output formats.
-6. ESDA hydrates the release-note-agent Markdown and artifact metadata through the artifact download path when the MCP envelope only returns references.
-7. GPT uses the release-note-agent Markdown as the initial document and produces the final human-readable Markdown draft.
-8. ESDA verifies required release-note structure and source evidence.
-9. ESDA saves a final Markdown artifact and the release-note-agent-rendered PDF artifact.
-10. The UI streams all major events, shows the Markdown preview, and renders separate Markdown/PDF download buttons.
+1. User submits a GitHub URL, release name, branch/tag/commit source reference, analysis depth, and selected model profile.
+2. ESDA creates a durable PostgreSQL run before any LLM/tool work and generates a human-friendly transaction title.
+3. The UI enters `00 / CREATING PLAN`, shows ephemeral working notes, and delays revealing the Agent Activity Feed briefly to make planning visible.
+4. ESDA classifies the request as `release_note_creation` and logs prompt version/hash plus a review-safe reasoning summary.
+5. ESDA creates a bounded plan and validates GitHub URL/source-reference policy.
+6. ESDA invokes `bosgenesis-release-note-agent` through MCP-compatible tool endpoints: `github_release_scan_start`, `github_release_scan_status`, `github_release_generate_note`, and `github_release_get_artifact`.
+7. The scan requests `markdown`, `html`, `pdf`, and `json` output formats, then hydrates referenced Markdown/PDF content when the MCP envelope only returns artifact references.
+8. ESDA clones the repository into a temporary local workspace, honoring source precedence: commit overrides tag, tag overrides branch.
+9. ESDA scans common vulnerability signals and asks the selected LLM for a bounded, review-safe security summary.
+10. ESDA runs code quality checks: `pylint` for Python projects when available, `ruff` or internal static checks as safe fallback, and internal static quality checks for non-Python projects.
+11. ESDA removes the temporary repository checkout and logs cleanup status.
+12. GPT uses release-note-agent Markdown, tool evidence, and scan summaries as source material for the final human-readable Markdown draft.
+13. ESDA verifies required release-note structure, source evidence, vulnerability matrix, code quality matrix, and artifact readiness.
+14. ESDA saves final Markdown and PDF artifacts. The PDF must preserve the preferred release-note look and feel when upstream PDF styling is available and must include the final scan sections.
+15. If `ARTIFACT_GIT_PUBLISH_ENABLED=true`, ESDA publishes the Markdown/PDF pair into the configured GitHub artifact repository.
+16. ESDA writes final events and safe reasoning summaries to PostgreSQL.
+17. The UI clears ephemeral working notes and shows persisted safe reasoning summaries after completion.
+18. Refresh behavior is state-machine based: active runs restore automatically; completed runs return to the initial empty page unless the user selects them from the history drawer.
 
 Current configuration additions:
 
@@ -47,17 +61,23 @@ Current configuration additions:
 | `RELEASE_NOTE_AGENT_MCP_URL` | MCP-compatible release-note-agent URL. Local runs use ingress; Helm deployments use the in-cluster service. |
 | `RELEASE_NOTE_AGENT_TRANSPORT` | `auto`, `mcp`, or `rest`; V1 defaults to MCP when MCP URL is present. |
 | `RELEASE_NOTE_AGENT_TIMEOUT_SECONDS` | Long-running scan/generation timeout. |
+| `ARTIFACT_GIT_PUBLISH_ENABLED` | Enables successful release-note runs to publish artifacts to Git. |
+| `ARTIFACT_GIT_REPO_URL` | Artifact repository, defaulting to `https://github.com/aveeshek/bosgenesis-artifacts.git`. |
+| `ARTIFACT_GIT_BRANCH` | Target artifact branch, defaulting to `main`. |
+| `ARTIFACT_GIT_WORKSPACE_DIR` | Local clone workspace for the publisher. |
+| `ARTIFACT_GIT_USER_NAME` / `ARTIFACT_GIT_USER_EMAIL` | Commit identity for artifact publishing. |
+| `ARTIFACT_GIT_COMMAND_TIMEOUT_SECONDS` | Timeout for clone, commit, and push commands. |
 
 Current data-store position:
 
-- PostgreSQL is the active store for runs, logs, LLM review records, approvals, policies, procedures, and artifact metadata.
-- The next required UX/runtime enhancement is refresh-safe progress: every workflow page must restore active and historical transactions from PostgreSQL and keep backend work running after refresh/navigation.
-- Artifact bytes are stored in the configured artifact storage directory.
+- PostgreSQL is the active store for users, runs, ordered run events, tool logs, LLM review records, approvals, policies, procedures, transaction visibility, and artifact metadata.
+- Artifact bytes are stored in the configured artifact storage directory before optional Git publishing.
+- Ephemeral working notes are streamed only while the page is connected and are not persisted.
+- Safe reasoning summaries, plans, validation summaries, recovery summaries, and publish summaries are persisted for review.
 - Qdrant remains optional for V1 and should only be enabled once semantic memory lookup is needed.
 - ClickHouse and SQLite are excluded from the current V1 path.
 
 ---
-
 ## 2. Target System Name
 
 Recommended name:
@@ -423,7 +443,7 @@ Refresh/navigation recovery flow:
 
 ### 12.3 Persistent Transaction Sidebar
 
-The transaction sidebar is a shared UX component used by every authenticated workflow page.
+The transaction sidebar is a shared UX component used by authenticated workflow pages. `/activity` is excluded because it uses its own timeline graph as the historical navigation surface and must not render the left sidebar launcher.
 
 Behavior:
 
@@ -658,6 +678,13 @@ DATABASE_URL=postgresql+psycopg://postgres:<password>@10.99.52.176:5432/esda
 POSTGRES_LOG_SCHEMA=public
 ARTIFACT_STORAGE_PROVIDER=local
 ARTIFACT_LOCAL_PATH=./data/artifacts
+ARTIFACT_GIT_PUBLISH_ENABLED=true
+ARTIFACT_GIT_REPO_URL=https://github.com/aveeshek/bosgenesis-artifacts.git
+ARTIFACT_GIT_BRANCH=main
+ARTIFACT_GIT_WORKSPACE_DIR=var/artifact-git-publisher
+ARTIFACT_GIT_USER_NAME=BOS Genesis ESDA
+ARTIFACT_GIT_USER_EMAIL=bosgenesis-esda@local
+ARTIFACT_GIT_COMMAND_TIMEOUT_SECONDS=120
 
 AUTH_MODE=local
 JWT_ISSUER=bosgenesis-esda
@@ -687,6 +714,9 @@ DEFAULT_NAMESPACE=bosgenesis
 DEFAULT_AUTONOMY_MODE=semi_autonomous
 
 RELEASE_NOTE_AGENT_URL=http://localhost:8101
+RELEASE_NOTE_AGENT_MCP_URL=http://release-note-agent.bosgenesis.local
+RELEASE_NOTE_AGENT_TRANSPORT=auto
+RELEASE_NOTE_AGENT_TIMEOUT_SECONDS=300
 MOP_CREATION_AGENT_URL=http://localhost:8102
 MOP_EXECUTION_AGENT_URL=http://localhost:8103
 HELM_MANAGER_URL=http://localhost:8104
@@ -1775,73 +1805,167 @@ sequenceDiagram
 
 ### Purpose
 
-Generate release notes from approved sources such as a GitHub URL, commits, tags, Jira items, deployment metadata, PR summaries, or existing `release-note-agent` output. In the implemented V1 hello-world flow, the user enters a GitHub URL, GPT plans the release-note workflow, the backend calls `bosgenesis-release-note-agent` through MCP-compatible tools, the agent returns the initial Markdown/PDF evidence artifacts, GPT finalizes the Markdown draft from that evidence, and PostgreSQL stores the activity trail.
+Generate release notes from an approved GitHub source using the final V1 ESDA release-note agent flow. The workflow uses `bosgenesis-release-note-agent` as the first evidence producer, then ESDA enriches the result with local source-code security and quality scans, GPT-generated review-safe summaries, final Markdown/PDF artifacts, and optional publishing to the artifact repository.
 
 ### Inputs
 
 | Input | Required | Notes |
 |---|---:|---|
 | `github_url` | Required | Repository, compare, release, pull request, or tag URL accepted by policy. |
-| `release_name` | Optional | Can be inferred from tag/version. |
-| `source_ref_start` | Optional | Commit, tag, date, or release id. |
-| `source_ref_end` | Optional | Commit, tag, date, or release id. |
-| `service_names` | Optional | Limits release notes to selected services. |
-| `target_audience` | Optional | Engineering, operations, business, customer. |
-| `format` | Optional | Markdown and PDF are the current V1 outputs; Markdown remains the preview/default authoring format. |
+| `release_name` | Optional | Can be inferred from tag/version; also used in the artifact folder name. |
+| `branch` | Optional | Used when tag and commit are absent. |
+| `tag` | Optional | Overrides branch when present. |
+| `commit_sha` | Optional | Overrides tag and branch when present. |
+| `analysis_depth` | Optional | Fast/deep analysis depth for agent and scan behavior. |
+| `model_profile_id` | Optional | Selected model profile, such as GPT-5, GPT-4.1 mini, Llama, or Gemma where configured. |
 
-### Flow
+Source precedence is strict: `commit_sha` overrides `tag`; `tag` overrides `branch`.
+
+### Final Flow
 
 ```mermaid
 flowchart TD
-    A[User asks for release notes] --> B[Classify release-note workflow]
-    B --> C[Collect source refs and scope]
-    C --> D[Call release-note-agent MCP tools]
-    D --> E[Hydrate agent Markdown, PDF refs, evidence, and reasoning summary]
-    E --> F[Ask GPT-5 to finalize Markdown from agent draft and evidence]
-    F --> G[Validate completeness and formatting]
-    G --> H[Save Markdown/PDF artifacts and PostgreSQL logs]
-    H --> I{Publish requested?}
-    I -->|No| J[Return draft artifact]
-    I -->|Yes| K[Approval required]
-    K --> L[Publish after approval]
+    A[User submits release-note request] --> B[Create durable run and generated session title]
+    B --> C[Show ephemeral 00 / creating plan stream]
+    C --> D[Classify release-note workflow]
+    D --> E[Create bounded plan]
+    E --> F[Call release-note-agent MCP tools]
+    F --> G[Hydrate agent Markdown, PDF, JSON, and evidence]
+    G --> H[Clone repository into temporary workspace]
+    H --> I[Scan common vulnerability signals]
+    I --> J[Run code quality checks]
+    J --> K[Remove temporary repository]
+    K --> L[Draft final Markdown from evidence and scan summaries]
+    L --> M[Validate release-note structure and matrices]
+    M --> N{Recoverable gap?}
+    N -->|Yes| O[Add bounded recovery note and continue]
+    N -->|No| P[Save Markdown and PDF artifacts]
+    O --> P
+    P --> Q{Git artifact publish enabled?}
+    Q -->|No| R[Complete with local artifacts]
+    Q -->|Yes| S[Commit MD/PDF to bosgenesis-artifacts]
+    S --> T{Publish succeeded?}
+    T -->|Yes| U[Complete with published artifact link]
+    T -->|No| V[Fail run with local artifacts preserved]
 ```
+
+### Agent Activity Feed Nodes
+
+| Order | Node | Meaning |
+|---:|---|---|
+| 1 | Intake | Durable run created and input accepted. |
+| 2 | Classify | GPT classifies workflow and confidence. |
+| 3 | Plan | GPT creates the bounded plan. |
+| 4 | Evidence | `release-note-agent` collects source evidence and initial artifacts. |
+| 5 | Clone | ESDA clones the repository into a temporary workspace. |
+| 6 | Security | ESDA scans common vulnerability signals and asks the selected LLM for a safe summary. |
+| 7 | Quality | ESDA runs `pylint` or safe static fallback quality checks. |
+| 8 | Cleanup | ESDA removes the temporary checkout. |
+| 9 | Draft | GPT creates the final Markdown draft from collected evidence. |
+| 10 | Validate | ESDA validates required sections and scan matrices. |
+| 11 | Recover | ESDA adds bounded recovery notes when evidence is limited but safe to continue. |
+| 12 | Artifacts | ESDA saves Markdown and PDF artifacts. |
+| 13 | Publish | ESDA commits `release-notes.md` and `release-notes.pdf` to `bosgenesis-artifacts` when enabled. |
+| 14 | Complete | ESDA finalizes run status and safe summaries. |
+
+The rail is hidden before `Generate Draft` is clicked, reveals during active work, auto-hides after 30 seconds of activity, and remains visible when pinned.
 
 ### Artifact Output
 
+The final Markdown and PDF must include, at minimum:
+
 ```markdown
-# Release Notes: <release_name>
+# <Release Title>
 
-## Summary
+## Document Control
 
-## Features
+## Executive Summary
 
-## Fixes
+## Release Overview
 
-## Operational Changes
+## Functional / Operational Changes
 
-## Known Issues
+## Code Quality Matrix
 
-## Deployment Notes
+## Vulnerability Matrix
 
 ## Source Evidence
+
+## Safe Reasoning Summaries
+
+## Limitations and Human Review Notes
 ```
 
-V1 currently stores two release-note artifacts for a successful run:
+The PDF should maintain the established release-note look and feel. When the upstream release-note-agent PDF is available, ESDA should preserve it where possible; when ESDA renders the final Markdown, the PDF must include the same content sections, including code quality and vulnerability scan details.
 
-- Final ESDA Markdown artifact, generated from release-note-agent evidence and GPT finalization.
-- Release-note-agent PDF artifact, preserving the existing PDF renderer look and feel.
+### Git Artifact Publishing
 
-The adapter must keep all artifact metadata returned by `release-note-agent`; it must not truncate the list because PDF artifacts may appear after Markdown/HTML/JSON artifacts.
+On successful validation, ESDA publishes the artifact pair when enabled:
+
+| Field | Value |
+|---|---|
+| Repository | `https://github.com/aveeshek/bosgenesis-artifacts.git` |
+| Branch | `main` by default |
+| Folder | `YYMMDD_HHMMSS_<job-name>` |
+| Files | `release-notes.md`, `release-notes.pdf` |
+| Required config | `ARTIFACT_GIT_PUBLISH_ENABLED=true` and non-interactive Git credentials |
+
+A publish failure fails the run at the publish step, but the locally saved artifacts remain available for download and review.
 
 ### Live UX and Logging Requirements
 
-- The `/release-notes` page must accept a GitHub URL and optional source range.
-- The run timeline must stream source collection, GPT-5 planning, release-note-agent MCP invocation, artifact hydration, draft generation, validation, and Markdown/PDF artifact-save events through SSE.
-- The UI may show model-provided reasoning summaries, plans, tool-choice explanations, and validation explanations; the live progress panel should remain scrollable and copyable.
+- The `/release-notes` page must accept GitHub URL, release name, branch, tag, commit, analysis depth, and selected model profile.
+- The run timeline must stream classification, planning, release-note-agent MCP invocation, artifact hydration, clone, vulnerability scan, quality scan, cleanup, draft generation, validation, recovery, artifact save, publish, and completion events through SSE.
+- The Live Working Stream may show ESDA-authored working notes and model-supported summaries while the page is connected, but those notes are ephemeral and must not be persisted.
+- After completion, ephemeral notes are wiped and replaced with persisted Safe Reasoning Summaries.
 - The UI must not expose hidden chain-of-thought.
-- PostgreSQL must log the run, plan summary, release-note-agent request/response summary, GPT-5 reasoning summary, validation result, and final Markdown/PDF artifact metadata.
-- Draft generation is read-only and does not require approval; publishing or writing back to GitHub/Confluence/Jira requires approval.
+- PostgreSQL must log the run, generated title, plan summary, tool summaries, validation result, recovery decision, safe reasoning summaries, artifact metadata, and publish outcome.
+- Refreshing during an active run restores the live state; refreshing after completion returns to the initial empty state unless the run is explicitly selected from the history sidebar.
+- Draft generation is read-only. Publishing to the configured artifact archive repo is an automated finalization step controlled by configuration and Git credentials. Activity page uploads are a separate, narrow review operation that can overwrite `release-notes.md` or `release-notes.pdf` for a selected run, or create the missing run folder for local-only artifacts.
 
+## 22.1.1 Activity Page Artifact Review and Upload Flow
+
+The Activity page is the release-note observability and artifact review surface. It does not start new release-note generation; it inspects completed/running release-note runs and lets the user ask artifact-grounded questions.
+
+### Activity Layout Rules
+
+- Route: `/activity`.
+- Left pane: scrollable animated release-note time-series graph, run detail, stage chain, and artifact actions.
+- Right pane: artifact chatbot with the shared coral/plum sphere visual language.
+- The chat pane must remain inside the viewport and scroll internally.
+- The shared transaction sidebar launcher is not rendered on Activity.
+
+### Activity API Endpoints
+
+| Method | Endpoint | Responsibility |
+|---|---|---|
+| `GET` | `/api/activity/release-notes` | List release-note timeline nodes with filters and publish/artifact state. |
+| `GET` | `/api/activity/release-notes/{run_id}` | Return run detail, stage chain, events, artifacts, and artifact actions. |
+| `GET` | `/api/activity/release-notes/{run_id}/artifacts` | Return authoritative artifact actions. |
+| `GET` | `/api/activity/release-notes/{run_id}/artifact/{kind}/download` | Download Markdown/PDF, preferring published repo and falling back to local storage. |
+| `POST` | `/api/activity/release-notes/{run_id}/artifact/{kind}/upload` | Upload reviewed Markdown/PDF replacement to the configured artifact Git repo. |
+| `POST` | `/api/activity/chat` | Ask selected-node artifact questions. |
+| `GET` | `/api/activity/chat/{session_id}` | Restore Activity chatbot conversation. |
+
+### GitHub Upload Semantics
+
+`kind` must be `markdown` or `pdf` and maps to fixed filenames only:
+
+| Kind | GitHub filename | Accepted local file |
+|---|---|---|
+| `markdown` | `release-notes.md` | `.md`, `.markdown`, `.txt` |
+| `pdf` | `release-notes.pdf` | `.pdf` with `%PDF` header |
+
+Upload behavior:
+
+1. Verify authenticated access to the selected release-note run.
+2. Resolve existing publish metadata from run events.
+3. If publish metadata exists, clone the artifact repo branch and overwrite the exact file in the existing folder.
+4. If publish metadata is missing, create a stable folder name from run creation time and generated session title, upload the reviewed file, and persist `artifact_publish_completed` metadata for that folder.
+5. Record `artifact_overwrite_started`, `artifact_overwrite_completed`, or `artifact_overwrite_failed` events.
+6. Return the overwrite/create status, branch, folder, filename, source filename, and commit hash.
+
+The upload route is not a general GitHub editor. It only writes to the configured artifact repository, configured branch, selected run folder, and fixed release-note filenames.
 ## 22.2 MoP Creation Workflow
 
 ### Purpose

@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block body %}
+<main class="container-fluid activity-workspace py-3">
+  <div class="activity-shell">
+    <section class="panel activity-timeline-panel" aria-labelledby="activity-title">
+      <div class="activity-panel-header">
+        <div>
+          <div class="stream-eyebrow">Release Intelligence</div>
+          <h1 id="activity-title">Activity Timeline</h1>
+        </div>
+        <div class="activity-header-metrics" aria-live="polite">
+          <span id="activity-node-count">0 runs</span>
+          <span id="activity-published-count">0 published</span>
+        </div>
+      </div>
+
+      <div class="activity-filter-bar" aria-label="Activity filters">
+        <label class="activity-filter-control" for="activity-time-range">
+          <span>Range</span>
+          <select id="activity-time-range" class="form-select form-select-sm">
+            <option value="today">Today</option>
+            <option value="7d">7 days</option>
+            <option value="30d" selected>30 days</option>
+            <option value="all">All</option>
+          </select>
+        </label>
+        <label class="activity-filter-control" for="activity-status-filter">
+          <span>Status</span>
+          <select id="activity-status-filter" class="form-select form-select-sm">
+            <option value="all" selected>All</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="published">Published</option>
+            <option value="failed">Failed</option>
+            <option value="stopped">Stopped</option>
+          </select>
+        </label>
+
+        <label class="activity-filter-control" for="activity-published-filter">
+          <span>Publish</span>
+          <select id="activity-published-filter" class="form-select form-select-sm">
+            <option value="all" selected>All</option>
+            <option value="true">Published</option>
+            <option value="false">Not published</option>
+          </select>
+        </label>
+        <button id="activity-refresh" class="btn btn-sm btn-outline-secondary" type="button">Refresh</button>
+      </div>
+
+      <div id="activity-status" class="activity-status-line" role="status">Loading release-note activity...</div>
+
+      <div class="activity-graph-frame">
+        <div class="activity-graph-scroll" id="activity-graph-scroll" tabindex="0" aria-label="Scrollable release-note activity timeline">
+          <div id="activity-graph" class="activity-graph" role="list"></div>
+        </div>
+        <div id="activity-tooltip" class="activity-tooltip" aria-hidden="true"></div>
+      </div>
+
+      <section class="activity-detail-panel" aria-labelledby="activity-detail-title">
+        <div class="activity-detail-header">
+          <div>
+            <div class="stream-eyebrow">Run Detail</div>
+            <h2 id="activity-detail-title">Select a timeline node</h2>
+          </div>
+          <div id="activity-detail-status" class="activity-detail-status">Idle</div>
+        </div>
+        <div id="activity-detail-summary" class="activity-detail-summary">Click a release-note node to inspect how the request moved through the autonomy sequence.</div>
+        <div id="activity-artifact-actions" class="activity-artifact-actions" aria-live="polite"></div>
+        <div id="activity-stage-chain" class="activity-stage-chain" role="list"></div>
+      </section>
+    </section>
+
+    <aside id="activity-chat-panel" class="panel activity-chat-panel" aria-labelledby="activity-chat-title">
+      <div class="activity-panel-header activity-chat-header">
+        <div>
+          <div class="stream-eyebrow">Activity Copilot</div>
+          <h2 id="activity-chat-title">Artifact Chat</h2>
+        </div>
+        <span id="activity-chat-mode" class="stream-privacy-badge">Grounded</span>
+      </div>
+      <div id="activity-chat-canvas" class="activity-chat-canvas">
+        <div id="activity-chat-sphere-stage" class="activity-chat-sphere-stage" aria-hidden="true">
+          <div id="activity-chat-sphere-dock" class="activity-chat-sphere-dock">
+            <div class="activity-chat-sphere-glow"></div>
+            <canvas id="activity-chat-sphere-canvas" width="520" height="520"></canvas>
+          </div>
+        </div>
+
+        <div id="activity-chat-status" class="activity-chat-status" role="status">Select a node to ask about artifacts, scans, publish status, or stages.</div>
+        <div id="activity-chat-transcript" class="activity-chat-transcript" aria-live="polite">
+          <div class="activity-chat-empty">
+            
+          </div>
+        </div>
+      </div>
+      <div class="activity-chat-composer">
+        <textarea id="activity-chat-input" class="form-control" rows="3" placeholder="Ask about selected nodes or artifacts"></textarea>
+        <button id="activity-chat-send" class="btn btn-primary" type="button" disabled>Ask</button>
+      </div>
+    </aside>
+  </div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/activity.js?v=activity-layout-fixes-2"></script>
+{% endblock %}
+

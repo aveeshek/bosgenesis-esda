@@ -77,6 +77,8 @@ Release-note drafts are saved as Markdown and PDF artifacts under `ARTIFACT_STOR
 
 When `ARTIFACT_GIT_PUBLISH_ENABLED=true`, a successful release-note run also commits the generated `release-notes.md` and `release-notes.pdf` to `ARTIFACT_GIT_REPO_URL` (`https://github.com/aveeshek/bosgenesis-artifacts.git` by default). ESDA creates a folder named `YYMMDD_HHMMSS_<job-name>` on `ARTIFACT_GIT_BRANCH` and pushes a commit using the configured Git identity. Local publishing relies on the workstation Git credential manager or other non-interactive GitHub credentials; Helm deployments should provide credentials through Kubernetes Secrets and standard git credential configuration.
 
+The `/activity` page can later upload reviewed local Markdown/PDF replacements. For already-published runs, ESDA overwrites the exact `release-notes.md` or `release-notes.pdf` in the existing published folder. For local-only runs, the first Activity upload creates a stable GitHub folder for that run and records publish metadata so future uploads target the same folder. Upload is constrained to those two artifact filenames and is not a general GitHub editor.
+
 ## LLM Model Profiles
 
 The UI exposes a model selector for the chatbot and release-note generation. The default profile is GPT-5 Pro on Azure OpenAI using `DefaultAzureCredential`:

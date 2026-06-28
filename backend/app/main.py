@@ -2,10 +2,22 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 import logging
+import re
 from time import perf_counter
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     FileResponse,
@@ -20,8 +32,9 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from backend.app.activity import ActivityService
 from backend.app.approvals import ApprovalService
-from backend.app.artifact_publisher import ArtifactGitPublisher
+from backend.app.artifact_publisher import ArtifactGitPublishError, ArtifactGitPublisher
 from backend.app.artifacts import ArtifactService
 from backend.app.auth.security import SessionPrincipal, create_session_cookie, verify_password
 from backend.app.chains.release_notes import ReleaseNoteIntentClassifierChain
@@ -73,6 +86,12 @@ class LlmChatRequest(BaseModel):
     model_profile: str | None = None
 
 
+class ActivityChatRequest(BaseModel):
+    message: str
+    selected_run_ids: list[str] = Field(default_factory=list)
+    session_id: str | None = None
+    model_profile: str | None = None
+
 class WorkflowClassifyRequest(BaseModel):
     message: str
     github_url: str | None = None
@@ -116,6 +135,9 @@ def create_app() -> FastAPI:
         repository=repository, storage_root=settings.artifact_storage_dir
     )
     artifact_publisher = ArtifactGitPublisher(settings)
+    activity_service = ActivityService(
+        repository, settings=settings, artifact_storage_root=artifact_service.storage_root
+    )
     tool_registry = default_tool_registry()
     policy_guard = PolicyGuard(settings=settings, tool_registry=tool_registry)
     approval_service = ApprovalService(
@@ -173,6 +195,7 @@ def create_app() -> FastAPI:
             {"name": "system", "description": "Application health and diagnostics."},
             {"name": "auth", "description": "Local Phase 1 authentication."},
             {"name": "runs", "description": "Agent run lifecycle and event streaming."},
+            {"name": "activity", "description": "Release-note activity timeline and graph data."},
             {"name": "workflows", "description": "Read-only workflow entrypoints."},
             {"name": "policy", "description": "Policy guardrail evaluation."},
             {"name": "approvals", "description": "Human approval lifecycle."},
@@ -188,6 +211,7 @@ def create_app() -> FastAPI:
     app.state.logger = pg_logger
     app.state.artifact_service = artifact_service
     app.state.artifact_publisher = artifact_publisher
+    app.state.activity_service = activity_service
     app.state.tool_registry = tool_registry
     app.state.policy_guard = policy_guard
     app.state.approval_service = approval_service
@@ -389,6 +413,13 @@ def create_app() -> FastAPI:
             request, "release_notes.html", template_context(principal)
         )
 
+
+    @app.get("/activity", response_class=HTMLResponse, tags=["pages"])
+    def activity_page(request: Request) -> HTMLResponse:
+        principal = get_current_user_or_none(request)
+        if not principal:
+            return RedirectResponse("/login", status_code=303)
+        return templates.TemplateResponse(request, "activity.html", template_context(principal))
     @app.get("/approvals", response_class=HTMLResponse, tags=["pages"])
     def approvals_page(request: Request) -> HTMLResponse:
         principal = get_current_user_or_none(request)
@@ -634,6 +665,288 @@ def create_app() -> FastAPI:
         if run.user_id != principal.user_id and "admin" not in principal.roles:
             raise HTTPException(status_code=403, detail="Forbidden")
         return run
+
+    def activity_upload_folder_name(run) -> str:
+        timestamp = run.created_at.strftime("%y%m%d_%H%M%S") if run.created_at else uuid4().hex[:12]
+        title = repository._generate_session_name(run) or run.run_id
+        clean = re.sub(r"[^A-Za-z0-9._-]+", "-", title.strip()).strip("._-")
+        return f"{timestamp}_{(clean or run.run_id)[:72]}"
+
+    @app.get("/api/activity/release-notes", tags=["activity"])
+    def list_release_note_activity(
+        status: str | None = Query(default=None),
+        repo: str | None = Query(default=None),
+        model: str | None = Query(default=None),
+        published: bool | None = Query(default=None),
+        time_range: str = Query(default="30d"),
+        date_from: str | None = Query(default=None),
+        date_to: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=500),
+        include_hidden: bool = Query(default=False),
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict:
+        nodes = activity_service.list_release_note_nodes(
+            user_id=principal.user_id,
+            include_hidden=include_hidden,
+            status=status,
+            repo=repo,
+            model=model,
+            published=published,
+            time_range=time_range,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+        return {"nodes": nodes, "count": len(nodes)}
+
+    @app.get("/api/activity/release-notes/{run_id}", tags=["activity"])
+    def get_release_note_activity_detail(
+        run_id: str,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict:
+        require_run_access(run_id, principal)
+        detail = activity_service.get_release_note_detail(run_id)
+        if not detail:
+            raise HTTPException(status_code=404, detail="Release-note activity not found")
+        return detail
+
+    @app.get("/api/activity/release-notes/{run_id}/artifacts", tags=["activity"])
+    def get_release_note_activity_artifacts(
+        run_id: str,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict:
+        require_run_access(run_id, principal)
+        actions = activity_service.release_note_artifact_actions(run_id)
+        if not actions.get("actions"):
+            raise HTTPException(status_code=404, detail="Release-note artifacts not found")
+        return actions
+
+    @app.get("/api/activity/release-notes/{run_id}/artifact/{kind}/download", tags=["activity"])
+    def download_release_note_activity_artifact(
+        run_id: str,
+        kind: str,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ):
+        require_run_access(run_id, principal)
+        resolution = activity_service.resolve_artifact_download(run_id, kind)
+        if not resolution:
+            raise HTTPException(status_code=404, detail="Requested artifact is not available")
+        if resolution["mode"] == "redirect":
+            return RedirectResponse(resolution["url"], status_code=307)
+        artifact = resolution["artifact"]
+        root = artifact_service.storage_root.resolve()
+        path = (root / artifact["storage_path"]).resolve()
+        if root not in path.parents and path != root:
+            raise HTTPException(status_code=400, detail="Artifact path escaped storage root")
+        return FileResponse(path, media_type=artifact["mime_type"], filename=resolution["filename"])
+
+    @app.post("/api/activity/release-notes/{run_id}/artifact/{kind}/upload", tags=["activity"])
+    async def upload_release_note_activity_artifact(
+        run_id: str,
+        kind: str,
+        file: UploadFile = File(...),
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict:
+        run = require_run_access(run_id, principal)
+        if run.workflow_type != "release_note_creation":
+            raise HTTPException(status_code=400, detail="Artifact upload only supports release-note runs")
+        normalized_kind = kind.strip().lower()
+        if normalized_kind not in {"markdown", "pdf"}:
+            raise HTTPException(status_code=400, detail="Artifact kind must be markdown or pdf")
+
+        actions = activity_service.release_note_artifact_actions(run_id)
+        publish_state = actions.get("publish_state") or {}
+        folder_name = publish_state.get("folder_name")
+        overwrite_existing = bool(publish_state.get("published") and folder_name)
+        if not folder_name:
+            folder_name = activity_upload_folder_name(run)
+        if not artifact_publisher.is_enabled:
+            raise HTTPException(status_code=400, detail="Artifact GitHub publishing is disabled")
+
+        filename = "release-notes.md" if normalized_kind == "markdown" else "release-notes.pdf"
+        max_upload_bytes = 25 * 1024 * 1024
+        content = await file.read(max_upload_bytes + 1)
+        if not content:
+            raise HTTPException(status_code=422, detail="Uploaded file is empty")
+        if len(content) > max_upload_bytes:
+            raise HTTPException(status_code=413, detail="Uploaded file exceeds 25 MB")
+        source_filename = file.filename or filename
+        lowered_source = source_filename.lower()
+        if normalized_kind == "markdown" and not lowered_source.endswith((".md", ".markdown", ".txt")):
+            raise HTTPException(status_code=422, detail="Markdown upload must be .md, .markdown, or .txt")
+        if normalized_kind == "pdf":
+            if not lowered_source.endswith(".pdf"):
+                raise HTTPException(status_code=422, detail="PDF upload must be .pdf")
+            if not content.startswith(b"%PDF"):
+                raise HTTPException(status_code=422, detail="Uploaded file does not look like a PDF")
+
+        repository.add_event(
+            run_id,
+            "artifact_overwrite_started",
+            f"GitHub artifact upload started for {filename}",
+            {
+                "artifact_overwrite": {
+                    "kind": normalized_kind,
+                    "filename": filename,
+                    "source_filename": source_filename,
+                    "folder_name": folder_name,
+                    "branch": publish_state.get("branch") or settings.artifact_git_branch,
+                    "mode": "overwrite" if overwrite_existing else "create_folder",
+                }
+            },
+        )
+        try:
+            overwrite = await artifact_publisher.overwrite_release_artifact(
+                run_id=run_id,
+                folder_name=str(folder_name),
+                filename=filename,
+                content=content,
+                source_filename=source_filename,
+                mime_type=file.content_type,
+                allow_create=not overwrite_existing,
+            )
+        except ArtifactGitPublishError as error:
+            repository.add_event(
+                run_id,
+                "artifact_overwrite_failed",
+                f"GitHub artifact overwrite failed for {filename}",
+                {
+                    "artifact_overwrite": {
+                        "status": "failed",
+                        "kind": normalized_kind,
+                        "filename": filename,
+                        "source_filename": source_filename,
+                        "folder_name": folder_name,
+                        "error": {"message": str(error)},
+                    }
+                },
+            )
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+        if not overwrite_existing:
+            publish_metadata = {
+                "status": "success",
+                "repo_url": overwrite.get("repo_url"),
+                "branch": overwrite.get("branch") or settings.artifact_git_branch,
+                "folder_name": overwrite.get("folder_name"),
+                "folder_path": overwrite.get("folder_name"),
+                "tree_url": overwrite.get("tree_url"),
+                "commit_hash": overwrite.get("commit_hash"),
+                "files": [
+                    {
+                        "filename": filename,
+                        "artifact_id": None,
+                        "mime_type": file.content_type,
+                    }
+                ],
+                "github_url": run.target_url,
+            }
+            repository.add_event(
+                run_id,
+                "artifact_publish_completed",
+                "Release-note artifact folder created in GitHub artifact repository",
+                {"artifact_publish": publish_metadata},
+            )
+
+        repository.add_event(
+            run_id,
+            "artifact_overwrite_completed",
+            f"GitHub artifact overwrite completed for {filename}",
+            {"artifact_overwrite": overwrite},
+        )
+        return {"run_id": run_id, "kind": normalized_kind, "artifact_overwrite": overwrite}
+
+    @app.post("/api/activity/chat", tags=["activity"])
+    async def activity_chat(
+        request: ActivityChatRequest,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict:
+        message = request.message.strip()
+        selected_run_ids = list(dict.fromkeys([run_id for run_id in request.selected_run_ids if run_id]))[:8]
+        if not message:
+            raise HTTPException(status_code=422, detail="Message is required")
+        if not selected_run_ids:
+            raise HTTPException(status_code=422, detail="Select at least one activity node")
+        for run_id in selected_run_ids:
+            run = require_run_access(run_id, principal)
+            if run.workflow_type != "release_note_creation":
+                raise HTTPException(status_code=400, detail="Activity chat only supports release-note runs")
+
+        chat_session_id = request.session_id or f"chat_{uuid4().hex}"
+        if request.session_id:
+            if not repository.get_chat_session(session_id=request.session_id, user_id=principal.user_id):
+                raise HTTPException(status_code=404, detail="Activity chat session not found")
+        else:
+            first_detail = activity_service.get_release_note_detail(selected_run_ids[0]) or {}
+            first_node = first_detail.get("node") or {}
+            repository.create_chat_session(
+                session_id=chat_session_id,
+                user_id=principal.user_id,
+                title=f"Activity: {first_node.get('repository') or selected_run_ids[0]}",
+            )
+
+        context = activity_service.build_chat_context(selected_run_ids)
+        fallback = activity_service.fallback_chat_answer(question=message, context=context)
+        model_profile = request.model_profile or settings.llm_default_model_profile
+        repository.add_chat_message(
+            session_id=chat_session_id,
+            run_id=selected_run_ids[0] if len(selected_run_ids) == 1 else None,
+            role="user",
+            content=message,
+            payload={"selected_run_ids": selected_run_ids, "surface": "activity"},
+        )
+        result = await llm.structured_response(
+            system=(
+                "You are the ESDA Activity artifact analyst. Answer only from the supplied selected "
+                "release-note run context and artifact text. Cite run IDs, artifact IDs, published "
+                "folders, or section names. Never reveal hidden chain-of-thought. Return JSON with "
+                "answer, citations, and safe_summary."
+            ),
+            user_payload=activity_service.chat_prompt_payload(question=message, context=context),
+            fallback=fallback
+            | {
+                "prompt_version": "activity_artifact_chat_v1",
+                "prompt_hash": activity_service.chat_fallback_hash(question=message, context=context),
+            },
+            model_profile=model_profile,
+        )
+        answer = str(result.get("answer") or result.get("message") or fallback["answer"])[:5000]
+        citations = result.get("citations") if isinstance(result.get("citations"), list) else fallback["citations"]
+        safe_summary = str(result.get("safe_summary") or fallback["safe_summary"])[:1000]
+        repository.add_chat_message(
+            session_id=chat_session_id,
+            run_id=selected_run_ids[0] if len(selected_run_ids) == 1 else None,
+            role="assistant",
+            content=answer,
+            payload={
+                "selected_run_ids": selected_run_ids,
+                "citations": citations,
+                "safe_summary": safe_summary,
+                "model_profile": model_profile,
+                "prompt_version": result.get("prompt_version", "activity_artifact_chat_v1"),
+                "prompt_hash": result.get("prompt_hash"),
+                "used_fallback": bool(result.get("used_fallback", False)),
+            },
+        )
+        return {
+            "session_id": chat_session_id,
+            "answer": answer,
+            "citations": citations,
+            "safe_summary": safe_summary,
+            "selected_run_ids": selected_run_ids,
+            "model_profile": model_profile,
+        }
+
+    @app.get("/api/activity/chat/{session_id}", tags=["activity"])
+    def get_activity_chat(
+        session_id: str,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict:
+        session = repository.get_chat_session(session_id=session_id, user_id=principal.user_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Activity chat session not found")
+        messages = repository.list_chat_messages(session_id=session_id, user_id=principal.user_id) or []
+        return {"session": session, "messages": messages}
 
     @app.get("/api/transactions", tags=["runs"])
     def list_transactions(

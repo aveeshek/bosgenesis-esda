@@ -16,33 +16,36 @@ The application is a Python-based web project with:
 
 This document should be treated as the controlling architecture specification. The LLD should remain aligned with it.
 
-## 1.1 Implemented V1 Baseline (2026-06-25)
+## 1.1 Implemented V1 Baseline (2026-06-27)
 
-The current implementation has moved from architecture planning into a working local vertical slice.
+The current implementation has moved from architecture planning into a working local release-note vertical slice. This release-note flow is the final V1 reference design for demonstrating ESDA autonomy.
 
 Implemented and verified:
 
-- Local FastAPI web application with authenticated UI, Bootstrap/JavaScript frontend, SSE progress, approvals, L4 audit, LLM chat, and release-note workflow pages.
-- PostgreSQL-backed users, runs, events, tool calls, LLM review logs, approvals, policies, procedures, and artifact metadata.
-- Azure OpenAI integration through LangChain using Azure CLI bearer-token auth for local proofing with the provided GPT-4.1 mini deployment. GPT-5 remains the target production Azure deployment.
+- Local FastAPI web application with authenticated UI, matte glass JavaScript/HTML/CSS frontend, SSE progress, approvals, L4 audit, LLM chat, release-note workflow page, Activity timeline/chat page, model selector, profile menu, and hidden/pinnable release-note activity rail.
+- PostgreSQL-backed users, runs, ordered events, tool calls, LLM review logs, approvals, policies, procedures, user transaction visibility, and artifact metadata.
+- Azure OpenAI integration through LangChain using Azure CLI or default Azure credentials for local proofing, with GPT-5 as the target/default profile and additional selectable model profiles where configured.
 - Release-note workflow classifier, planner, verifier, recovery recommender, report writer, structured schemas, prompt versioning, and prompt hash logging.
 - MCP-first `bosgenesis-release-note-agent` integration using `github_release_scan_start`, `github_release_scan_status`, `github_release_generate_note`, and `github_release_get_artifact`.
-- Release-note-agent output is treated as the initial document/evidence source; ESDA GPT finalizes the Markdown draft from that evidence.
-- Final Markdown artifact and release-note-agent-rendered PDF artifact are saved and exposed through download links.
-- Live progress is scrollable and copyable for review/debugging.
-- Next architecture requirement: progress, current run state, and transaction history must be refresh-safe and backed by PostgreSQL for all workflow pages.
-- Unit/integration tests cover release-note chains, adapter mapping, artifact handling, graph execution, policy, logging, and core app behavior.
+- Release-note-agent output is treated as the first evidence source; ESDA GPT finalizes the Markdown draft only from collected evidence, scan summaries, and bounded recovery notes.
+- Temporary repository clone, common vulnerability scan, LLM-assisted safe vulnerability summary, `pylint` or safe static code-quality scan, cleanup, and high-level security/quality matrices.
+- Final Markdown and PDF artifacts include release-note content plus code-quality and vulnerability scan details.
+- Successful runs publish `release-notes.md` and `release-notes.pdf` to `aveeshek/bosgenesis-artifacts` under `YYMMDD_HHMMSS_<job-name>` when Git publishing is enabled. Activity page uploads can later overwrite those exact files with reviewed local replacements, or create a stable GitHub folder for local-only historical runs.
+- Live progress is scrollable/copyable. Ephemeral working notes stream only while the page is connected and are not persisted; persisted Safe Reasoning Summaries replace them after completion.
+- Agent Activity Feed visualizes autonomy nodes from intake through publish/complete, remains hidden until a run starts, auto-hides after activity, and can be pinned by the user.
+- Completed runs do not automatically reload after refresh; active runs restore automatically. Historical runs restore only when selected from the floating history drawer.
+- Unit/integration tests cover release-note chains, adapter mapping, artifact handling, graph execution, repo analysis, artifact publishing, Activity upload/create-overwrite behavior, UI contracts, policy, logging, and core app behavior. Latest full suite result: 84 tests passed.
 
 Current V1 scope decision:
 
 - Do not start every memory store and workflow family at once.
-- Keep PostgreSQL as the mandatory store for runs, logs, LLM review records, and artifact metadata.
+- Keep PostgreSQL as the mandatory store for runs, logs, LLM review records, transaction visibility, and artifact metadata.
 - Keep Qdrant optional until semantic memory lookup is required by a workflow.
 - Do not use ClickHouse or SQLite in the current V1 path.
 - Do not deploy ESDA to the cluster yet; local ESDA uses ingress for existing BOS Genesis services, while future Helm deployment should use in-cluster service DNS names.
+- Treat GitHub artifact publishing and Activity artifact replacement as narrow, configured release-note artifact operations, not as general unrestricted write-back capability.
 
 ---
-
 ## 2. Goals
 
 The system must provide:
@@ -221,6 +224,7 @@ Recommended:
 | Chat Console | `/` | Main chatbot workspace. |
 | Floating Transaction Sidebar | Shared component | Hidden-by-default left drawer listing previous transactions and restoring selected runs. |
 | Release Notes | `/release-notes` | Generate draft release notes from GitHub URLs using GPT-5 and `release-note-agent`, with refresh-safe live progress and PostgreSQL audit logs. |
+| Activity | `/activity` | Browse release-note timeline history, inspect run stages/artifacts, ask artifact-grounded questions, download Markdown/PDF, and upload reviewed replacements to the configured artifact GitHub repo. |
 | Run Detail | `/runs/{run_id}` | Plan, tool calls, approvals, evidence, final report restored from persisted run state. |
 | Approval Queue | `/approvals` | Pending approvals and historical decisions. |
 | Artifacts | `/artifacts` | Release notes, MoPs, execution reports. |
@@ -356,8 +360,36 @@ backend/
 | `GET` | `/api/admin/tools` | List tool registry. |
 | `GET` | `/api/admin/policies` | List policy rules. |
 
----
+### 8.3 Release-Note Final Implementation Modules
 
+The final release-note implementation uses the following concrete module boundaries:
+
+| Module | Contract |
+|---|---|
+| `backend/app/graphs/release_notes.py` | Owns the release-note state machine: classify, plan, evidence, clone, security scan, quality scan, cleanup, draft, validate, recover, artifact save, publish, and final status. |
+| `backend/app/chains/release_notes.py` | Owns prompt-versioned classifier/planner/verifier/recovery/report-writer chains and safe reasoning summary fields. |
+| `backend/app/tools/release_note_agent.py` | Owns MCP/REST compatibility with `bosgenesis-release-note-agent` and artifact hydration. |
+| `backend/app/repo_analysis.py` | Owns temporary local clone, source inventory, common vulnerability scan, LLM-safe security review, code quality scan, and cleanup. |
+| `backend/app/artifacts.py` | Owns local artifact persistence, artifact metadata, MIME types, and download references. |
+| `backend/app/artifact_publisher.py` | Owns clone/commit/push to the configured artifact Git repository. |
+| `backend/app/static/js/release_notes.js` | Owns release-note page state machine, active-run rehydration, ephemeral working stream, safe summaries, activity rail, history drawer, and artifact download actions. |
+
+### 8.4 Release-Note Artifact Publishing Contract
+
+Artifact publishing is a finalization step for successful release-note runs.
+
+| Setting | Required behavior |
+|---|---|
+| `ARTIFACT_GIT_PUBLISH_ENABLED` | When true, successful release-note runs publish the Markdown/PDF pair. |
+| `ARTIFACT_GIT_REPO_URL` | Target Git repository; default is `https://github.com/aveeshek/bosgenesis-artifacts.git`. |
+| `ARTIFACT_GIT_BRANCH` | Target branch; default is `main`. |
+| `ARTIFACT_GIT_WORKSPACE_DIR` | Local working directory used for temporary publisher clones. |
+| `ARTIFACT_GIT_USER_NAME` / `ARTIFACT_GIT_USER_EMAIL` | Commit identity. |
+| `ARTIFACT_GIT_COMMAND_TIMEOUT_SECONDS` | Timeout for clone, commit, and push operations. |
+
+Publish folder naming must be `YYMMDD_HHMMSS_<job-name>`. Each publish folder must contain `release-notes.md` and `release-notes.pdf`. A publish failure marks the run failed at the publish node, but local artifacts remain available through ESDA download endpoints.
+
+---
 ## 9. Azure GPT-5 Integration
 
 ### 9.1 Model Configuration
@@ -495,8 +527,28 @@ Implementation rules:
 - Snapshot APIs must be sufficient to redraw the page without depending on browser memory.
 - In-progress runs remain visible in the transaction sidebar until completed, failed, cancelled, or user-cleared.
 
----
+### 10.5 Release-Note Final State Machine
 
+The release-note graph is the first complete ESDA autonomy demonstration and uses these states:
+
+1. `intake`
+2. `classify`
+3. `plan`
+4. `collect_evidence`
+5. `clone_repo`
+6. `security_scan`
+7. `quality_scan`
+8. `cleanup_repo`
+9. `draft`
+10. `validate`
+11. `recover_or_continue`
+12. `save_artifacts`
+13. `publish_artifacts`
+14. `complete`
+
+Each state must persist an ordered event before streaming it to the browser. Ephemeral working notes may be streamed during active work, but only safe summaries and structured outcomes are persisted.
+
+---
 ## 11. Memory Architecture
 
 ### 11.1 Memory Types

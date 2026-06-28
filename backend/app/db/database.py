@@ -97,6 +97,39 @@ class RunRepository:
                 )
             )
 
+    def get_chat_session(self, *, session_id: str, user_id: str) -> dict | None:
+        with self.database.session() as db:
+            session = db.get(ChatSession, session_id)
+            if not session or session.user_id != user_id:
+                return None
+            return {
+                "session_id": session.session_id,
+                "user_id": session.user_id,
+                "title": session.title,
+                "created_at": session.created_at.isoformat(),
+                "updated_at": session.updated_at.isoformat(),
+            }
+
+    def list_chat_messages(self, *, session_id: str, user_id: str) -> list[dict] | None:
+        with self.database.session() as db:
+            session = db.get(ChatSession, session_id)
+            if not session or session.user_id != user_id:
+                return None
+            messages = db.scalars(
+                select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at)
+            ).all()
+            return [
+                {
+                    "message_id": message.message_id,
+                    "session_id": message.session_id,
+                    "run_id": message.run_id,
+                    "role": message.role,
+                    "content": message.content,
+                    "payload": message.payload,
+                    "created_at": message.created_at.isoformat(),
+                }
+                for message in messages
+            ]
     def create_run(
         self,
         *,
@@ -267,6 +300,120 @@ class RunRepository:
                 )
             return result
 
+    def list_release_note_activity_snapshots(
+        self,
+        *,
+        user_id: str,
+        include_hidden: bool = False,
+        limit: int = 100,
+    ) -> list[dict]:
+        timeline_event_types = {
+            "run_started",
+            "workflow_classified",
+            "planning_started",
+            "plan_created",
+            "repo_clone_started",
+            "repo_clone_completed",
+            "vulnerability_scan_completed",
+            "quality_scan_completed",
+            "repo_cleanup_completed",
+            "draft_started",
+            "validation_completed",
+            "recovery_recommendation",
+            "artifact_created",
+            "artifact_publish_started",
+            "artifact_publish_completed",
+            "artifact_publish_failed",
+            "run_completed",
+            "run_failed",
+        }
+        with self.database.session() as db:
+            runs = db.scalars(
+                select(AgentRun)
+                .where(
+                    AgentRun.user_id == user_id,
+                    AgentRun.workflow_type == "release_note_creation",
+                )
+                .order_by(AgentRun.updated_at.desc(), AgentRun.created_at.desc())
+                .limit(limit)
+            ).all()
+            if not runs:
+                return []
+
+            run_ids = [run.run_id for run in runs]
+            views = db.scalars(
+                select(UserRunView).where(
+                    UserRunView.user_id == user_id,
+                    UserRunView.run_id.in_(run_ids),
+                )
+            ).all()
+            views_by_run = {view.run_id: view for view in views}
+            visible_runs = []
+            for run in runs:
+                view = views_by_run.get(run.run_id)
+                if view and view.hidden_at and not include_hidden:
+                    continue
+                visible_runs.append(run)
+            if not visible_runs:
+                return []
+
+            visible_run_ids = [run.run_id for run in visible_runs]
+            event_counts = {
+                run_id: int(count)
+                for run_id, count in db.execute(
+                    select(RunEvent.run_id, func.count())
+                    .where(RunEvent.run_id.in_(visible_run_ids))
+                    .group_by(RunEvent.run_id)
+                ).all()
+            }
+            events_by_run = {run_id: [] for run_id in visible_run_ids}
+            events = db.scalars(
+                select(RunEvent)
+                .where(
+                    RunEvent.run_id.in_(visible_run_ids),
+                    RunEvent.event_type.in_(timeline_event_types),
+                )
+                .order_by(RunEvent.run_id, RunEvent.created_at, RunEvent.event_id)
+            ).all()
+            for event in events:
+                grouped = events_by_run.setdefault(event.run_id, [])
+                grouped.append(self._event_to_dict(event, sequence=len(grouped) + 1))
+
+            artifacts_by_run = {run_id: [] for run_id in visible_run_ids}
+            artifacts = db.scalars(
+                select(Artifact)
+                .where(Artifact.run_id.in_(visible_run_ids))
+                .order_by(Artifact.run_id, Artifact.created_at)
+            ).all()
+            for artifact in artifacts:
+                artifacts_by_run.setdefault(artifact.run_id, []).append(self._artifact_to_dict(artifact))
+
+            snapshots = []
+            for run in visible_runs:
+                view = views_by_run.get(run.run_id)
+                run_artifacts = artifacts_by_run.get(run.run_id, [])
+                snapshots.append(
+                    {
+                        "transaction": {
+                            "run_id": run.run_id,
+                            "workflow_type": run.workflow_type,
+                            "title": self._generate_session_name(run),
+                            "session_name": self._generate_session_name(run),
+                            "goal": run.goal,
+                            "status": run.status,
+                            "target_url": run.target_url,
+                            "namespace": run.namespace,
+                            "artifact_count": len(run_artifacts),
+                            "last_event_sequence": event_counts.get(run.run_id, 0),
+                            "hidden_at": view.hidden_at.isoformat() if view and view.hidden_at else None,
+                            "created_at": run.created_at.isoformat(),
+                            "updated_at": run.updated_at.isoformat(),
+                        },
+                        "events": events_by_run.get(run.run_id, []),
+                        "artifacts": run_artifacts,
+                    }
+                )
+            return snapshots
     def mark_transaction_opened(self, *, user_id: str, run_id: str) -> None:
         with self.database.session() as db:
             view = db.get(UserRunView, {"user_id": user_id, "run_id": run_id})
