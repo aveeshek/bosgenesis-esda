@@ -300,10 +300,11 @@ class RunRepository:
                 )
             return result
 
-    def list_release_note_activity_snapshots(
+    def list_activity_snapshots(
         self,
         *,
         user_id: str,
+        workflow_types: list[str] | tuple[str, ...] | None = None,
         include_hidden: bool = False,
         limit: int = 100,
     ) -> list[dict]:
@@ -328,14 +329,11 @@ class RunRepository:
             "run_failed",
         }
         with self.database.session() as db:
+            query = select(AgentRun).where(AgentRun.user_id == user_id)
+            if workflow_types:
+                query = query.where(AgentRun.workflow_type.in_(list(workflow_types)))
             runs = db.scalars(
-                select(AgentRun)
-                .where(
-                    AgentRun.user_id == user_id,
-                    AgentRun.workflow_type == "release_note_creation",
-                )
-                .order_by(AgentRun.updated_at.desc(), AgentRun.created_at.desc())
-                .limit(limit)
+                query.order_by(AgentRun.updated_at.desc(), AgentRun.created_at.desc()).limit(limit)
             ).all()
             if not runs:
                 return []
@@ -414,6 +412,21 @@ class RunRepository:
                     }
                 )
             return snapshots
+
+    def list_release_note_activity_snapshots(
+        self,
+        *,
+        user_id: str,
+        include_hidden: bool = False,
+        limit: int = 100,
+    ) -> list[dict]:
+        return self.list_activity_snapshots(
+            user_id=user_id,
+            workflow_types=("release_note_creation",),
+            include_hidden=include_hidden,
+            limit=limit,
+        )
+
     def mark_transaction_opened(self, *, user_id: str, run_id: str) -> None:
         with self.database.session() as db:
             view = db.get(UserRunView, {"user_id": user_id, "run_id": run_id})

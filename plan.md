@@ -53,7 +53,7 @@ Phases:
 - [ ] Phase 3: Reviewable semi-autonomous agent.
 - [ ] Phase 4: Conditional L4 bounded agent.
 
-## 3.1 Current Implementation Update - 2026-06-27
+## 3.1 Current Implementation Update - 2026-06-29
 
 - [x] Actual V1 hello-world workflow is release-note generation using `bosgenesis-release-note-agent`.
 - [x] ESDA runs locally; do not deploy ESDA into the cluster for the current iteration.
@@ -70,7 +70,11 @@ Phases:
 - [x] ESDA saves both Markdown and PDF artifacts, enriches them with scan details, and exposes separate download buttons.
 - [x] Release-note live progress is scrollable and copyable.
 - [x] Release-note progress is refresh-safe for active runs; completed runs reset to the initial page unless explicitly selected from the history drawer.
-- [x] Latest full backend verification for this slice: `python -m pytest -q` passed with 84 tests, with focused checks for graph execution, repo analysis, artifact publishing, Activity upload/create-overwrite behavior, and UI contracts.
+- [x] Latest full release-note/Activity backend verification for this slice: `python -m pytest -q` passed with 84 tests, with focused checks for graph execution, repo analysis, artifact publishing, Activity upload/create-overwrite behavior, and UI contracts.
+- [x] MoP Generation page is implemented as the second workflow slice using the Release Notes theme and Activity integration.
+- [x] MoP Generation creates durable PostgreSQL runs, source/target namespace scope, planning stream, safe summaries, JSON logs, Agent Activity Feed, and complete bundle artifacts.
+- [x] MoP Generation preserves professional MoP Creation Agent Markdown/PDF where available, builds `deployment-artifacts.zip`, builds complete `mop-bundle.zip`, includes raw generated ConfigMaps under `deployment-artifacts/kubernetes-manifests/raw/` when present, and publishes the unextracted bundle zip to GitHub when enabled.
+- [x] Activity is now multi-workflow for Release Note and MoP Generation runs.
 
 ## 3.2 Final Release-Note Agent Implementation Checklist - 2026-06-27
 
@@ -371,7 +375,7 @@ Phases:
 ### 5.6 Diagnostic Graphs
 
 - [x] Implement release-note draft graph.
-- [ ] Implement MoP creation draft graph.
+- [ ] Implement MoP generation draft graph.
 - [ ] Implement Kubernetes read-only diagnostic graph.
 - [ ] Implement Helm read-only diagnostic graph.
 - [ ] Add graph node for `retrieve_memory`.
@@ -520,7 +524,34 @@ Phases:
 - [x] Bound Activity Chat answers to selected release-note nodes/artifacts and cite runs/artifacts/published folders.
 - [x] Add tests for Activity page shell, timeline API, detail API, chat endpoint, upload overwrite, upload create-folder, and sidebar absence.
 
-### 5.12 Phase 2 Exit Checks
+
+### 5.12 MoP Generation Page and Workflow
+
+- [x] Add dedicated `/mop-generation` page using the final Release Notes page as the baseline design.
+- [x] Add namespace dropdown sourced from backend allowlist/discovery endpoint.
+- [x] Add change intent input, target environment, optional Helm release, implementation window, and analysis depth controls.
+- [x] Use bundle-centric output behavior for MoP V1 artifact rendering while preserving Markdown/PDF components locally.
+- [x] Add model selector integration through the existing top-right model dropdown.
+- [x] Add MoP run creation endpoint and durable PostgreSQL transaction creation before any LLM/tool work.
+- [x] Add MoP intent classifier and prompt version/hash logging.
+- [x] Add GPT-5 read-only evidence collection planner.
+- [x] Add namespace allowlist and user permission validation.
+- [x] Add k8s-inspector MCP adapter for non-secret namespace evidence.
+- [x] Add helm-manager MCP adapter for Helm release/revision/status evidence.
+- [x] Add mop-creation-agent MCP adapter for initial MoP draft/evidence generation.
+- [x] Add MoP Generation settings, policy/tool-registry entries, graph, and Phase A/B/C/D/E tests.
+- [x] Add MoP Generation graph nodes through classify, plan, namespace, k8s evidence, Helm evidence, MoP agent, draft, validate, recovery, and final status.
+- [x] Add artifact save/publish graph nodes in Phase F.
+- [x] Add SSE live progress using the same sphere animation, ephemeral working stream, safe reasoning summary, copyable JSON logs, and activity rail behavior as Release Notes.
+- [x] Add MoP Markdown/PDF component preservation through the bundle builder.
+- [x] Build `deployment-artifacts.zip` and complete `mop-bundle.zip`.
+- [x] Publish successful unextracted `mop-bundle.zip` to the configured artifact GitHub repository under `YYMMDD_HHMMSS_mop_<job-name>`.
+- [x] Add Activity timeline support for `mop_generation` runs with workflow filters and MoP artifact actions.
+- [x] Add Activity chatbot grounding over selected MoP runs and MoP artifacts.
+- [x] Add tests for namespace policy, MCP adapter mapping, MoP graph fallback happy path, validation, and UI page shell.
+- [ ] Add tests for live MCP happy path and browser-level SSE/sidebar behavior; artifact save, Git publishing, and Activity timeline inclusion are covered by automated tests.
+
+### 5.13 Phase 2 Exit Checks
 
 - [x] Agent can classify workflow type.
 - [x] Agent creates a plan before tools execute.
@@ -828,7 +859,7 @@ Phases:
 - [x] Background workflow execution boundary.
 - [ ] Persisted state snapshot writer per graph transition.
 - [x] Release-note creation graph.
-- [ ] MoP creation graph.
+- [x] MoP Generation graph through read-only evidence/draft/validation.
 - [ ] MoP execution graph.
 - [ ] Helm management graph.
 - [ ] Kubernetes management graph.
@@ -1042,3 +1073,35 @@ Minimum workflow:
 - [x] PostgreSQL stores tool logs.
 - [x] PostgreSQL stores LLM review logs.
 - [x] UI shows final evidence-backed report.
+
+## 16. MoP Generation Vertical Slice Checklist
+
+Current target: create a Release Notes style MoP Generation page that produces a read-only Method of Procedure draft from namespace, Kubernetes, Helm, and MoP-agent evidence.
+
+### 16.1 Completed
+
+- [x] Added MoP Generation architectural plan in `knowledge-base/mop-generation/plan.md`.
+- [x] Added settings for MoP/k8s/Helm MCP endpoints, timeouts, namespace allowlist, target namespace placeholder allowlist, default environment, and artifact folder prefix.
+- [x] Added `GET /api/mop-generation/namespaces`.
+- [x] Added `POST /api/mop-generation` run creation.
+- [x] Added read-only MCP adapters for k8s-inspector, helm-manager, and mop-creation-agent.
+- [x] Added secret redaction for nested Kubernetes Secret-like payloads.
+- [x] Added MoP classifier, planner, report writer, verifier, and recovery chains.
+- [x] Added real graph execution events for classify, plan, scope, k8s, Helm, MoP agent, draft, validation, recovery, bundle, Git export, and completion.
+- [x] Added `/mop-generation` route and top-nav entry.
+- [x] Added MoP UI using the Release Notes baseline theme, sphere, live stream, safe summaries, transaction sidebar, JSON logs, icon-only Copy Logs button, Autonomy Notes maximize modal, and Agent Activity Feed.
+- [x] Added source namespace dropdown values including `bosgenesis`, `signoz`, and `agent-testing`.
+- [x] Added target namespace placeholder dropdown values including `generic-namespace` and `agent-testing`.
+- [x] Renamed the primary action to `Generate MoP Bundle`.
+- [x] Rendered and saved final MoP Markdown/PDF artifacts through bundle generation.
+- [x] Preserved MoP Creation Agent professional Markdown/PDF and renderer metadata when available.
+- [x] Built `deployment-artifacts/`, `deployment-artifacts.zip`, and complete `mop-bundle.zip`.
+- [x] Copied raw generated ConfigMaps into `deployment-artifacts/kubernetes-manifests/raw/` when present before creating `deployment-artifacts.zip`.
+- [x] Published unextracted `mop-bundle.zip` to the configured GitHub artifact repository when enabled.
+- [x] Extended Activity page timeline/API/chat to include MoP runs and MoP artifacts.
+- [x] Added unit/integration coverage for adapters, redaction, chains, graph fallback execution, artifacts, publishing, Activity inclusion, and page shell.
+
+### 16.2 Pending
+
+- [ ] Continue validating exact live MCP tool names and payload contracts for deployed k8s-inspector, helm-manager, and mop-creation-agent as those services evolve.
+- [ ] Add browser-level UI test for MoP sidebar restore, Autonomy Notes modal, bundle download, and activity rail behavior once the in-app browser sandbox issue is resolved.

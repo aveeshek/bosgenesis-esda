@@ -12,9 +12,9 @@ This version is also aligned with `hld.md`. Where the HLD describes the LLM prov
 
 This LLD is additionally aligned with `project_architecture_specification.md`, which finalizes the project as a Python web application with a JavaScript/HTML/CSS frontend, Azure GPT-5, LangGraph, LangChain, LangMem, PostgreSQL episodic/procedural memory, Qdrant semantic memory, and PostgreSQL review-grade logging. If this LLD conflicts with that specification, the project architecture specification should be treated as the source of truth.
 
-## 1.1 Current Low-Level Implementation Status (2026-06-27)
+## 1.1 Current Low-Level Implementation Status (2026-06-29)
 
-The implemented V1 hello-world workflow is release-note generation. This path now demonstrates the intended ESDA autonomy pattern end to end: authenticated UI, model selection, GPT-backed classification/planning, governed MCP tool invocation, temporary source-code inspection, live progress, persisted safe summaries, downloadable Markdown/PDF artifacts, and GitHub artifact publishing.
+The implemented V1 baseline includes release-note generation, Activity timeline/artifact chat, and MoP Generation bundle generation. Release Notes remains the hello-world autonomy showcase and demonstrates the intended ESDA autonomy pattern end to end: authenticated UI, model selection, GPT-backed classification/planning, governed MCP tool invocation, temporary source-code inspection, live progress, persisted safe summaries, downloadable Markdown/PDF artifacts, and GitHub artifact publishing.
 
 Implemented modules and responsibilities:
 
@@ -31,6 +31,12 @@ Implemented modules and responsibilities:
 | `backend/app/static/js/activity.js` | Activity timeline rendering, node selection, artifact actions, GitHub upload panel, and artifact chat interactions. |
 | `backend/app/templates/activity.html` | Activity page shell using the final matte-glass two-pane layout. |
 | `backend/app/templates/release_notes.html` | Matte glass release-note layout with release input panel, wider live progress panel, draft artifact panel, hidden history drawer, and collapsible activity rail. |
+| `backend/app/tools/mop_agents.py` | MCP-compatible adapters for k8s-inspector, helm-manager, and mop-creation-agent with read-only calls and redaction. |
+| `backend/app/chains/mop_generation.py` | MoP classifier, planner, report writer, verifier, and recovery recommender with prompt version/hash logging. |
+| `backend/app/graphs/mop_generation.py` | MoP workflow graph for source/target scope, evidence collection, MoP-agent invocation, bundle assembly, Git export, and final status. |
+| `backend/app/mop_bundle.py` | Deterministic MoP bundle builder for professional agent artifact preservation, deployment artifact tree, raw ConfigMap promotion, `deployment-artifacts.zip`, and complete `mop-bundle.zip`. |
+| `backend/app/static/js/mop_generation.js` | MoP page state machine, SSE progress, shared sphere, Autonomy Notes, icon-only copy logs, maximize modal, activity feed, bundle download, and transaction restore behavior. |
+| `backend/app/templates/mop_generation.html` | Matte-glass MoP Generation page shell using Release Notes as the final baseline design. |
 
 Current release-note sequence:
 
@@ -76,6 +82,29 @@ Current data-store position:
 - Safe reasoning summaries, plans, validation summaries, recovery summaries, and publish summaries are persisted for review.
 - Qdrant remains optional for V1 and should only be enabled once semantic memory lookup is needed.
 - ClickHouse and SQLite are excluded from the current V1 path.
+
+---
+## 1.2 Current Low-Level Slice: MoP Generation Bundle
+
+MoP Generation is implemented and reuses the final Release Notes and Activity layout/runtime contracts.
+
+Current MoP sequence:
+
+1. User opens `/mop-generation`, selects a source namespace, target namespace placeholder, environment, model profile, analysis depth, and bounded change intent.
+2. ESDA creates a durable PostgreSQL run before any LLM/tool work.
+3. UI enters `00 / CREATING PLAN`, shows ephemeral working notes, and delays activity-feed reveal briefly.
+4. ESDA classifies the request as `mop_generation` and creates a bounded read-only bundle-generation plan.
+5. ESDA validates source namespace allowlist, target namespace placeholder allowlist, user permission, workflow policy, and tool permissions.
+6. ESDA calls k8s inspector MCP tools for workload/service/ingress/event/config metadata when reachable, excluding secret values.
+7. ESDA calls helm manager MCP tools for release status, revisions, chart metadata, values summary, and rollback-relevant metadata when reachable.
+8. ESDA calls `bosgenesis-mop-creation-agent` over MCP/HTTP-compatible tools to generate the professional initial MoP bundle.
+9. ESDA preserves MoP Creation Agent Markdown/PDF artifacts and renderer metadata when available. It only generates fallback text/PDF when the agent does not return professional artifacts.
+10. ESDA assembles `artifact.json` or `esda-artifact.json`, `machine_execution_plan.yaml`, human MoP Markdown, installation notes, PDF, `deployment-artifacts/`, `deployment-artifacts.zip`, and `mop-bundle.zip`.
+11. Raw generated ConfigMap YAMLs returned by the agent are copied into `deployment-artifacts/kubernetes-manifests/raw/` before `deployment-artifacts.zip` is created.
+12. ESDA validates required bundle files, namespace manifest, artifact index, zip files, optional Helm artifacts, optional rendered manifests, and warnings.
+13. ESDA saves all bundle files as local artifacts and exposes `Download MoP Bundle` for `mop-bundle.zip`.
+14. If Git publishing is enabled, ESDA publishes the unextracted `mop-bundle.zip` to the configured artifact repo under `YYMMDD_HHMMSS_mop_<job-name>`.
+15. Activity shows the MoP run alongside Release Notes with workflow badges, stage chain, bundle artifact actions, and artifact chat grounding.
 
 ---
 ## 2. Target System Name
@@ -1939,11 +1968,11 @@ The Activity page is the release-note observability and artifact review surface.
 
 | Method | Endpoint | Responsibility |
 |---|---|---|
-| `GET` | `/api/activity/release-notes` | List release-note timeline nodes with filters and publish/artifact state. |
-| `GET` | `/api/activity/release-notes/{run_id}` | Return run detail, stage chain, events, artifacts, and artifact actions. |
-| `GET` | `/api/activity/release-notes/{run_id}/artifacts` | Return authoritative artifact actions. |
-| `GET` | `/api/activity/release-notes/{run_id}/artifact/{kind}/download` | Download Markdown/PDF, preferring published repo and falling back to local storage. |
-| `POST` | `/api/activity/release-notes/{run_id}/artifact/{kind}/upload` | Upload reviewed Markdown/PDF replacement to the configured artifact Git repo. |
+| `GET` | `/api/activity/runs` | List Release Note and MoP Generation timeline nodes with filters and publish/artifact state. |
+| `GET` | `/api/activity/runs/{run_id}` | Return run detail, workflow-specific stage chain, events, artifacts, and artifact actions. |
+| `GET` | `/api/activity/runs/{run_id}/artifacts` | Return authoritative artifact actions. |
+| `GET` | `/api/activity/runs/{run_id}/artifact/{kind}/download` | Download workflow artifact, preferring published repo and falling back to local storage. |
+| `POST` | `/api/activity/runs/{run_id}/artifact/{kind}/upload` | Upload reviewed Release Note Markdown/PDF replacement to the configured artifact Git repo. |
 | `POST` | `/api/activity/chat` | Ask selected-node artifact questions. |
 | `GET` | `/api/activity/chat/{session_id}` | Restore Activity chatbot conversation. |
 
@@ -1966,54 +1995,111 @@ Upload behavior:
 6. Return the overwrite/create status, branch, folder, filename, source filename, and commit hash.
 
 The upload route is not a general GitHub editor. It only writes to the configured artifact repository, configured branch, selected run folder, and fixed release-note filenames.
-## 22.2 MoP Creation Workflow
+
+## 22.2 MoP Generation Workflow
 
 ### Purpose
 
-Generate a Method of Procedure document for an operational change.
+Generate a read-only Method of Procedure and deployment artifact bundle for a selected source namespace by coordinating ESDA GPT-5 planning with Kubernetes, Helm, and MoP Creation Agent MCP evidence.
+
+This workflow is bundle generation only. It does not execute the generated MoP. Execution remains a separate future workflow with stronger approvals and target binding.
 
 ### Inputs
 
 | Input | Required | Notes |
 |---|---:|---|
-| `change_summary` | Yes | What will be changed. |
-| `target_environment` | Yes | local, dev, stage, prod. |
-| `service_or_component` | Yes | Target service/component. |
-| `implementation_window` | Optional | Planned date/time. |
-| `risk_level` | Optional | Can be inferred. |
-| `rollback_expectation` | Optional | Required before approval. |
+| `namespace` | Yes | Source namespace selected from backend allowlist/dropdown. Current options include `bosgenesis`, `signoz`, and `agent-testing`. |
+| `target_namespace` | Yes | Placeholder selected from allowlist. Current options are `generic-namespace` and `agent-testing`; no mutation happens during generation. |
+| `target_environment` | Yes | `Kubernetes with Helm`, OpenShift, Kustomize, Flux. Current implementation is optimized for Kubernetes with Helm. |
+| `change_intent` | Yes | Defaults to `Generate MoP in both markdown and PDF format so we can fully clone the source namespace`. |
+| `helm_release` | Optional | Selected or inferred from Helm manager evidence. |
+| `implementation_window` | Optional | Planned date/time or maintenance window. |
+| `analysis_depth` | Optional | Fast, standard, deep. |
+| `model_profile` | Yes | Selected from the global model dropdown. |
+
+### MCP Agent Calls
+
+| Agent / MCP server | Example tool responsibilities |
+|---|---|
+| `bosgenesis-k8s-inspector-mcp` | List namespace resources, workload health, pods, services, ingress, events, config references, owner refs, and non-secret evidence. |
+| `bosgenesis-helm-manager-mcp` | List Helm releases, chart metadata, revisions, status, values summary, and rollback candidates. |
+| `bosgenesis-mop-creation-agent` | Build professional MoP bundle artifacts: Markdown, PDF, installation notes, `artifact.json`, `machine_execution_plan.yaml`, values, and generated manifests when available. |
 
 ### Flow
 
 ```mermaid
 flowchart TD
-    A[User requests MoP] --> B[Collect missing details]
-    B --> C[Retrieve templates and prior MoPs]
-    C --> D[Generate prechecks]
-    D --> E[Generate implementation steps]
-    E --> F[Generate validation and rollback steps]
-    F --> G[Policy and quality validation]
-    G --> H[Save MoP artifact]
-    H --> I[Return draft for review]
+    A[User selects source namespace and intent] --> B[Create PostgreSQL run]
+    B --> C[Show 00 / CREATING PLAN]
+    C --> D[Classify as MoP Generation]
+    D --> E[Plan read-only bundle generation]
+    E --> F[Validate source and target placeholder policy]
+    F --> G[Inspect Kubernetes namespace through MCP]
+    G --> H[Inspect Helm releases through MCP]
+    H --> I[Call MoP creation agent through MCP]
+    I --> J[Preserve professional agent artifacts]
+    J --> K[Validate MoP and bundle readiness]
+    K --> L[Recover or continue]
+    L --> M[Assemble deployment-artifacts and deployment-artifacts.zip]
+    M --> N[Assemble complete mop-bundle.zip]
+    N --> O[Publish mop-bundle.zip to artifact Git repo]
+    O --> P[Complete and expose in Activity]
 ```
 
-### MoP Artifact Sections
+### Agent Activity Feed Nodes
 
-```markdown
-# Method of Procedure
+| Node | Meaning |
+|---|---|
+| Intake | User selected source namespace, target placeholder, environment, and change intent. |
+| Classify | Request classified as `mop_generation`. |
+| Plan | GPT-5 created a read-only evidence and bundle plan. |
+| Scope | Namespace allowlist, target placeholder, and policy validated. |
+| K8s | k8s-inspector MCP collected non-secret evidence or recorded a bounded gap. |
+| Helm | helm-manager MCP collected Helm release evidence or recorded a bounded gap. |
+| MoP Agent | mop-creation-agent produced professional MoP artifacts/evidence or recorded a bounded gap. |
+| Draft | Final MoP component artifacts are selected/preserved. |
+| Validate | ESDA checked required bundle files, sections, evidence, and warnings. |
+| Recover | ESDA selected continue, retry, or human-review recovery. |
+| Bundle | `deployment-artifacts.zip` and `mop-bundle.zip` saved locally. |
+| Export Github | Unextracted `mop-bundle.zip` published to Git artifact repository. |
+| Complete | Run finalized and Activity timeline updated. |
 
-## 1. Change Summary
-## 2. Scope
-## 3. Roles and Contacts
-## 4. Preconditions
-## 5. Risk Assessment
-## 6. Implementation Steps
-## 7. Validation Steps
-## 8. Rollback Plan
-## 9. Communication Plan
-## 10. Approval Record
-## 11. Execution Evidence
+### MoP Bundle Artifact Structure
+
+```text
+bundle-root/
+  artifact.json or esda-artifact.json
+  machine_execution_plan.yaml
+  *.human-mop.md
+  *.installation.md
+  *.pdf
+  deployment-artifacts/
+    artifact-index.json
+    helm-commands.md
+    helm-chart/
+    helm-values/
+    kubernetes-manifests/
+      namespace-<placeholder>.yaml
+      ingress-*.yaml when source ingress exists
+      raw/configmap-*.yaml when agent-generated ConfigMaps are available
+      crds/
+    rendered-manifests/
+  deployment-artifacts.zip
+  mop-bundle.zip
 ```
+
+### Artifact Publishing
+
+Successful MoP Generation runs publish to the same configured artifact repository as Release Notes, but with MoP-specific folders:
+
+| Field | Value |
+|---|---|
+| Repository | `https://github.com/aveeshek/bosgenesis-artifacts.git` by default |
+| Branch | `main` by default |
+| Folder | `YYMMDD_HHMMSS_mop_<job-name>` |
+| Files | `mop-bundle.zip` in Git; local storage also keeps MoP Markdown, PDF, installation notes, metadata, machine plan, and deployment zip. |
+
+The Activity page must show these runs and artifacts with workflow type `mop_generation` so users can distinguish them from Release Note runs.
 
 ## 22.3 MoP Execution Workflow
 

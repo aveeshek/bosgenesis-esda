@@ -312,7 +312,16 @@ class AzureGpt5Service:
             parsed.setdefault("model_label", profile.label)
             return parsed
         except Exception as exc:
-            return fallback | {"reasoning_summary": f"Planner fallback used: {exc}"}
+            safe_summary = fallback.get("reasoning_summary") or (
+                "Used deterministic fallback because the selected model provider call was unavailable."
+            )
+            return fallback | {
+                "reasoning_summary": safe_summary,
+                "llm_fallback": {
+                    "used": True,
+                    "error": redact(str(exc))[:1000],
+                },
+            }
 
     async def structured_response(
         self,

@@ -238,6 +238,7 @@ def test_activity_page_renders_timeline_shell(tmp_path, monkeypatch) -> None:
         assert "Activity Timeline" in response.text
         assert 'id="activity-graph"' in response.text
         assert 'id="activity-status-filter"' in response.text
+        assert 'id="activity-workflow-filter"' in response.text
         assert 'id="activity-model-filter"' not in response.text
         assert 'id="activity-repo-filter"' not in response.text
         assert 'id="activity-chat-canvas"' in response.text
@@ -247,7 +248,7 @@ def test_activity_page_renders_timeline_shell(tmp_path, monkeypatch) -> None:
         assert "Artifact Chat" in response.text
         assert 'href="/activity"' in response.text
         assert 'src="/static/js/activity.js' in response.text
-        assert 'activity-layout-fixes-2' in response.text
+        assert 'activity-mop-integration-1' in response.text
         assert 'transaction-sidebar-toggle' not in response.text
 
 
@@ -402,6 +403,137 @@ def test_activity_release_note_timeline_api_and_detail(tmp_path, monkeypatch) ->
         messages = chat_history.json()["messages"]
         assert [message["role"] for message in messages] == ["user", "assistant"]
         assert messages[1]["payload"]["safe_summary"]
+
+def test_activity_mop_timeline_api_detail_download_and_chat(tmp_path, monkeypatch) -> None:
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        user_id = login.json()["user"]["user_id"]
+        repository = client.app.state.repository
+        run_id = "mop_activity_test"
+
+        repository.create_run(
+            run_id=run_id,
+            user_id=user_id,
+            goal="Generate MoP for namespace bosgenesis",
+            target_url="k8s://kubernetes_generic/bosgenesis",
+            namespace="bosgenesis",
+            workflow_type="mop_generation",
+        )
+        repository.add_event(
+            run_id,
+            "run_started",
+            "MoP Generation started",
+            {
+                "namespace": "bosgenesis",
+                "target_environment": "kubernetes_generic",
+                "model_profile": {"profile_id": "azure_gpt5_pro", "label": "GPT-5 Pro", "short_label": "GPT-5"},
+            },
+        )
+        repository.add_event(run_id, "workflow_classified", "Workflow classified", {"workflow_type": "mop_generation"})
+        repository.add_event(run_id, "planning_started", "Creating MoP plan", {})
+        repository.add_event(run_id, "plan_created", "MoP Generation plan created", {})
+        repository.add_event(run_id, "namespace_validated", "MoP namespace policy check completed", {"valid": True, "namespace": "bosgenesis"})
+        repository.add_event(run_id, "k8s_evidence_completed", "Kubernetes evidence completed", {"result": {"status": "success"}})
+        repository.add_event(run_id, "helm_evidence_completed", "Helm evidence completed", {"result": {"status": "success"}})
+        repository.add_event(run_id, "mop_agent_completed", "MoP creation agent completed", {"result": {"status": "success"}})
+        repository.add_event(run_id, "draft_completed", "MoP Markdown draft completed", {"reasoning_summary": "Drafted MoP from collected namespace evidence."})
+        repository.add_event(run_id, "validation_completed", "MoP draft validation completed", {"valid": True})
+        repository.add_event(run_id, "recovery_recommendation", "Recovery recommendation: continue", {"action": "continue"})
+        markdown_artifact = repository.create_artifact(
+            artifact_id="art_mop_activity_md",
+            run_id=run_id,
+            user_id=user_id,
+            artifact_type="mop",
+            title="MoP - bosgenesis",
+            mime_type="text/markdown; charset=utf-8",
+            storage_path="mop/mop_activity_test/mop.md",
+            metadata={"kind": "markdown"},
+        )
+        pdf_artifact = repository.create_artifact(
+            artifact_id="art_mop_activity_pdf",
+            run_id=run_id,
+            user_id=user_id,
+            artifact_type="mop_pdf",
+            title="MoP - bosgenesis PDF",
+            mime_type="application/pdf",
+            storage_path="mop/mop_activity_test/mop.pdf",
+            metadata={"kind": "pdf"},
+        )
+        storage_root = client.app.state.artifact_service.storage_root
+        markdown_path = storage_root / markdown_artifact["storage_path"]
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path.write_text(
+            "# Method of Procedure: bosgenesis\n\n## Scope\nClone the source namespace.\n\n## Validation Plan\nRead-only checks.",
+            encoding="utf-8",
+        )
+        pdf_path = storage_root / pdf_artifact["storage_path"]
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(b"%PDF-1.4 mop pdf")
+        repository.add_event(run_id, "artifact_created", "MoP Markdown artifact saved", {"artifact": markdown_artifact})
+        repository.add_event(run_id, "artifact_created", "MoP PDF artifact saved", {"artifact": pdf_artifact})
+        repository.add_event(
+            run_id,
+            "artifact_publish_completed",
+            "MoP artifacts exported to Github",
+            {"artifact_publish": {"status": "success", "folder_name": "260628_112233_mop_bosgenesis", "commit_hash": "def456", "branch": "main"}},
+        )
+        repository.add_event(
+            run_id,
+            "run_completed",
+            "MoP Generation completed",
+            {"artifact_publish": {"status": "success", "folder_name": "260628_112233_mop_bosgenesis"}},
+        )
+        repository.update_status(run_id, "completed", final_report="# Method of Procedure: bosgenesis")
+
+        list_response = client.get("/api/activity/runs?workflow_type=mop_generation&status=published&published=true")
+        assert list_response.status_code == 200
+        list_json = list_response.json()
+        assert list_json["count"] == 1
+        node = list_json["nodes"][0]
+        assert node["workflow_type"] == "mop_generation"
+        assert node["workflow_label"] == "MoP Generation"
+        assert node["workflow_badge"] == "MOP"
+        assert node["repository"] == "bosgenesis (kubernetes_generic)"
+        assert node["namespace"] == "bosgenesis"
+        assert node["artifact_summary"]["has_markdown"] is True
+        assert node["artifact_summary"]["has_pdf"] is True
+
+        detail_response = client.get(f"/api/activity/runs/{run_id}")
+        assert detail_response.status_code == 200
+        detail = detail_response.json()
+        stages = {stage["id"]: stage for stage in detail["stages"]}
+        assert stages["scope"]["status"] == "success"
+        assert stages["k8s"]["status"] == "success"
+        assert stages["helm"]["status"] == "success"
+        assert stages["mop_agent"]["status"] == "success"
+        assert stages["publish"]["status"] == "success"
+        assert detail["artifact_actions"]["actions"]["markdown"]["filename"] == "mop.md"
+        assert detail["artifact_actions"]["actions"]["pdf"]["filename"] == "mop.pdf"
+
+        artifacts_response = client.get(f"/api/activity/runs/{run_id}/artifacts")
+        assert artifacts_response.status_code == 200
+        assert artifacts_response.json()["repo_folder_url"].endswith("/tree/main/260628_112233_mop_bosgenesis")
+
+        download_response = client.get(
+            f"/api/activity/runs/{run_id}/artifact/markdown/download",
+            follow_redirects=False,
+        )
+        assert download_response.status_code == 307
+        assert download_response.headers["location"].endswith("/mop.md")
+
+        chat_response = client.post(
+            "/api/activity/chat",
+            json={
+                "message": "What does this MoP do?",
+                "selected_run_ids": [run_id],
+                "model_profile": "azure_configured",
+            },
+        )
+        assert chat_response.status_code == 200
+        chat_json = chat_response.json()
+        assert "bosgenesis" in chat_json["answer"]
+        assert chat_json["citations"]
 
 def test_activity_artifact_upload_overwrites_published_github_file(tmp_path, monkeypatch) -> None:
     git = shutil.which("git")

@@ -8,6 +8,7 @@ const activityState = {
 };
 
 const activityEls = {
+  workflowFilter: document.getElementById("activity-workflow-filter"),
   timeRange: document.getElementById("activity-time-range"),
   statusFilter: document.getElementById("activity-status-filter"),
   publishedFilter: document.getElementById("activity-published-filter"),
@@ -91,9 +92,11 @@ function setStatus(message) {
 
 function buildQuery() {
   const query = new URLSearchParams();
+  const workflow = activityEls.workflowFilter?.value || "all";
   const status = activityEls.statusFilter?.value || "all";
   const model = activityEls.modelProfile?.value || "";
   const published = activityEls.publishedFilter?.value || "all";
+  query.set("workflow_type", workflow);
   query.set("time_range", activityEls.timeRange?.value || "30d");
   query.set("limit", "200");
   if (status !== "all") query.set("status", status);
@@ -103,9 +106,9 @@ function buildQuery() {
 }
 
 async function loadActivity() {
-  setStatus("Loading release-note activity...");
+  setStatus("Loading activity timeline...");
   try {
-    const response = await fetch(`/api/activity/release-notes?${buildQuery()}`);
+    const response = await fetch(`/api/activity/runs?${buildQuery()}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const result = await response.json();
     activityState.nodes = result.nodes || [];
@@ -115,8 +118,8 @@ async function loadActivity() {
     renderSelection();
     setStatus(
       activityState.nodes.length
-        ? `${activityState.nodes.length} release-note run${activityState.nodes.length === 1 ? "" : "s"} loaded.`
-        : "No release-note activity matches the current filters."
+        ? `${activityState.nodes.length} activity run${activityState.nodes.length === 1 ? "" : "s"} loaded.`
+        : "No Activity run matches the current filters."
     );
   } catch (error) {
     activityState.nodes = [];
@@ -148,7 +151,7 @@ function renderGraph() {
   if (!activityState.nodes.length) {
     const empty = document.createElement("div");
     empty.className = "activity-graph-empty";
-    empty.textContent = "No activity yet. Generated release-note runs will appear here as timeline nodes.";
+    empty.textContent = "No activity yet. Generated Release Note and MoP runs will appear here as timeline nodes.";
     activityEls.graph.appendChild(empty);
     return;
   }
@@ -220,12 +223,13 @@ function renderNode(node, index, x, y) {
   button.setAttribute("role", "listitem");
   button.setAttribute(
     "aria-label",
-    `${node.title}, ${node.repository}, ${statusLabels[visualStatus] || visualStatus}`
+    `${node.title}, ${node.workflow_label || "Activity"}, ${node.repository}, ${statusLabels[visualStatus] || visualStatus}`
   );
   button.innerHTML = `
     <span class="activity-node-orbit" aria-hidden="true"></span>
     <span class="activity-node-main">
       <span class="activity-node-title">${escapeHtml(compactText(node.repository, 24))}</span>
+      <span class="activity-node-workflow">${escapeHtml(node.workflow_badge || node.workflow_label || "ACT")}</span>
       <span class="activity-node-meta">${escapeHtml(formatDate(node.created_at))} | ${escapeHtml(node.duration_label)}</span>
     </span>
     <span class="activity-node-status">${escapeHtml(statusLabels[visualStatus] || visualStatus)}</span>
@@ -263,7 +267,7 @@ async function loadNodeDetail(runId) {
   activityEls.detailStatus.textContent = "Loading";
   activityEls.stageChain.innerHTML = "";
   try {
-    const response = await fetch(`/api/activity/release-notes/${encodeURIComponent(runId)}`);
+    const response = await fetch(`/api/activity/runs/${encodeURIComponent(runId)}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const detail = await response.json();
     renderDetail(detail);
@@ -277,13 +281,14 @@ async function loadNodeDetail(runId) {
 function renderDetail(detail) {
   const node = detail.node || {};
   const visualStatus = node.visual_status || node.status || "unknown";
-  activityEls.detailTitle.textContent = node.title || node.run_id || "Release-note run";
+  activityEls.detailTitle.textContent = node.title || node.run_id || "Activity run";
   activityEls.detailStatus.textContent = statusLabels[visualStatus] || visualStatus;
   activityEls.detailStatus.className = `activity-detail-status ${statusClass(visualStatus)}`;
   const artifactSummary = node.artifact_summary || {};
   activityEls.detailSummary.innerHTML = `
-    <strong>${escapeHtml(node.repository || "Unknown repository")}</strong>
-    <span>${escapeHtml(node.release_name || "current")}</span>
+    <strong>${escapeHtml(node.repository || "Unknown resource")}</strong>
+    <span>${escapeHtml(node.workflow_label || "Activity")}</span>
+    <span>${escapeHtml(node.release_name || node.namespace || "current")}</span>
     <span>${escapeHtml(formatDate(node.created_at))}</span>
     <span>${escapeHtml(node.model_profile?.label || "Unknown model")}</span>
     <span>${artifactSummary.has_markdown ? "Markdown ready" : "Markdown missing"}</span>
@@ -313,7 +318,7 @@ function showTooltip(node, event) {
   if (!activityEls.tooltip) return;
   activityEls.tooltip.innerHTML = `
     <strong>${escapeHtml(node.title)}</strong>
-    <span>${escapeHtml(node.repository)} | ${escapeHtml(node.release_name)}</span>
+    <span>${escapeHtml(node.workflow_label || "Activity")} | ${escapeHtml(node.repository)} | ${escapeHtml(node.release_name || node.namespace || "current")}</span>
     <span>${escapeHtml(statusLabels[node.visual_status] || node.visual_status)} | ${escapeHtml(node.duration_label)}</span>
     <span>${node.artifact_summary?.has_markdown ? "MD" : "No MD"} / ${node.artifact_summary?.has_pdf ? "PDF" : "No PDF"}</span>
   `;
@@ -337,7 +342,7 @@ function hideTooltip() {
 }
 
 function bindControls() {
-  [activityEls.timeRange, activityEls.statusFilter, activityEls.publishedFilter].forEach((element) => {
+  [activityEls.workflowFilter, activityEls.timeRange, activityEls.statusFilter, activityEls.publishedFilter].forEach((element) => {
     element?.addEventListener("change", loadActivity);
   });
   activityEls.modelProfile?.addEventListener("change", loadActivity);
@@ -383,11 +388,11 @@ function updateChatControls() {
   if (activityEls.chatSend) activityEls.chatSend.disabled = !hasContext || !hasMessage || activityState.chatBusy;
   if (activityEls.chatInput) activityEls.chatInput.disabled = activityState.chatBusy;
   if (!hasContext) {
-    setChatStatus("No release-note activity is loaded yet.", "Grounded");
+    setChatStatus("No Activity runs are loaded yet.", "Grounded");
   } else if (!hasSelection && !activityState.chatBusy) {
-    setChatStatus("Ask will use the latest visible release-note run. Select timeline nodes for a narrower answer.", "Grounded");
+    setChatStatus("Ask will use the latest visible Activity run. Select timeline nodes for a narrower answer.", "Grounded");
   } else if (!activityState.chatBusy) {
-    setChatStatus("Ready to answer from selected release-note activity only.", "Grounded");
+    setChatStatus("Ready to answer from selected Activity context only.", "Grounded");
   }
 }
 
@@ -473,7 +478,11 @@ function showGithubUploadPanel(kind) {
   const normalizedKind = kind === "pdf" ? "pdf" : "markdown";
   const label = normalizedKind === "pdf" ? "PDF" : "Markdown";
   const accept = normalizedKind === "pdf" ? ".pdf,application/pdf" : ".md,.markdown,.txt,text/markdown,text/plain";
-  const filename = normalizedKind === "pdf" ? "release-notes.pdf" : "release-notes.md";
+  const action = activityState.activeDetail?.artifact_actions?.actions?.[normalizedKind] || {};
+  const workflowType = activityState.activeDetail?.node?.workflow_type;
+  const filename = action.filename || (workflowType === "mop_generation"
+    ? (normalizedKind === "pdf" ? "mop.pdf" : "mop.md")
+    : (normalizedKind === "pdf" ? "release-notes.pdf" : "release-notes.md"));
   const folder = activityState.activeDetail?.artifact_actions?.publish_state?.folder_name || "new GitHub folder for this run";
   const panel = document.createElement("div");
   panel.className = "activity-github-upload-panel";
@@ -534,7 +543,7 @@ async function uploadGithubArtifact(kind, file, panel) {
   setGithubUploadStatus(panel, "Uploading to the published GitHub artifact folder...", "working");
   setStatus("Uploading reviewed artifact to GitHub...");
   try {
-    const response = await fetch(`/api/activity/release-notes/${encodeURIComponent(runId)}/artifact/${encodeURIComponent(kind)}/upload`, {
+    const response = await fetch(`/api/activity/runs/${encodeURIComponent(runId)}/artifact/${encodeURIComponent(kind)}/upload`, {
       method: "POST",
       body: formData,
     });

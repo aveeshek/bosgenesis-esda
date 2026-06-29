@@ -7,6 +7,7 @@ WorkflowType = Literal[
     "release_note_creation",
     "health_check_diagnostic",
     "mop_creation",
+    "mop_generation",
     "mop_execution",
     "helm_management",
     "k8s_management",

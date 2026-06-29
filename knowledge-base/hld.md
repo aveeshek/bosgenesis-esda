@@ -84,7 +84,7 @@ V1 standardization:
 - MongoDB is optional and out of scope for V1.
 - Redis is optional only for cache, locks, rate limiting, and SSE pressure.
 
-## 3.2 Current V1 Implementation Status (2026-06-27)
+## 3.2 Current V1 Implementation Status (2026-06-29)
 
 The working V1 vertical slice is now release-note generation through the BOS Genesis ESDA web application.
 
@@ -101,7 +101,9 @@ Implemented behavior:
 - ESDA performs a temporary local repository clone after release-note-agent evidence collection, runs a common vulnerability scan, runs `pylint` for Python projects when available, falls back to safe static quality checks when needed, appends the resulting matrices to Markdown/PDF, and removes the temporary checkout.
 - On successful completion, ESDA commits `release-notes.md` and `release-notes.pdf` to `aveeshek/bosgenesis-artifacts` under a folder named `YYMMDD_HHMMSS_<job-name>`. The Activity page can later overwrite those exact files with reviewed local Markdown/PDF uploads; if a historical run only has local artifacts, the first Activity upload creates a stable GitHub folder for that run and subsequent uploads overwrite the same file path.
 - The UI streams progress and model/tool explanations, makes the progress panel scrollable/copyable, shows separate Markdown and PDF download buttons, exposes an autonomy activity map for intake, classification, planning, evidence, clone, security, quality, cleanup, draft, validation, recovery, artifact save, publish, and completion, and provides an Activity timeline/chat page for historical release-note analysis.
-- Live working notes are ephemeral and are not persisted. After completion, the UI clears those notes and shows persisted safe reasoning summaries from PostgreSQL.
+- Live working notes are ephemeral and are not persisted. Release Notes clears them after completion; MoP Generation keeps both live working notes and safe summaries visible until the user refreshes, while only safe summaries are persisted.
+- MoP Generation is implemented as the second workflow page. It generates a complete read-only MoP bundle using k8s-inspector, helm-manager, and mop-creation-agent evidence when reachable, preserves professional MoP Creation Agent Markdown/PDF templates when available, builds `deployment-artifacts.zip` and `mop-bundle.zip`, includes raw generated ConfigMaps under `deployment-artifacts/kubernetes-manifests/raw/` when returned by the agent, and publishes the unextracted `mop-bundle.zip` to the configured artifact repository.
+- Activity is multi-workflow: Release Note and MoP Generation runs appear in the same timeline with workflow badges, detail panels, artifact downloads, and artifact-grounded chat.
 
 Current release-note MCP tools used:
 
@@ -179,21 +181,55 @@ Artifact publishing is intentionally narrow:
 
 ## 3.5 Activity Page Baseline and Artifact Review Upload
 
-The Activity page is now part of the release-note V1 baseline. It is the analytical companion to `/release-notes` and uses the same matte-glass AI visual language while replacing the global transaction drawer with a purpose-built time-series graph.
+The Activity page is now the multi-workflow analytical companion for ESDA. It uses the same matte-glass AI visual language while replacing the global transaction drawer with a purpose-built time-series graph.
 
 Implemented Activity behavior:
 
-- `/activity` renders a two-pane page: left release-note timeline and run detail, right artifact chatbot.
-- The left transaction sidebar launcher is not rendered on Activity; historical navigation happens through the timeline nodes.
-- The right chat pane is constrained to the visible viewport and scrolls internally, so it must not overflow the browser window on desktop.
-- Timeline nodes show release-note run status, repository, generated session title, duration, model, artifact availability, and publish state.
-- Selecting a node shows stage-chain details, Markdown/PDF download actions, published repo actions, and controlled GitHub upload actions.
-- Activity Chat answers only from selected/visible release-note run context, local Markdown text, persisted events, and published artifact metadata, with citations.
-- `Upload Markdown GITHUB` and `Upload PDF GITHUB` allow a reviewed local file to replace the exact artifact for that run.
-- If the run was already published, upload overwrites `release-notes.md` or `release-notes.pdf` in the existing published folder.
-- If the run only has local ESDA artifacts, first upload creates a stable GitHub folder for that run, records publish metadata, and writes the uploaded file there.
-- Uploads are not an arbitrary repository write capability: only `release-notes.md` and `release-notes.pdf` are accepted, and all writes go through the configured artifact repository and branch.
+- `/activity` renders a two-pane page: left timeline and run detail, right artifact chatbot.
+- The left transaction sidebar launcher is not rendered on Activity; historical navigation happens through timeline nodes.
+- The right chat pane is constrained to the visible viewport and scrolls internally.
+- Timeline nodes show Release Note and MoP Generation status, generated title, duration, model, artifact availability, and publish state.
+- Workflow filters and badges distinguish Release Notes from MoP Generation.
+- Selecting a Release Note node shows stage details, Markdown/PDF downloads, published repo actions, and controlled GitHub upload actions.
+- Selecting a MoP node shows source namespace, target namespace placeholder, environment, stage chain, bundle status, bundle download, and publish metadata.
+- Activity Chat answers from selected/visible run context, local artifact text where available, persisted events, and published artifact metadata, with citations.
+- Release Note uploads are constrained to `release-notes.md` and `release-notes.pdf` replacement/create-folder behavior.
+- MoP Generation artifacts are represented as complete bundle outputs; Activity can download and discuss selected MoP runs/artifacts.
+
 ---
+
+## 3.6 Final MoP Generation Bundle Implementation
+
+MoP Generation is now implemented as the second ESDA workflow page and uses Release Notes as the baseline design pattern.
+
+Implemented behavior:
+
+- Route: `/mop-generation`.
+- Purpose: generate a read-only Method of Procedure and deployment artifact bundle for a selected source namespace.
+- Source namespace is selected from an allowlisted dropdown, currently including `bosgenesis`, `signoz`, and `agent-testing`.
+- Target namespace is a placeholder for later MoP Execution, not an execution target during generation. The UI offers configured placeholder values such as `generic-namespace` and `agent-testing`.
+- The default change intent is: `Generate MoP in both markdown and PDF format so we can fully clone the source namespace`.
+- Environment options include `Kubernetes with Helm`, `OpenShift`, `Kustomize`, and `Flux`; V1 implementation is read-only and primarily supports Kubernetes with Helm evidence.
+- The page uses the shared sphere animation, hidden transaction drawer, Live Working Stream plus Safe Reasoning Summaries, icon-only log copy control, maximizeable Autonomy Notes modal, copyable JSON logs, and bottom Agent Activity Feed.
+- Live working notes are never persisted. Safe reasoning summaries, ordered events, tool outputs, artifact metadata, and publish metadata are persisted in PostgreSQL.
+- The MoP graph calls k8s-inspector, helm-manager, and mop-creation-agent adapters where reachable, redacts secrets, and records partial evidence honestly when a service is unavailable.
+- The MoP Creation Agent remains the authority for professional MoP Markdown/PDF when it returns those artifacts. ESDA preserves its renderer metadata and does not invent a separate PDF style.
+- ESDA builds a complete bundle containing root MoP files, `machine_execution_plan.yaml`, `artifact.json`/`esda-artifact.json`, `deployment-artifacts/`, `deployment-artifacts.zip`, and `mop-bundle.zip`.
+- Raw generated ConfigMap YAMLs returned by the MoP Creation Agent are copied, when available, into `deployment-artifacts/kubernetes-manifests/raw/` before `deployment-artifacts.zip` is generated.
+- Successful MoP runs publish the unextracted `mop-bundle.zip` to the configured artifact repository under `YYMMDD_HHMMSS_mop_<job-name>`.
+- Activity shows MoP runs alongside Release Notes and grounds Artifact Chat on selected MoP events/artifacts.
+
+Primary MCP integrations:
+
+| Agent / MCP Server | Responsibility |
+|---|---|
+| `bosgenesis-k8s-inspector-mcp` | Read namespace resources, workload status, services, ingress, config references, events, and non-secret operational evidence. |
+| `bosgenesis-helm-manager-mcp` | Read Helm releases, chart names, revisions, values summaries, status, and rollback-relevant release metadata. |
+| `bosgenesis-mop-creation-agent` | Produce the professional initial MoP bundle, including Markdown, PDF, metadata, execution plan, values, and generated manifests when available. |
+| ESDA GPT-5 chain | Classify, plan, summarize safe evidence, validate bundle readiness, produce safe summaries, and orchestrate artifact save/publish. |
+
+---
+
 ## 4. Target Users
 
 | User Type | Usage |

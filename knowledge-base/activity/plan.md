@@ -2,14 +2,14 @@
 
 ## 1. Purpose
 
-The Activity page will become the observability and artifact exploration page for release-note generation activity. It must use the Release Note page as the baseline visual and interaction design for the whole ESDA web application.
+The Activity page is the observability and artifact exploration page for Release Note and MoP Generation activity. It must use the Release Note page as the baseline visual and interaction design for the whole ESDA web application.
 
 The page has two primary areas:
 
-- A left-side scrollable, animated, modern time-series graph showing release-note activity across time.
+- A left-side scrollable, animated, modern time-series graph showing Release Note and MoP Generation activity across time.
 - A right-side chatbot that can answer questions about selected nodes, groups of nodes, run events, generated Markdown files, PDFs, and published artifact metadata.
 
-This document started as a design and planning artifact. Phases A through G are now implemented for the V1 release-note Activity page baseline.
+This document started as a design and planning artifact. Phases A through G are implemented and the page now supports both Release Note and MoP Generation workflow history.
 
 ---
 
@@ -52,7 +52,7 @@ The Activity page must let a user answer questions like:
 - Do not regenerate release notes from this page in V1.
 - Do not allow arbitrary GitHub repository browsing.
 - Do not expose raw hidden model reasoning.
-- Do not query unrelated runs unless they are release-note workflow runs.
+- Do not query unrelated runs outside the workflow filters and user authorization boundary.
 - Do not require Qdrant in V1 unless semantic search over large artifact history becomes necessary.
 
 ---
@@ -273,16 +273,16 @@ Add only if query performance or chat persistence requires them:
 | `release_note_activity_view` | SQL view/materialized view joining runs, events, artifacts, and publish metadata. |
 | `artifact_text_cache` | Store normalized Markdown/PDF text snippets and checksums for chatbot retrieval. |
 
-### 8.3 Planned API Endpoints
+### 8.3 Implemented API Endpoints
 
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/activity` | Render Activity page. |
-| `GET` | `/api/activity/release-notes` | Return timeline node list with filters. |
-| `GET` | `/api/activity/release-notes/{run_id}` | Return one run summary and expanded stage chain. |
-| `GET` | `/api/activity/release-notes/{run_id}/artifacts` | Return MD/PDF artifact metadata and published repo links. |
-| `GET` | `/api/activity/release-notes/{run_id}/artifact/{kind}/download` | Download Markdown or PDF, preferring published artifact repo when available. |
-| `POST` | `/api/activity/release-notes/{run_id}/artifact/{kind}/upload` | Upload a reviewed Markdown/PDF replacement to the configured GitHub artifact repo. Overwrites existing published file, or creates a stable run folder for local-only runs. |
+| `GET` | `/api/activity/runs` | Return Release Note and MoP Generation timeline node list with filters. |
+| `GET` | `/api/activity/runs/{run_id}` | Return one run summary and workflow-specific expanded stage chain. |
+| `GET` | `/api/activity/runs/{run_id}/artifacts` | Return workflow artifact metadata, published repo links, and bundle actions. |
+| `GET` | `/api/activity/runs/{run_id}/artifact/{kind}/download` | Download workflow artifact, preferring published artifact repo when available and falling back to local storage. |
+| `POST` | `/api/activity/runs/{run_id}/artifact/{kind}/upload` | Upload a reviewed Release Note Markdown/PDF replacement to the configured GitHub artifact repo. Overwrites existing published file, or creates a stable run folder for local-only runs. |
 | `POST` | `/api/activity/chat` | Ask the Activity chatbot about selected nodes/artifacts. |
 | `GET` | `/api/activity/chat/{session_id}` | Restore Activity chatbot conversation. |
 
@@ -461,6 +461,17 @@ Additional Activity page fixes and final V1 baseline behavior are implemented:
 - Uploads validate authenticated run access, workflow type, file extension, file size, and PDF magic header before Git operations.
 - Backend events record `artifact_overwrite_started`, optional `artifact_publish_completed`, `artifact_overwrite_completed`, and `artifact_overwrite_failed`.
 - Latest verification: `python -m ruff check .`, `node --check backend/app/static/js/activity.js`, and `python -m pytest -q` passed with 84 tests.
+
+## 12.4 Implementation Update - 2026-06-29 Multi-Workflow Activity
+
+Activity now includes MoP Generation alongside Release Notes:
+
+- `GET /api/activity/runs` returns Release Note and MoP Generation timeline nodes with workflow badges and filters.
+- MoP nodes display source namespace, target namespace placeholder, selected environment, model profile, status, duration, bundle availability, and publish state.
+- MoP run detail renders the MoP-specific stage chain: Intake, Classify, Plan, Scope, K8s, Helm, MoP Agent, Draft, Validate, Recover, Bundle, Export Github, Complete.
+- MoP artifact actions expose complete bundle download for `mop-bundle.zip`; Release Note artifact upload remains constrained to reviewed `release-notes.md` and `release-notes.pdf` replacements.
+- Activity Chat grounds answers on selected MoP run events, safe summaries, bundle metadata, and available artifact text.
+- The Activity page remains free of the shared transaction sidebar launcher because the timeline is the page-specific historical navigation surface.
 ### Phase F: Safety and Audit
 
 - [x] Redact secrets before sending context to the LLM.
@@ -491,10 +502,10 @@ Additional Activity page fixes and final V1 baseline behavior are implemented:
 The Activity page is complete when:
 
 - User can open `/activity` from the top navigation.
-- User sees a modern animated time-series graph of release-note runs.
-- Each node shows request time, job name, repository, release, status, model, and artifact availability.
+- User sees a modern animated time-series graph of Release Note and MoP Generation runs.
+- Each node shows request time, job name, workflow badge, repository or namespace, release or bundle scope, status, model, and artifact availability.
 - Clicking a node shows the stage chain, download options, repo actions, and reviewed GitHub upload actions.
-- Download Markdown and Download PDF use the published artifact repo when available.
+- Release Note Markdown/PDF downloads use the published artifact repo when available; MoP Generation exposes complete bundle download.
 - Chatbot can answer questions about a selected node.
 - Chatbot can summarize or compare selected generated Markdown files.
 - Chatbot cites run IDs, artifact IDs, published folders, or document sections.
@@ -509,11 +520,11 @@ The Activity page is complete when:
 
 ## 14. Recommended V1 Scope
 
-Build the first Activity page as release-note-only.
+The first Activity page shipped as release-note focused; it is now extended to include MoP Generation runs.
 
 Recommended V1:
 
-- Release-note timeline nodes only.
+- Release-note and MoP Generation timeline nodes.
 - Completed, failed, running, recovered, and published statuses.
 - Single-node details.
 - Basic multi-select for chatbot comparison.
@@ -523,7 +534,7 @@ Recommended V1:
 
 Defer until later:
 
-- Cross-workflow activity for MoP, Helm, Kubernetes, and health checks.
+- Cross-workflow activity beyond Release Notes and MoP Generation, such as Helm, Kubernetes, and health checks.
 - Semantic search across all artifacts using Qdrant.
 - Advanced graph analytics and charts.
 - Full artifact diffing between release-note files.

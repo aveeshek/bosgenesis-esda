@@ -1,15 +1,15 @@
 # BOS Genesis ESDA
 
-V1 is intentionally narrow:
+BOS Genesis ESDA is a local Python/FastAPI web console for bounded autonomous SRE and DevOps workflows. The current implemented baseline includes:
 
-- One UI.
-- One local login mode.
-- One workflow: health-check / diagnostic.
-- One MCP server integration point.
-- One REST GET tool.
-- One PowerShell GET template.
-- PostgreSQL for run state, UI events, tool logs, and LLM review logs.
-- Qdrant only when memory lookup is needed.
+- One authenticated UI with the final matte-glass AI theme.
+- Azure OpenAI model profiles with GPT-5 as the default target and GPT-4.1 mini / Ollama-compatible profiles when configured.
+- Release Note generation with `bosgenesis-release-note-agent`, repository scan enrichment, Markdown/PDF output, Git publishing, and Activity review upload.
+- Activity timeline and artifact chatbot for Release Note and MoP Generation runs.
+- MoP Generation bundle workflow using k8s-inspector, helm-manager, and mop-creation-agent MCP adapters where available.
+- PostgreSQL for run state, UI events, tool logs, LLM review logs, artifact metadata, Activity chat, and transaction history.
+- Qdrant only when semantic memory lookup is needed.
+- ClickHouse and SQLite are not part of the active V1 path.
 
 ## Local Setup
 
@@ -78,6 +78,23 @@ Release-note drafts are saved as Markdown and PDF artifacts under `ARTIFACT_STOR
 When `ARTIFACT_GIT_PUBLISH_ENABLED=true`, a successful release-note run also commits the generated `release-notes.md` and `release-notes.pdf` to `ARTIFACT_GIT_REPO_URL` (`https://github.com/aveeshek/bosgenesis-artifacts.git` by default). ESDA creates a folder named `YYMMDD_HHMMSS_<job-name>` on `ARTIFACT_GIT_BRANCH` and pushes a commit using the configured Git identity. Local publishing relies on the workstation Git credential manager or other non-interactive GitHub credentials; Helm deployments should provide credentials through Kubernetes Secrets and standard git credential configuration.
 
 The `/activity` page can later upload reviewed local Markdown/PDF replacements. For already-published runs, ESDA overwrites the exact `release-notes.md` or `release-notes.pdf` in the existing published folder. For local-only runs, the first Activity upload creates a stable GitHub folder for that run and records publish metadata so future uploads target the same folder. Upload is constrained to those two artifact filenames and is not a general GitHub editor.
+
+## MoP Generation Bundle Flow
+
+The `/mop-generation` page generates a read-only Method of Procedure bundle. The page follows the Release Notes baseline design: source namespace inputs, shared sphere animation, Live Working Stream plus Safe Reasoning Summaries, icon-only log copy action, maximizeable Autonomy Notes modal, copyable JSON logs, transaction history, and Agent Activity Feed.
+
+Current MoP behavior:
+
+- Source namespace is selected from the backend allowlist, currently including `bosgenesis`, `signoz`, and `agent-testing`.
+- Target namespace is treated as a placeholder for later MoP Execution, with configured choices such as `generic-namespace` and `agent-testing`.
+- Environment defaults to `Kubernetes with Helm`, with OpenShift, Kustomize, and Flux available as future-oriented modes.
+- ESDA calls k8s-inspector, helm-manager, and mop-creation-agent adapters when configured and records partial evidence honestly when a service is unavailable.
+- The MoP Creation Agent professional Markdown/PDF is preserved when returned, including the agent renderer metadata.
+- ESDA assembles `deployment-artifacts/`, `deployment-artifacts.zip`, and the complete `mop-bundle.zip`.
+- Raw generated ConfigMap YAMLs returned by the MoP Creation Agent are copied, when available, into `deployment-artifacts/kubernetes-manifests/raw/` before `deployment-artifacts.zip` is produced.
+- Successful MoP runs publish the unextracted `mop-bundle.zip` into the configured artifact GitHub repository under `YYMMDD_HHMMSS_mop_<job-name>`.
+- The UI exposes a single `Download MoP Bundle` action for the complete bundle.
+- Activity shows MoP runs alongside Release Notes and grounds Artifact Chat on selected MoP artifacts/events.
 
 ## LLM Model Profiles
 

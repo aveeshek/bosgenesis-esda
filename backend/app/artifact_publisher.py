@@ -65,6 +65,26 @@ class ArtifactGitPublisher:
             pdf,
         )
 
+    async def publish_artifact_files(
+        self,
+        *,
+        run_id: str,
+        github_url: str,
+        job_name: str,
+        files: list[ArtifactPublishPayload],
+        commit_label: str = "artifacts",
+    ) -> dict:
+        if not self.is_enabled:
+            return {"status": "disabled", "message": "Artifact git publishing is disabled."}
+        return await asyncio.to_thread(
+            self._publish_artifact_files,
+            run_id,
+            github_url,
+            job_name,
+            files,
+            commit_label,
+        )
+
     async def overwrite_release_artifact(
         self,
         *,
@@ -136,7 +156,7 @@ class ArtifactGitPublisher:
             commit_message = f"Add release note artifacts for {job_name} ({run_id})"
             self._git(git, ["commit", "-m", commit_message], cwd=repo_dir)
             commit_hash = self._git(git, ["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
-            self._git(git, ["push", "origin", f"HEAD:{self.branch}"], cwd=repo_dir)
+            self._push(git, repo_dir)
 
             return {
                 "status": "success",
@@ -158,6 +178,74 @@ class ArtifactGitPublisher:
                         "mime_type": pdf.mime_type,
                     },
                 ],
+                "github_url": github_url,
+            }
+        finally:
+            _remove_tree(temp_dir)
+
+    def _publish_artifact_files(
+        self,
+        run_id: str,
+        github_url: str,
+        job_name: str,
+        files: list[ArtifactPublishPayload],
+        commit_label: str,
+    ) -> dict:
+        git = shutil.which("git")
+        if not git:
+            raise ArtifactGitPublishError("git executable was not found in PATH.")
+        if not files:
+            raise ArtifactGitPublishError("No artifact files were supplied for publishing.")
+
+        folder_name = self._artifact_folder_name(job_name)
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(
+            tempfile.mkdtemp(prefix=f"publish_{_safe_token(run_id)}_", dir=self.workspace_dir)
+        )
+        repo_dir = temp_dir / "repo"
+        try:
+            self._git(git, ["clone", "--depth", "1", self.repo_url, str(repo_dir)], cwd=temp_dir)
+            self._prepare_branch(git, repo_dir)
+            self._git(git, ["config", "core.autocrlf", "false"], cwd=repo_dir)
+            self._git(git, ["config", "user.name", self.settings.artifact_git_user_name], cwd=repo_dir)
+            self._git(git, ["config", "user.email", self.settings.artifact_git_user_email], cwd=repo_dir)
+
+            destination = repo_dir / folder_name
+            if destination.exists():
+                folder_name = self._unique_folder_name(repo_dir, folder_name)
+                destination = repo_dir / folder_name
+            destination.mkdir(parents=True, exist_ok=False)
+            file_summaries = []
+            for item in files:
+                safe_filename = _safe_publish_filename(item.filename)
+                (destination / safe_filename).write_bytes(item.content)
+                file_summaries.append(
+                    {
+                        "filename": safe_filename,
+                        "artifact_id": item.artifact_id,
+                        "mime_type": item.mime_type,
+                    }
+                )
+
+            self._git(git, ["add", folder_name], cwd=repo_dir)
+            status = self._git(git, ["status", "--porcelain", "--", folder_name], cwd=repo_dir).stdout.strip()
+            if not status:
+                raise ArtifactGitPublishError("No artifact changes were staged for commit.")
+
+            commit_message = f"Add {commit_label} for {job_name} ({run_id})"
+            self._git(git, ["commit", "-m", commit_message], cwd=repo_dir)
+            commit_hash = self._git(git, ["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
+            self._push(git, repo_dir)
+
+            return {
+                "status": "success",
+                "repo_url": _redact_url(self.repo_url),
+                "branch": self.branch,
+                "folder_name": folder_name,
+                "folder_path": folder_name,
+                "tree_url": _github_tree_url(self.repo_url, self.branch, folder_name),
+                "commit_hash": commit_hash,
+                "files": file_summaries,
                 "github_url": github_url,
             }
         finally:
@@ -239,7 +327,7 @@ class ArtifactGitPublisher:
             commit_message = f"{action} {safe_filename} for {safe_folder} ({run_id})"
             self._git(git, ["commit", "-m", commit_message], cwd=repo_dir)
             commit_hash = self._git(git, ["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
-            self._git(git, ["push", "origin", f"HEAD:{self.branch}"], cwd=repo_dir)
+            self._push(git, repo_dir)
             return {
                 "status": "created" if created_file else "success",
                 "repo_url": _redact_url(self.repo_url),
@@ -264,6 +352,24 @@ class ArtifactGitPublisher:
             self._git(git, ["checkout", "-B", self.branch, f"origin/{self.branch}"], cwd=repo_dir)
             return
         self._git(git, ["checkout", "-B", self.branch], cwd=repo_dir)
+
+    def _push(self, git: str, repo_dir: Path) -> subprocess.CompletedProcess[str]:
+        result = self._git_allow_error(git, ["push", "origin", f"HEAD:{self.branch}"], cwd=repo_dir)
+        if result.returncode == 0:
+            return result
+        message = (result.stderr or result.stdout or "git command failed").strip()
+        if _is_non_fast_forward_push(message):
+            self._git(git, ["fetch", "origin", self.branch], cwd=repo_dir)
+            rebase = self._git_allow_error(git, ["rebase", f"origin/{self.branch}"], cwd=repo_dir)
+            if rebase.returncode != 0:
+                self._git_allow_error(git, ["rebase", "--abort"], cwd=repo_dir)
+                rebase_message = (rebase.stderr or rebase.stdout or message).strip()
+                raise ArtifactGitPublishError(f"git rebase origin/{self.branch} failed: {redact(rebase_message)[:1000]}")
+            retry = self._git_allow_error(git, ["push", "origin", f"HEAD:{self.branch}"], cwd=repo_dir)
+            if retry.returncode == 0:
+                return retry
+            message = (retry.stderr or retry.stdout or message).strip()
+        raise ArtifactGitPublishError(f"git push origin failed: {redact(message)[:1000]}")
 
     def _git(self, git: str, args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
         result = self._git_allow_error(git, args, cwd=cwd)
@@ -304,6 +410,20 @@ class ArtifactGitPublisher:
         )
 
 
+def _is_non_fast_forward_push(message: str) -> bool:
+    value = message.lower()
+    return any(
+        phrase in value
+        for phrase in (
+            "fetch first",
+            "non-fast-forward",
+            "rejected",
+            "updates were rejected",
+            "failed to push some refs",
+        )
+    )
+
+
 def _safe_job_name(value: str) -> str:
     clean = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
     clean = clean.strip("._-")
@@ -322,10 +442,20 @@ def _safe_repo_folder(value: str) -> str:
 
 def _safe_repo_filename(value: str) -> str:
     clean = Path(str(value or "")).name
-    if clean not in {"release-notes.md", "release-notes.pdf"}:
+    allowed = {"release-notes.md", "release-notes.pdf", "mop.md", "mop.pdf"}
+    if clean not in allowed:
         raise ArtifactGitPublishError(
-            "Only release-notes.md and release-notes.pdf may be overwritten."
+            "Only release-notes.md, release-notes.pdf, mop.md, and mop.pdf may be overwritten."
         )
+    return clean
+
+
+def _safe_publish_filename(value: str) -> str:
+    clean = Path(str(value or "")).name
+    if not clean or clean in {".", ".."}:
+        raise ArtifactGitPublishError("Invalid artifact filename.")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", clean):
+        raise ArtifactGitPublishError("Artifact filename contains unsupported characters.")
     return clean
 
 def _safe_token(value: str) -> str:

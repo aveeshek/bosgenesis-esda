@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -64,12 +64,13 @@ class PolicyRules:
                 "health_check_diagnostic",
                 "release_note_creation",
                 "mop_creation",
+                "mop_generation",
                 "mop_execution",
                 "helm_management",
                 "k8s_management",
             },
-            allowed_environments={"local", "dev", "stage"},
-            allowed_namespaces={"bosgenesis"},
+            allowed_environments={"local", "dev", "stage", "kubernetes_generic", "openshift", "kustomize", "flux"},
+            allowed_namespaces={"bosgenesis", "signoz", "agent-testing"},
             denied_actions={
                 "raw_shell",
                 "raw_powershell",
@@ -95,7 +96,20 @@ class PolicyGuard:
     def __init__(self, *, settings: Settings, tool_registry: ToolRegistry) -> None:
         self.settings = settings
         self.tool_registry = tool_registry
-        self.rules = load_policy_rules(settings.policy_rules_path)
+        loaded_rules = load_policy_rules(settings.policy_rules_path)
+        self.rules = replace(
+            loaded_rules,
+            allowed_namespaces=loaded_rules.allowed_namespaces.union(settings.mop_allowed_namespace_list),
+            allowed_environments=loaded_rules.allowed_environments.union(
+                {
+                    settings.mop_default_environment,
+                    "kubernetes_generic",
+                    "openshift",
+                    "kustomize",
+                    "flux",
+                }
+            ),
+        )
 
     def evaluate_tool(
         self,

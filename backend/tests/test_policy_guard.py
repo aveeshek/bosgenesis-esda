@@ -86,3 +86,28 @@ def test_policy_denies_namespace_outside_odd(tmp_path) -> None:
 
     assert decision.decision == "deny"
     assert any("Namespace 'default'" in reason for reason in decision.reasons)
+
+
+def test_policy_allows_mop_generation_read_only_namespace_from_mop_allowlist(tmp_path) -> None:
+    guard = PolicyGuard(
+        settings=Settings(
+            policy_rules_path=str(tmp_path / "missing-policy.yaml"),
+            mop_allowed_namespaces="bosgenesis,signoz,agent-testing",
+        ),
+        tool_registry=default_tool_registry(),
+    )
+    request = ToolExecutionRequest(
+        run_id="run_1",
+        step_id="step_1",
+        tool_name="mop.k8s_inspector",
+        workflow_type="mop_generation",
+        environment="kubernetes_generic",
+        namespace="signoz",
+        user_id="usr_1",
+        arguments={"tool_name": "namespace_summary", "arguments": {"namespace": "signoz"}},
+    )
+
+    decision = guard.evaluate_tool(request, user_roles=["admin"])
+
+    assert decision.decision == "allow"
+    assert not any("Namespace 'signoz'" in reason for reason in decision.reasons)

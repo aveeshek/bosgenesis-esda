@@ -68,6 +68,24 @@ class Settings(BaseSettings):
     release_note_agent_timeout_seconds: int = 300
     allowed_github_hosts: str = Field(default="github.com")
 
+    mop_creation_agent_url: str = ""
+    mop_creation_agent_mcp_url: str = "http://mop-creation-agent.bosgenesis.local"
+    mop_creation_agent_transport: str = "auto"
+    mop_creation_agent_api_key: str = ""
+    mop_creation_agent_timeout_seconds: int = 300
+    mop_creation_agent_poll_interval_seconds: float = 5
+    mop_creation_agent_poll_attempts: int = 36
+    helm_manager_agent_mcp_url: str = "http://helm-manager.bosgenesis.local"
+    helm_manager_agent_api_key: str = ""
+    helm_manager_agent_timeout_seconds: int = 120
+    k8s_inspector_agent_mcp_url: str = "http://k8s-inspector.bosgenesis.local"
+    k8s_inspector_agent_timeout_seconds: int = 120
+    mop_allowed_namespaces: str = Field(default="bosgenesis,signoz,agent-testing")
+    mop_default_environment: str = "kubernetes_generic"
+    mop_default_target_namespace: str = "generic-namespace"
+    mop_generated_name_prefix: str = "agent-ai"
+    mop_artifact_folder_prefix: str = "mop"
+
     mcp_k8s_inspector_url: str = ""
     mcp_k8s_inspector_api_key: str = ""
     powershell_runner_url: str = ""
@@ -84,6 +102,10 @@ class Settings(BaseSettings):
     @property
     def allowed_github_host_set(self) -> set[str]:
         return {item.strip().lower() for item in self.allowed_github_hosts.split(",") if item.strip()}
+
+    @property
+    def mop_allowed_namespace_list(self) -> list[str]:
+        return [item.strip() for item in self.mop_allowed_namespaces.split(",") if item.strip()]
 
     @property
     def azure_deployment_name(self) -> str:
@@ -113,6 +135,15 @@ class Settings(BaseSettings):
         allowed = {"auto", "mcp", "rest"}
         if normalized not in allowed:
             raise ValueError(f"RELEASE_NOTE_AGENT_TRANSPORT must be one of {sorted(allowed)}")
+        return normalized
+
+    @field_validator("mop_creation_agent_transport")
+    @classmethod
+    def validate_mop_creation_agent_transport(cls, value: str) -> str:
+        normalized = value.lower()
+        allowed = {"auto", "mcp", "rest"}
+        if normalized not in allowed:
+            raise ValueError(f"MOP_CREATION_AGENT_TRANSPORT must be one of {sorted(allowed)}")
         return normalized
 
     @field_validator("azure_openai_auth_mode")

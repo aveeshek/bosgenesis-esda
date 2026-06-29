@@ -16,6 +16,14 @@
       </div>
 
       <div class="activity-filter-bar" aria-label="Activity filters">
+        <label class="activity-filter-control" for="activity-workflow-filter">
+          <span>Workflow</span>
+          <select id="activity-workflow-filter" class="form-select form-select-sm">
+            <option value="all" selected>All</option>
+            <option value="release_note_creation">Release Notes</option>
+            <option value="mop_generation">MoP Generation</option>
+          </select>
+        </label>
         <label class="activity-filter-control" for="activity-time-range">
           <span>Range</span>
           <select id="activity-time-range" class="form-select form-select-sm">
@@ -48,10 +56,10 @@
         <button id="activity-refresh" class="btn btn-sm btn-outline-secondary" type="button">Refresh</button>
       </div>
 
-      <div id="activity-status" class="activity-status-line" role="status">Loading release-note activity...</div>
+      <div id="activity-status" class="activity-status-line" role="status">Loading activity timeline...</div>
 
       <div class="activity-graph-frame">
-        <div class="activity-graph-scroll" id="activity-graph-scroll" tabindex="0" aria-label="Scrollable release-note activity timeline">
+        <div class="activity-graph-scroll" id="activity-graph-scroll" tabindex="0" aria-label="Scrollable Activity timeline">
           <div id="activity-graph" class="activity-graph" role="list"></div>
         </div>
         <div id="activity-tooltip" class="activity-tooltip" aria-hidden="true"></div>
@@ -65,7 +73,7 @@
           </div>
           <div id="activity-detail-status" class="activity-detail-status">Idle</div>
         </div>
-        <div id="activity-detail-summary" class="activity-detail-summary">Click a release-note node to inspect how the request moved through the autonomy sequence.</div>
+        <div id="activity-detail-summary" class="activity-detail-summary">Click an Activity node to inspect how the request moved through the autonomy sequence.</div>
         <div id="activity-artifact-actions" class="activity-artifact-actions" aria-live="polite"></div>
         <div id="activity-stage-chain" class="activity-stage-chain" role="list"></div>
       </section>
@@ -104,6 +112,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/js/activity.js?v=activity-layout-fixes-2"></script>
+<script src="/static/js/activity.js?v=activity-mop-integration-1"></script>
 {% endblock %}
 

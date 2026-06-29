@@ -24,8 +24,24 @@ STAGE_DEFINITIONS = [
     {"id": "draft", "label": "Draft"},
     {"id": "validate", "label": "Validate"},
     {"id": "recover", "label": "Recover"},
-    {"id": "artifacts", "label": "Artifacts"},
-    {"id": "publish", "label": "Publish"},
+    {"id": "artifacts", "label": "Bundle"},
+    {"id": "publish", "label": "Export"},
+    {"id": "complete", "label": "Complete"},
+]
+
+MOP_STAGE_DEFINITIONS = [
+    {"id": "intake", "label": "Intake"},
+    {"id": "classify", "label": "Classify"},
+    {"id": "plan", "label": "Plan"},
+    {"id": "scope", "label": "Scope"},
+    {"id": "k8s", "label": "K8s"},
+    {"id": "helm", "label": "Helm"},
+    {"id": "mop_agent", "label": "MoP Agent"},
+    {"id": "draft", "label": "Draft"},
+    {"id": "validate", "label": "Validate"},
+    {"id": "recover", "label": "Recover"},
+    {"id": "artifacts", "label": "Bundle"},
+    {"id": "publish", "label": "Export"},
     {"id": "complete", "label": "Complete"},
 ]
 
@@ -42,10 +58,11 @@ class ActivityService:
         self.settings = settings
         self.artifact_storage_root = Path(artifact_storage_root) if artifact_storage_root else None
 
-    def list_release_note_nodes(
+    def list_activity_nodes(
         self,
         *,
         user_id: str,
+        workflow_type: str | None = None,
         include_hidden: bool = False,
         status: str | None = None,
         repo: str | None = None,
@@ -56,8 +73,10 @@ class ActivityService:
         date_to: str | None = None,
         limit: int = 100,
     ) -> list[dict]:
-        snapshots = self.repository.list_release_note_activity_snapshots(
+        workflow_types = self._workflow_filter(workflow_type)
+        snapshots = self.repository.list_activity_snapshots(
             user_id=user_id,
+            workflow_types=workflow_types,
             include_hidden=include_hidden,
             limit=max(min(limit * 3, 500), 100),
         )
@@ -82,9 +101,37 @@ class ActivityService:
         nodes.sort(key=lambda item: item.get("created_at") or "", reverse=True)
         return nodes[:limit]
 
-    def get_release_note_detail(self, run_id: str) -> dict | None:
+    def list_release_note_nodes(
+        self,
+        *,
+        user_id: str,
+        include_hidden: bool = False,
+        status: str | None = None,
+        repo: str | None = None,
+        model: str | None = None,
+        published: bool | None = None,
+        time_range: str = "30d",
+        date_from: str | None = None,
+        date_to: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        return self.list_activity_nodes(
+            user_id=user_id,
+            workflow_type="release_note_creation",
+            include_hidden=include_hidden,
+            status=status,
+            repo=repo,
+            model=model,
+            published=published,
+            time_range=time_range,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+
+    def get_activity_detail(self, run_id: str) -> dict | None:
         run = self.repository.get_run(run_id)
-        if not run or run.workflow_type != "release_note_creation":
+        if not run or run.workflow_type not in self._activity_workflow_types():
             return None
         events = self.repository.list_events(run_id)
         artifacts = self.repository.list_artifacts(run_id)
@@ -106,15 +153,21 @@ class ActivityService:
         node = self._build_node(transaction, events, artifacts)
         return {
             "node": node,
-            "stages": self._build_stages(events),
+            "stages": self._build_stages(events, run.workflow_type),
             "events": [self._safe_event(event) for event in events],
             "artifacts": [self._artifact_summary(artifact) for artifact in artifacts],
-            "artifact_actions": self.release_note_artifact_actions(run_id),
+            "artifact_actions": self.artifact_actions(run_id),
         }
 
-    def release_note_artifact_actions(self, run_id: str) -> dict:
+    def get_release_note_detail(self, run_id: str) -> dict | None:
+        detail = self.get_activity_detail(run_id)
+        if not detail or detail.get("node", {}).get("workflow_type") != "release_note_creation":
+            return None
+        return detail
+
+    def artifact_actions(self, run_id: str) -> dict:
         run = self.repository.get_run(run_id)
-        if not run or run.workflow_type != "release_note_creation":
+        if not run or run.workflow_type not in self._activity_workflow_types():
             return self._empty_artifact_actions(run_id)
         events = self.repository.list_events(run_id)
         artifacts = self.repository.list_artifacts(run_id)
@@ -126,17 +179,19 @@ class ActivityService:
         actions = {
             "markdown": self._artifact_action(
                 run_id=run_id,
+                workflow_type=run.workflow_type,
                 kind="markdown",
                 label="Download Markdown",
-                filename="release-notes.md",
+                filename=self.artifact_filename(run.workflow_type, "markdown"),
                 artifact=markdown,
                 publish_state=publish_state,
             ),
             "pdf": self._artifact_action(
                 run_id=run_id,
+                workflow_type=run.workflow_type,
                 kind="pdf",
                 label="Download PDF",
-                filename="release-notes.pdf",
+                filename=self.artifact_filename(run.workflow_type, "pdf"),
                 artifact=pdf,
                 publish_state=publish_state,
             ),
@@ -157,6 +212,7 @@ class ActivityService:
         }
         return {
             "run_id": run_id,
+            "workflow_type": run.workflow_type,
             "publish_state": publish_state,
             "repo_folder_url": repo_folder_url,
             "repo_path": repo_path,
@@ -164,17 +220,23 @@ class ActivityService:
             "local_artifacts": [self._artifact_summary(artifact) for artifact in artifacts],
         }
 
+    def release_note_artifact_actions(self, run_id: str) -> dict:
+        actions = self.artifact_actions(run_id)
+        if actions.get("workflow_type") != "release_note_creation":
+            return self._empty_artifact_actions(run_id)
+        return actions
+
     def resolve_artifact_download(self, run_id: str, kind: str) -> dict | None:
         normalized_kind = kind.lower()
         if normalized_kind not in {"markdown", "pdf"}:
             return None
         run = self.repository.get_run(run_id)
-        if not run or run.workflow_type != "release_note_creation":
+        if not run or run.workflow_type not in self._activity_workflow_types():
             return None
         events = self.repository.list_events(run_id)
         artifacts = self.repository.list_artifacts(run_id)
         publish_state = self._publish_state(events)
-        filename = "release-notes.md" if normalized_kind == "markdown" else "release-notes.pdf"
+        filename = self.artifact_filename(run.workflow_type, normalized_kind)
         published_url = self._published_raw_url(publish_state, filename)
         if published_url:
             return {"mode": "redirect", "url": published_url, "filename": filename, "source": "published"}
@@ -190,7 +252,7 @@ class ActivityService:
             if run_id in seen:
                 continue
             seen.add(run_id)
-            detail = self.get_release_note_detail(run_id)
+            detail = self.get_activity_detail(run_id)
             if not detail:
                 continue
             node = detail["node"]
@@ -198,10 +260,15 @@ class ActivityService:
             contexts.append(
                 {
                     "run_id": run_id,
+                    "workflow_type": node.get("workflow_type"),
+                    "workflow_label": node.get("workflow_label"),
                     "title": node.get("title"),
                     "repository": node.get("repository"),
+                    "resource_label": node.get("resource_label"),
                     "github_url": node.get("github_url"),
                     "release_name": node.get("release_name"),
+                    "namespace": node.get("namespace"),
+                    "target_environment": node.get("target_environment"),
                     "status": node.get("status"),
                     "visual_status": node.get("visual_status"),
                     "created_at": node.get("created_at"),
@@ -240,13 +307,13 @@ class ActivityService:
         citations: list[dict] = []
         if not context:
             return {
-                "answer": "Select at least one release-note activity node before asking about artifacts.",
+                "answer": "Select at least one activity node before asking about artifacts.",
                 "citations": [],
                 "safe_summary": "No selected activity context was available.",
             }
 
         lowered_question = question.lower()
-        answer_lines = ["Here is what the selected release-note activity shows:"]
+        answer_lines = ["Here is what the selected activity shows:"]
         for run_context in context:
             run_id = run_context["run_id"]
             repo = run_context.get("repository") or "unknown repository"
@@ -259,7 +326,7 @@ class ActivityService:
             citations.append({"type": "run", "run_id": run_id, "label": repo})
             answer_lines.append(
                 f"- `{repo}` used `{run_context.get('model_profile', {}).get('label', 'unknown model')}` "
-                f"and is currently `{status}` for release `{run_context.get('release_name') or 'current'}` "
+                f"and is currently `{status}` for `{run_context.get('release_name') or run_context.get('resource_label') or 'current'}` "
                 f"(run_id `{run_id}`)."
             )
             if publish.get("published"):
@@ -300,13 +367,13 @@ class ActivityService:
         return {
             "answer": "\n".join(answer_lines),
             "citations": citations[:12],
-            "safe_summary": f"Answered from {len(context)} selected release-note activity node(s).",
+            "safe_summary": f"Answered from {len(context)} selected activity node(s).",
         }
 
     def chat_prompt_payload(self, *, question: str, context: list[dict]) -> dict:
         return {
             "question": question,
-            "selected_release_note_runs": context,
+            "selected_activity_runs": context,
             "response_contract": {
                 "answer": "Concise user-facing answer grounded only in selected context.",
                 "citations": "List of run IDs, artifact IDs, published folders, or section names used.",
@@ -318,10 +385,32 @@ class ActivityService:
         seed = json.dumps({"question": question, "context": context}, default=str, sort_keys=True)
         return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
+    def _activity_workflow_types(self) -> tuple[str, ...]:
+        return ("release_note_creation", "mop_generation")
+
+    def _workflow_filter(self, workflow_type: str | None) -> tuple[str, ...]:
+        allowed = self._activity_workflow_types()
+        if not workflow_type or workflow_type == "all":
+            return allowed
+        requested = tuple(item.strip() for item in workflow_type.split(",") if item.strip())
+        return tuple(item for item in requested if item in allowed) or allowed
+
+    def workflow_label(self, workflow_type: str | None) -> str:
+        return {
+            "release_note_creation": "Release Notes",
+            "mop_generation": "MoP Generation",
+        }.get(str(workflow_type or ""), "Activity")
+
+    def artifact_filename(self, workflow_type: str | None, kind: str) -> str:
+        if workflow_type == "mop_generation":
+            return "mop.pdf" if kind == "pdf" else "mop.md"
+        return "release-notes.pdf" if kind == "pdf" else "release-notes.md"
+
     def _build_node(self, transaction: dict, events: list[dict], artifacts: list[dict]) -> dict:
-        github_url = transaction.get("target_url") or self._first_payload_value(events, "github_url")
-        repository = self._repo_label(github_url)
-        release_name = self._release_name(events, artifacts)
+        workflow_type = transaction.get("workflow_type")
+        target_url = transaction.get("target_url") or self._first_payload_value(events, "github_url")
+        resource_label = self._resource_label(workflow_type, target_url, transaction.get("namespace"), events)
+        release_name = self._release_name(events, artifacts, workflow_type, transaction.get("namespace"))
         model_profile = self._model_profile(events)
         publish = self._publish_state(events)
         artifact_summary = self._artifact_availability(artifacts)
@@ -330,14 +419,20 @@ class ActivityService:
         duration_ms = self._duration_ms(events, created_at, updated_at)
         status = str(transaction.get("status") or "unknown")
         visual_status = "published" if publish["published"] else status
-        stage_counts = self._stage_counts(events)
+        stage_counts = self._stage_counts(events, workflow_type)
         last_event = events[-1] if events else None
         return {
             "run_id": transaction["run_id"],
             "title": transaction.get("session_name") or transaction.get("title") or transaction["run_id"],
-            "workflow_type": transaction.get("workflow_type"),
-            "repository": repository,
-            "github_url": github_url,
+            "workflow_type": workflow_type,
+            "workflow_label": self.workflow_label(workflow_type),
+            "workflow_badge": "MOP" if workflow_type == "mop_generation" else "RN",
+            "repository": resource_label,
+            "resource_label": resource_label,
+            "github_url": target_url,
+            "target_url": target_url,
+            "target_environment": self._target_environment(target_url),
+            "namespace": transaction.get("namespace"),
             "release_name": release_name,
             "status": status,
             "visual_status": visual_status,
@@ -355,7 +450,8 @@ class ActivityService:
             "hidden_at": transaction.get("hidden_at"),
         }
 
-    def _build_stages(self, events: list[dict]) -> list[dict]:
+    def _build_stages(self, events: list[dict], workflow_type: str | None = None) -> list[dict]:
+        definitions = MOP_STAGE_DEFINITIONS if workflow_type == "mop_generation" else STAGE_DEFINITIONS
         stages = {
             definition["id"]: {
                 "id": definition["id"],
@@ -368,10 +464,12 @@ class ActivityService:
                 "sequence": None,
                 "payload": {},
             }
-            for definition in STAGE_DEFINITIONS
+            for definition in definitions
         }
         for event in events:
-            for stage_id, status in self._stage_updates(event):
+            for stage_id, status in self._stage_updates(event, workflow_type):
+                if stage_id not in stages:
+                    continue
                 stage = stages[stage_id]
                 if stage["started_at"] is None:
                     stage["started_at"] = event.get("created_at")
@@ -382,9 +480,66 @@ class ActivityService:
                 stage["event_type"] = event.get("event_type")
                 stage["sequence"] = event.get("sequence")
                 stage["payload"] = self._safe_payload(event.get("payload") or {})
-        return [stages[definition["id"]] for definition in STAGE_DEFINITIONS]
+        return [stages[definition["id"]] for definition in definitions]
 
-    def _stage_updates(self, event: dict) -> list[tuple[str, str]]:
+    def _stage_updates(self, event: dict, workflow_type: str | None = None) -> list[tuple[str, str]]:
+        if workflow_type == "mop_generation":
+            return self._mop_stage_updates(event)
+        return self._release_note_stage_updates(event)
+
+    def _mop_stage_updates(self, event: dict) -> list[tuple[str, str]]:
+        event_type = event.get("event_type")
+        payload = event.get("payload") or {}
+        if event_type == "run_started":
+            return [("intake", "success")]
+        if event_type == "workflow_classified":
+            return [("classify", "success")]
+        if event_type == "planning_started":
+            return [("plan", "running")]
+        if event_type == "plan_created":
+            return [("plan", "success")]
+        if event_type == "namespace_validated":
+            return [("scope", "success" if payload.get("valid") else "failed")]
+        if event_type == "tool_call_started":
+            tool_name = payload.get("tool_name")
+            if tool_name == "mop.k8s_inspector":
+                return [("k8s", "running")]
+            if tool_name == "mop.helm_manager":
+                return [("helm", "running")]
+            if tool_name == "mop.creation_agent":
+                return [("mop_agent", "running")]
+        if event_type == "k8s_evidence_completed":
+            return [("k8s", self._tool_result_status(payload.get("result") or {}))]
+        if event_type == "helm_evidence_completed":
+            return [("helm", self._tool_result_status(payload.get("result") or {}))]
+        if event_type == "mop_agent_completed":
+            return [("mop_agent", self._tool_result_status(payload.get("result") or {}))]
+        if event_type == "draft_started":
+            return [("draft", "running")]
+        if event_type == "draft_completed":
+            return [("draft", "success")]
+        if event_type == "validation_completed":
+            return [("validate", "success" if payload.get("valid") is not False else "failed")]
+        if event_type == "recovery_recommendation":
+            return [("recover", "recovered" if payload.get("action") == "escalate" else "success")]
+        if event_type == "artifact_created":
+            return [("artifacts", "success")]
+        if event_type == "artifact_publish_started":
+            return [("publish", "running")]
+        if event_type == "artifact_publish_completed":
+            return [("publish", "success")]
+        if event_type == "artifact_publish_failed":
+            return [("publish", "failed")]
+        if event_type == "run_completed":
+            updates = [("complete", "success")]
+            if (payload.get("artifact_publish") or {}).get("status") == "success":
+                updates.append(("publish", "success"))
+            return updates
+        if event_type == "run_failed":
+            return [("complete", "failed")]
+        return []
+
+    def _release_note_stage_updates(self, event: dict) -> list[tuple[str, str]]:
         event_type = event.get("event_type")
         payload = event.get("payload") or {}
         if event_type == "run_started":
@@ -439,6 +594,10 @@ class ActivityService:
             return [("complete", "failed")]
         return []
 
+    def _tool_result_status(self, result: dict) -> str:
+        status = str(result.get("status") or "success")
+        return "success" if status == "success" else "recovered"
+
     def _matches_filters(
         self,
         node: dict,
@@ -479,9 +638,9 @@ class ActivityService:
         ]
         return any(needle in str(candidate or "").lower() for candidate in candidates)
 
-    def _stage_counts(self, events: list[dict]) -> dict:
+    def _stage_counts(self, events: list[dict], workflow_type: str | None = None) -> dict:
         counts = {"success": 0, "running": 0, "failed": 0, "recovered": 0, "pending": 0}
-        for stage in self._build_stages(events):
+        for stage in self._build_stages(events, workflow_type):
             counts[stage["status"]] = counts.get(stage["status"], 0) + 1
         return counts
 
@@ -537,6 +696,7 @@ class ActivityService:
             "created_at": artifact.get("created_at"),
             "kind": "pdf" if self._is_pdf(artifact) else "markdown" if self._is_markdown(artifact) else "other",
             "download_url": f"/api/artifacts/{artifact.get('artifact_id')}",
+            "filename": (artifact.get("metadata") or {}).get("filename"),
         }
 
     def _empty_artifact_actions(self, run_id: str) -> dict:
@@ -553,6 +713,7 @@ class ActivityService:
         self,
         *,
         run_id: str,
+        workflow_type: str | None,
         kind: str,
         label: str,
         filename: str,
@@ -567,7 +728,7 @@ class ActivityService:
             "kind": kind,
             "label": label,
             "enabled": enabled,
-            "url": f"/api/activity/release-notes/{run_id}/artifact/{kind}/download" if enabled else None,
+            "url": f"/api/activity/runs/{run_id}/artifact/{kind}/download" if enabled else None,
             "direct_url": published_url or local_url,
             "source": source,
             "artifact_id": artifact.get("artifact_id") if artifact else None,
@@ -578,7 +739,15 @@ class ActivityService:
     def _preferred_artifact(self, artifacts: list[dict], kind: str) -> dict | None:
         predicate = self._is_pdf if kind == "pdf" else self._is_markdown
         candidates = [artifact for artifact in artifacts if predicate(artifact)]
-        return candidates[-1] if candidates else None
+        if not candidates:
+            return None
+        primary_types = {"pdf": {"release_note_pdf", "mop_pdf"}, "markdown": {"release_note", "mop"}}
+        primary = [
+            artifact
+            for artifact in candidates
+            if str(artifact.get("artifact_type") or "") in primary_types.get(kind, set())
+        ]
+        return primary[-1] if primary else candidates[-1]
 
     def _artifact_repo_web_base(self) -> str | None:
         if not self.settings:
@@ -722,7 +891,15 @@ class ActivityService:
                     return found
         return None
 
-    def _release_name(self, events: list[dict], artifacts: list[dict]) -> str:
+    def _release_name(
+        self,
+        events: list[dict],
+        artifacts: list[dict],
+        workflow_type: str | None = None,
+        namespace: str | None = None,
+    ) -> str:
+        if workflow_type == "mop_generation":
+            return namespace or self._first_payload_value(events, "namespace") or "MoP"
         for artifact in artifacts:
             title = str(artifact.get("title") or "").strip()
             if title:
@@ -753,6 +930,29 @@ class ActivityService:
                 found = self._find_key(child, key)
                 if found:
                     return found
+        return None
+
+    def _resource_label(
+        self,
+        workflow_type: str | None,
+        target_url: str | None,
+        namespace: str | None,
+        events: list[dict],
+    ) -> str:
+        if workflow_type == "mop_generation":
+            ns = namespace or self._first_payload_value(events, "namespace")
+            environment = self._target_environment(target_url)
+            if ns and environment:
+                return f"{ns} ({environment})"
+            return ns or target_url or "Unknown namespace"
+        return self._repo_label(target_url)
+
+    def _target_environment(self, target_url: str | None) -> str | None:
+        if not target_url:
+            return None
+        parsed = urlparse(target_url)
+        if parsed.scheme == "k8s":
+            return parsed.netloc or None
         return None
 
     def _repo_label(self, github_url: str | None) -> str:

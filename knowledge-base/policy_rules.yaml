@@ -34,6 +34,7 @@ operational_design_domain:
     - health_check_diagnostic
     - release_note_creation
     - mop_creation
+    - mop_generation
     - mop_execution
     - helm_management
     - k8s_management
@@ -41,12 +42,18 @@ operational_design_domain:
     - local
     - dev
     - stage
+    - kubernetes_generic
+    - openshift
+    - kustomize
+    - flux
   production:
     read_only_by_default: true
     mutation_allowed: false
     mutation_requires_explicit_policy: true
   allowed_namespaces:
     - bosgenesis
+    - signoz
+    - agent-testing
   allowed_autonomy_modes:
     - observe_only
     - dry_run
@@ -196,6 +203,7 @@ mcp_servers:
     allowed_workflows:
       - release_note_creation
       - mop_creation
+      - mop_generation
       - mop_execution
       - k8s_management
     allowed_tools:
@@ -212,6 +220,7 @@ mcp_servers:
     allowed_workflows:
       - release_note_creation
       - mop_creation
+      - mop_generation
       - mop_execution
       - helm_management
       - k8s_management
@@ -286,6 +295,7 @@ powershell_runner:
       allowed_workflows:
         - release_note_creation
         - mop_creation
+        - mop_generation
         - mop_execution
         - helm_management
         - k8s_management
