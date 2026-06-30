@@ -3,6 +3,7 @@ import importlib
 from pathlib import Path
 import shutil
 import subprocess
+import zipfile
 
 import pytest
 
@@ -369,6 +370,7 @@ def test_activity_release_note_timeline_api_and_detail(tmp_path, monkeypatch) ->
         activity_js = (Path(__file__).parents[1] / "app" / "static" / "js" / "activity.js").read_text(encoding="utf-8")
         assert "Upload Markdown GITHUB" in activity_js
         assert "Upload PDF GITHUB" in activity_js
+        assert "Upload MoP Bundle Github" in activity_js
 
         artifacts_response = client.get(f"/api/activity/release-notes/{run_id}/artifacts")
         assert artifacts_response.status_code == 200
@@ -460,6 +462,16 @@ def test_activity_mop_timeline_api_detail_download_and_chat(tmp_path, monkeypatc
             storage_path="mop/mop_activity_test/mop.pdf",
             metadata={"kind": "pdf"},
         )
+        bundle_artifact = repository.create_artifact(
+            artifact_id="art_mop_activity_bundle",
+            run_id=run_id,
+            user_id=user_id,
+            artifact_type="mop_bundle_zip",
+            title="MoP bundle - bosgenesis",
+            mime_type="application/zip",
+            storage_path="mop/mop_activity_test/mop-bundle.zip",
+            metadata={"filename": "mop-bundle.zip", "kind": "bundle"},
+        )
         storage_root = client.app.state.artifact_service.storage_root
         markdown_path = storage_root / markdown_artifact["storage_path"]
         markdown_path.parent.mkdir(parents=True, exist_ok=True)
@@ -470,8 +482,19 @@ def test_activity_mop_timeline_api_detail_download_and_chat(tmp_path, monkeypatc
         pdf_path = storage_root / pdf_artifact["storage_path"]
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
         pdf_path.write_bytes(b"%PDF-1.4 mop pdf")
+        bundle_path = storage_root / bundle_artifact["storage_path"]
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(bundle_path, "w") as archive:
+            archive.writestr("mop.md", markdown_path.read_text(encoding="utf-8"))
+            archive.writestr("mop.pdf", b"%PDF-1.4 mop pdf")
+            archive.writestr("artifact.json", "{}")
+            archive.writestr(
+                "deployment-artifacts/kubernetes-manifests/raw/signoz-configmap.yaml",
+                "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: signoz-dashboard-config\n  namespace: signoz\ndata:\n  enabled: 'true'\n",
+            )
         repository.add_event(run_id, "artifact_created", "MoP Markdown artifact saved", {"artifact": markdown_artifact})
         repository.add_event(run_id, "artifact_created", "MoP PDF artifact saved", {"artifact": pdf_artifact})
+        repository.add_event(run_id, "artifact_bundle_created", "MoP bundle artifact saved", {"bundle_artifact": bundle_artifact})
         repository.add_event(
             run_id,
             "artifact_publish_completed",
@@ -498,6 +521,7 @@ def test_activity_mop_timeline_api_detail_download_and_chat(tmp_path, monkeypatc
         assert node["namespace"] == "bosgenesis"
         assert node["artifact_summary"]["has_markdown"] is True
         assert node["artifact_summary"]["has_pdf"] is True
+        assert node["artifact_summary"]["has_bundle"] is True
 
         detail_response = client.get(f"/api/activity/runs/{run_id}")
         assert detail_response.status_code == 200
@@ -508,19 +532,28 @@ def test_activity_mop_timeline_api_detail_download_and_chat(tmp_path, monkeypatc
         assert stages["helm"]["status"] == "success"
         assert stages["mop_agent"]["status"] == "success"
         assert stages["publish"]["status"] == "success"
-        assert detail["artifact_actions"]["actions"]["markdown"]["filename"] == "mop.md"
-        assert detail["artifact_actions"]["actions"]["pdf"]["filename"] == "mop.pdf"
+        actions = detail["artifact_actions"]["actions"]
+        assert actions["bundle"]["filename"] == "mop-bundle.zip"
+        assert actions["bundle"]["label"] == "Download MoP Bundle"
+        assert "markdown" not in actions
+        assert "pdf" not in actions
 
         artifacts_response = client.get(f"/api/activity/runs/{run_id}/artifacts")
         assert artifacts_response.status_code == 200
         assert artifacts_response.json()["repo_folder_url"].endswith("/tree/main/260628_112233_mop_bosgenesis")
 
-        download_response = client.get(
+        old_markdown_download = client.get(
             f"/api/activity/runs/{run_id}/artifact/markdown/download",
             follow_redirects=False,
         )
+        assert old_markdown_download.status_code == 404
+
+        download_response = client.get(
+            f"/api/activity/runs/{run_id}/artifact/bundle/download",
+            follow_redirects=False,
+        )
         assert download_response.status_code == 307
-        assert download_response.headers["location"].endswith("/mop.md")
+        assert download_response.headers["location"].endswith("/mop-bundle.zip")
 
         chat_response = client.post(
             "/api/activity/chat",
@@ -534,6 +567,27 @@ def test_activity_mop_timeline_api_detail_download_and_chat(tmp_path, monkeypatc
         chat_json = chat_response.json()
         assert "bosgenesis" in chat_json["answer"]
         assert chat_json["citations"]
+
+        configmap_response = client.post(
+            "/api/activity/chat",
+            json={
+                "message": "Do I have any configmap in this mop bundle?",
+                "selected_run_ids": [run_id],
+                "model_profile": "azure_configured",
+            },
+        )
+        assert configmap_response.status_code == 200
+        configmap_json = configmap_response.json()
+        assert "### ConfigMaps in Selected MoP Bundle" in configmap_json["answer"]
+        assert "| # | Name | Namespace | Category | Source file |" in configmap_json["answer"]
+        assert "Raw/rendered manifest" in configmap_json["answer"]
+        assert "ConfigMap" in configmap_json["answer"]
+        assert "signoz-dashboard-config" in configmap_json["answer"]
+        assert "signoz-configmap.yaml" in configmap_json["answer"]
+
+        configmap_history = client.get(f"/api/activity/chat/{configmap_json['session_id']}")
+        assert configmap_history.status_code == 200
+        assert configmap_history.json()["messages"][-1]["payload"]["used_direct_answer"] is True
 
 def test_activity_artifact_upload_overwrites_published_github_file(tmp_path, monkeypatch) -> None:
     git = shutil.which("git")
@@ -622,6 +676,74 @@ def test_activity_artifact_upload_overwrites_published_github_file(tmp_path, mon
         assert any(event["event_type"] == "artifact_overwrite_started" for event in events)
         assert any(event["event_type"] == "artifact_overwrite_completed" for event in events)
 
+def test_activity_mop_bundle_upload_creates_github_folder(tmp_path, monkeypatch) -> None:
+    git = shutil.which("git")
+    if not git:
+        pytest.skip("git executable is required for activity upload test")
+
+    remote = tmp_path / "activity-mop-bundle-remote.git"
+    subprocess.run([git, "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+    monkeypatch.setenv("ARTIFACT_GIT_REPO_URL", str(remote))
+    monkeypatch.setenv("ARTIFACT_GIT_BRANCH", "main")
+    monkeypatch.setenv("ARTIFACT_GIT_WORKSPACE_DIR", str(tmp_path / "activity-mop-bundle-work"))
+    monkeypatch.setenv("ARTIFACT_GIT_USER_NAME", "ESDA Test")
+    monkeypatch.setenv("ARTIFACT_GIT_USER_EMAIL", "esda-test@example.com")
+
+    bundle_path = tmp_path / "reviewed-mop-bundle.zip"
+    with zipfile.ZipFile(bundle_path, "w") as archive:
+        archive.writestr("mop.md", "# Reviewed MoP\n")
+        archive.writestr("deployment-artifacts/machine_execution_plan.yaml", "steps: []\n")
+
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        user_id = login.json()["user"]["user_id"]
+        run_id = "run_activity_mop_bundle_upload"
+        repository = client.app.state.repository
+
+        repository.create_run(
+            run_id=run_id,
+            user_id=user_id,
+            goal="Generate MoP bundle for namespace signoz",
+            target_url="k8s://kubernetes_generic/signoz",
+            namespace="signoz",
+            workflow_type="mop_generation",
+        )
+        repository.add_event(run_id, "run_started", "MoP Generation started", {"namespace": "signoz"})
+        repository.update_status(run_id, "completed", final_report="# Method of Procedure")
+
+        markdown_response = client.post(
+            f"/api/activity/runs/{run_id}/artifact/markdown/upload",
+            files={"file": ("mop.md", b"# Wrong route\n", "text/markdown")},
+        )
+        assert markdown_response.status_code == 400
+
+        response = client.post(
+            f"/api/activity/runs/{run_id}/artifact/bundle/upload",
+            files={"file": ("reviewed-mop-bundle.zip", bundle_path.read_bytes(), "application/zip")},
+        )
+
+        assert response.status_code == 200
+        result = response.json()["artifact_overwrite"]
+        assert result["status"] == "created"
+        assert result["filename"] == "mop-bundle.zip"
+        assert result["folder_name"]
+
+        bundle_blob = subprocess.run(
+            [git, "--git-dir", str(remote), "show", f"main:{result['folder_name']}/mop-bundle.zip"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        published_bundle = tmp_path / "published-mop-bundle.zip"
+        published_bundle.write_bytes(bundle_blob)
+        assert zipfile.is_zipfile(published_bundle)
+
+        detail_response = client.get(f"/api/activity/runs/{run_id}")
+        assert detail_response.status_code == 200
+        actions = detail_response.json()["artifact_actions"]["actions"]
+        assert actions["bundle"]["label"] == "Download MoP Bundle"
+        assert "markdown" not in actions
+        assert "pdf" not in actions
 def test_activity_artifact_upload_creates_github_folder_for_local_only_run(tmp_path, monkeypatch) -> None:
     git = shutil.which("git")
     if not git:

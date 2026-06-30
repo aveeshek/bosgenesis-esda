@@ -442,10 +442,10 @@ def _safe_repo_folder(value: str) -> str:
 
 def _safe_repo_filename(value: str) -> str:
     clean = Path(str(value or "")).name
-    allowed = {"release-notes.md", "release-notes.pdf", "mop.md", "mop.pdf"}
+    allowed = {"release-notes.md", "release-notes.pdf", "mop.md", "mop.pdf", "mop-bundle.zip"}
     if clean not in allowed:
         raise ArtifactGitPublishError(
-            "Only release-notes.md, release-notes.pdf, mop.md, and mop.pdf may be overwritten."
+            "Only release-notes.md, release-notes.pdf, mop.md, mop.pdf, and mop-bundle.zip may be overwritten."
         )
     return clean
 

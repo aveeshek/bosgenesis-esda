@@ -834,8 +834,11 @@ def create_app() -> FastAPI:
     ) -> dict:
         run = require_activity_run(run_id, principal)
         normalized_kind = kind.strip().lower()
-        if normalized_kind not in {"markdown", "pdf"}:
-            raise HTTPException(status_code=400, detail="Artifact kind must be markdown or pdf")
+        if run.workflow_type == "mop_generation":
+            if normalized_kind != "bundle":
+                raise HTTPException(status_code=400, detail="MoP Activity upload only supports bundle artifacts")
+        elif normalized_kind not in {"markdown", "pdf"}:
+            raise HTTPException(status_code=400, detail="Release Note Activity upload only supports markdown or pdf artifacts")
 
         actions = activity_service.artifact_actions(run_id)
         publish_state = actions.get("publish_state") or {}
@@ -847,12 +850,13 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="Artifact GitHub publishing is disabled")
 
         filename = activity_service.artifact_filename(run.workflow_type, normalized_kind)
-        max_upload_bytes = 25 * 1024 * 1024
+        max_upload_bytes = 100 * 1024 * 1024 if normalized_kind == "bundle" else 25 * 1024 * 1024
         content = await file.read(max_upload_bytes + 1)
         if not content:
             raise HTTPException(status_code=422, detail="Uploaded file is empty")
         if len(content) > max_upload_bytes:
-            raise HTTPException(status_code=413, detail="Uploaded file exceeds 25 MB")
+            limit_mb = max_upload_bytes // (1024 * 1024)
+            raise HTTPException(status_code=413, detail=f"Uploaded file exceeds {limit_mb} MB")
         source_filename = file.filename or filename
         lowered_source = source_filename.lower()
         if normalized_kind == "markdown" and not lowered_source.endswith((".md", ".markdown", ".txt")):
@@ -862,6 +866,11 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=422, detail="PDF upload must be .pdf")
             if not content.startswith(b"%PDF"):
                 raise HTTPException(status_code=422, detail="Uploaded file does not look like a PDF")
+        if normalized_kind == "bundle":
+            if not lowered_source.endswith(".zip"):
+                raise HTTPException(status_code=422, detail="MoP bundle upload must be .zip")
+            if not zipfile.is_zipfile(BytesIO(content)):
+                raise HTTPException(status_code=422, detail="Uploaded file does not look like a zip bundle")
 
         repository.add_event(
             run_id,
@@ -921,7 +930,7 @@ def create_app() -> FastAPI:
                     {
                         "filename": filename,
                         "artifact_id": None,
-                        "mime_type": file.content_type,
+                        "mime_type": file.content_type or ("application/zip" if normalized_kind == "bundle" else None),
                     }
                 ],
                 "github_url": run.target_url,
@@ -1126,21 +1135,31 @@ def create_app() -> FastAPI:
             content=message,
             payload={"selected_run_ids": selected_run_ids, "surface": "activity"},
         )
-        result = await llm.structured_response(
-            system=(
-                "You are the ESDA Activity artifact analyst. Answer only from the supplied selected "
-                "Activity run context and artifact text across Release Note and MoP workflows. Cite run IDs, "
-                "artifact IDs, published folders, workflow names, namespaces, or section names. Never reveal hidden chain-of-thought. Return JSON with "
-                "answer, citations, and safe_summary."
-            ),
-            user_payload=activity_service.chat_prompt_payload(question=message, context=context),
-            fallback=fallback
-            | {
-                "prompt_version": "activity_artifact_chat_v1",
+        if fallback.get("used_direct_answer"):
+            result = fallback | {
+                "prompt_version": "activity_artifact_chat_direct_v1",
                 "prompt_hash": activity_service.chat_fallback_hash(question=message, context=context),
-            },
-            model_profile=model_profile,
-        )
+                "used_fallback": True,
+                "used_direct_answer": True,
+            }
+        else:
+            result = await llm.structured_response(
+                system=(
+                    "You are the ESDA Activity artifact analyst. Answer only from the supplied selected "
+                    "Activity run context, artifact text, and MoP bundle context across Release Note and MoP workflows. "
+                    "For MoP bundle questions, inspect mop_bundle_context first; for Kubernetes resource questions such as ConfigMaps, "
+                    "answer from the bundle file inventory and evidence, not only from run metadata. Cite run IDs, artifact IDs, "
+                    "published folders, bundle filenames, workflow names, namespaces, file paths, or section names. Never reveal hidden chain-of-thought. Return JSON with "
+                    "answer, citations, and safe_summary."
+                ),
+                user_payload=activity_service.chat_prompt_payload(question=message, context=context),
+                fallback=fallback
+                | {
+                    "prompt_version": "activity_artifact_chat_v1",
+                    "prompt_hash": activity_service.chat_fallback_hash(question=message, context=context),
+                },
+                model_profile=model_profile,
+            )
         answer = str(result.get("answer") or result.get("message") or fallback["answer"])[:5000]
         citations = result.get("citations") if isinstance(result.get("citations"), list) else fallback["citations"]
         safe_summary = str(result.get("safe_summary") or fallback["safe_summary"])[:1000]
@@ -1157,6 +1176,7 @@ def create_app() -> FastAPI:
                 "prompt_version": result.get("prompt_version", "activity_artifact_chat_v1"),
                 "prompt_hash": result.get("prompt_hash"),
                 "used_fallback": bool(result.get("used_fallback", False)),
+                "used_direct_answer": bool(result.get("used_direct_answer", False)),
             },
         )
         return {

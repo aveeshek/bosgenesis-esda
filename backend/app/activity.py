@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from io import BytesIO
 import hashlib
 import json
+import re
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -174,42 +179,45 @@ class ActivityService:
         publish_state = self._publish_state(events)
         repo_folder_url = self._published_folder_url(publish_state)
         repo_path = self._published_repo_path(publish_state)
-        markdown = self._preferred_artifact(artifacts, "markdown")
-        pdf = self._preferred_artifact(artifacts, "pdf")
-        actions = {
-            "markdown": self._artifact_action(
-                run_id=run_id,
-                workflow_type=run.workflow_type,
-                kind="markdown",
-                label="Download Markdown",
-                filename=self.artifact_filename(run.workflow_type, "markdown"),
-                artifact=markdown,
-                publish_state=publish_state,
-            ),
-            "pdf": self._artifact_action(
-                run_id=run_id,
-                workflow_type=run.workflow_type,
-                kind="pdf",
-                label="Download PDF",
-                filename=self.artifact_filename(run.workflow_type, "pdf"),
-                artifact=pdf,
-                publish_state=publish_state,
-            ),
-            "open_repo": {
-                "label": "Open Repo Folder",
-                "enabled": bool(repo_folder_url),
-                "url": repo_folder_url,
-                "source": "published" if repo_folder_url else "missing",
-                "reason": None if repo_folder_url else "Publish metadata is not available for this run.",
-            },
-            "copy_repo_path": {
-                "label": "Copy Repo Path",
-                "enabled": bool(repo_path),
-                "value": repo_path,
-                "source": "published" if repo_path else "missing",
-                "reason": None if repo_path else "Publish metadata is not available for this run.",
-            },
-        }
+        actions = self._base_repo_actions(repo_folder_url=repo_folder_url, repo_path=repo_path)
+        if run.workflow_type == "mop_generation":
+            bundle = self._preferred_artifact(artifacts, "bundle")
+            actions = {
+                "bundle": self._artifact_action(
+                    run_id=run_id,
+                    workflow_type=run.workflow_type,
+                    kind="bundle",
+                    label="Download MoP Bundle",
+                    filename=self.artifact_filename(run.workflow_type, "bundle"),
+                    artifact=bundle,
+                    publish_state=publish_state,
+                ),
+                **actions,
+            }
+        else:
+            markdown = self._preferred_artifact(artifacts, "markdown")
+            pdf = self._preferred_artifact(artifacts, "pdf")
+            actions = {
+                "markdown": self._artifact_action(
+                    run_id=run_id,
+                    workflow_type=run.workflow_type,
+                    kind="markdown",
+                    label="Download Markdown",
+                    filename=self.artifact_filename(run.workflow_type, "markdown"),
+                    artifact=markdown,
+                    publish_state=publish_state,
+                ),
+                "pdf": self._artifact_action(
+                    run_id=run_id,
+                    workflow_type=run.workflow_type,
+                    kind="pdf",
+                    label="Download PDF",
+                    filename=self.artifact_filename(run.workflow_type, "pdf"),
+                    artifact=pdf,
+                    publish_state=publish_state,
+                ),
+                **actions,
+            }
         return {
             "run_id": run_id,
             "workflow_type": run.workflow_type,
@@ -228,10 +236,13 @@ class ActivityService:
 
     def resolve_artifact_download(self, run_id: str, kind: str) -> dict | None:
         normalized_kind = kind.lower()
-        if normalized_kind not in {"markdown", "pdf"}:
-            return None
         run = self.repository.get_run(run_id)
         if not run or run.workflow_type not in self._activity_workflow_types():
+            return None
+        if run.workflow_type == "mop_generation":
+            if normalized_kind != "bundle":
+                return None
+        elif normalized_kind not in {"markdown", "pdf"}:
             return None
         events = self.repository.list_events(run_id)
         artifacts = self.repository.list_artifacts(run_id)
@@ -299,6 +310,7 @@ class ActivityService:
                         for event in detail.get("events", [])[-32:]
                     ],
                     "artifact_texts": self._artifact_texts_for_chat(artifacts),
+                    "mop_bundle_context": self._mop_bundle_context_for_chat(detail, artifacts),
                 }
             )
         return contexts
@@ -311,6 +323,8 @@ class ActivityService:
                 "citations": [],
                 "safe_summary": "No selected activity context was available.",
             }
+        if self.is_direct_activity_answer(question=question, context=context):
+            return self._configmap_bundle_answer(context=context)
 
         lowered_question = question.lower()
         answer_lines = ["Here is what the selected activity shows:"]
@@ -338,7 +352,8 @@ class ActivityService:
             answer_lines.append(
                 "  Artifact availability: "
                 f"Markdown={'yes' if artifact_summary.get('has_markdown') else 'no'}, "
-                f"PDF={'yes' if artifact_summary.get('has_pdf') else 'no'}."
+                f"PDF={'yes' if artifact_summary.get('has_pdf') else 'no'}, "
+                f"MoP bundle={'yes' if artifact_summary.get('has_bundle') else 'no'}."
             )
             if failed_stages:
                 answer_lines.append(
@@ -369,6 +384,109 @@ class ActivityService:
             "citations": citations[:12],
             "safe_summary": f"Answered from {len(context)} selected activity node(s).",
         }
+
+    def is_direct_activity_answer(self, *, question: str, context: list[dict]) -> bool:
+        return self._is_configmap_question(question) and any(item.get("mop_bundle_context") for item in context)
+
+    @staticmethod
+    def _is_configmap_question(question: str) -> bool:
+        lowered = question.lower()
+        return any(token in lowered for token in ("configmap", "config map", "configmaps", "config maps"))
+
+    def _configmap_bundle_answer(self, *, context: list[dict]) -> dict:
+        lines = ["### ConfigMaps in Selected MoP Bundle", ""]
+        citations: list[dict] = []
+        total_entries = 0
+        for run_context in context:
+            run_id = run_context.get("run_id")
+            repo = run_context.get("repository") or run_context.get("resource_label") or "selected run"
+            bundle_context = run_context.get("mop_bundle_context") or {}
+            filename = bundle_context.get("filename") or "mop-bundle.zip"
+            citations.append({"type": "run", "run_id": run_id, "label": repo})
+            if bundle_context.get("status") != "available":
+                lines.extend(
+                    [
+                        f"**Run:** `{repo}` (`{run_id}`)",
+                        f"**Bundle:** `{filename}`",
+                        "",
+                        f"I could not inspect the bundle contents: {bundle_context.get('reason') or 'bundle context unavailable'}.",
+                        "",
+                    ]
+                )
+                continue
+            configmaps = bundle_context.get("configmaps") or []
+            total_entries += len(configmaps)
+            counts = self._configmap_type_counts(configmaps)
+            citations.append({"type": "mop_bundle", "run_id": run_id, "label": filename})
+            lines.extend(
+                [
+                    f"**Run:** `{repo}` (`{run_id}`)",
+                    f"**Bundle:** `{filename}` from `{bundle_context.get('source') or 'artifact storage'}`",
+                    f"**Bundle scan:** {bundle_context.get('file_count', 0)} files, {bundle_context.get('text_file_count', 0)} readable text/YAML files inspected.",
+                    "",
+                ]
+            )
+            if not configmaps:
+                lines.extend(
+                    [
+                        "No Kubernetes `ConfigMap` definition was found in the readable YAML/JSON files inside the bundle.",
+                        "",
+                    ]
+                )
+                continue
+            lines.extend(
+                [
+                    f"Found **{len(configmaps)} ConfigMap definition/reference item(s)**.",
+                    "",
+                    "| Category | Count |",
+                    "|---|---:|",
+                ]
+            )
+            for label, count in counts.items():
+                if count:
+                    lines.append(f"| {label} | {count} |")
+            lines.extend(
+                [
+                    "",
+                    "| # | Name | Namespace | Category | Source file |",
+                    "|---:|---|---|---|---|",
+                ]
+            )
+            for index, item in enumerate(self._sorted_configmaps(configmaps)[:25], start=1):
+                lines.append(
+                    f"| {index} | `{self._table_value(item.get('name'))}` | `{self._table_value(item.get('namespace'))}` | "
+                    f"{self._table_value(item.get('source_label'))} | `{self._table_value(item.get('file'))}` |"
+                )
+            if len(configmaps) > 25:
+                lines.append(f"\nShowing 25 of {len(configmaps)} items. Download the bundle for the complete inventory.")
+            lines.append("")
+            if counts.get("Helm template"):
+                lines.append("Note: Helm template entries are source templates, not necessarily final rendered Kubernetes objects.")
+                lines.append("")
+        return {
+            "answer": "\n".join(lines).strip(),
+            "citations": citations[:12],
+            "safe_summary": f"Answered directly from MoP bundle inventory for {len(context)} selected activity node(s); {total_entries} ConfigMap item(s) found.",
+            "used_direct_answer": True,
+        }
+
+    @staticmethod
+    def _configmap_type_counts(configmaps: list[dict]) -> dict:
+        counts = {"Raw/rendered manifest": 0, "Helm template": 0, "Bundle metadata": 0, "Documentation/reference": 0, "Other": 0}
+        for item in configmaps:
+            label = item.get("source_label") or "Other"
+            counts[label if label in counts else "Other"] += 1
+        return counts
+
+    @staticmethod
+    def _sorted_configmaps(configmaps: list[dict]) -> list[dict]:
+        priority = {"raw_manifest": 0, "rendered_manifest": 0, "helm_template": 1, "bundle_metadata": 2, "documentation": 3, "reference": 4}
+        return sorted(configmaps, key=lambda item: (priority.get(str(item.get("source_type") or ""), 9), str(item.get("file") or ""), str(item.get("name") or "")))
+
+    @staticmethod
+    def _table_value(value) -> str:
+        text = str(value or "not specified").replace("|", "\\|").replace("\n", " ")
+        return text[:180]
 
     def chat_prompt_payload(self, *, question: str, context: list[dict]) -> dict:
         return {
@@ -403,6 +521,8 @@ class ActivityService:
 
     def artifact_filename(self, workflow_type: str | None, kind: str) -> str:
         if workflow_type == "mop_generation":
+            if kind == "bundle":
+                return "mop-bundle.zip"
             return "mop.pdf" if kind == "pdf" else "mop.md"
         return "release-notes.pdf" if kind == "pdf" else "release-notes.md"
 
@@ -679,11 +799,14 @@ class ActivityService:
     def _artifact_availability(self, artifacts: list[dict]) -> dict:
         markdown = [item for item in artifacts if self._is_markdown(item)]
         pdf = [item for item in artifacts if self._is_pdf(item)]
+        bundle = [item for item in artifacts if self._is_bundle(item)]
         return {
             "has_markdown": bool(markdown),
             "has_pdf": bool(pdf),
+            "has_bundle": bool(bundle),
             "markdown_count": len(markdown),
             "pdf_count": len(pdf),
+            "bundle_count": len(bundle),
             "types": sorted({str(item.get("mime_type") or item.get("artifact_type") or "unknown") for item in artifacts}),
         }
 
@@ -694,7 +817,7 @@ class ActivityService:
             "title": artifact.get("title"),
             "mime_type": artifact.get("mime_type"),
             "created_at": artifact.get("created_at"),
-            "kind": "pdf" if self._is_pdf(artifact) else "markdown" if self._is_markdown(artifact) else "other",
+            "kind": "bundle" if self._is_bundle(artifact) else "pdf" if self._is_pdf(artifact) else "markdown" if self._is_markdown(artifact) else "other",
             "download_url": f"/api/artifacts/{artifact.get('artifact_id')}",
             "filename": (artifact.get("metadata") or {}).get("filename"),
         }
@@ -707,6 +830,25 @@ class ActivityService:
             "repo_path": None,
             "actions": {},
             "local_artifacts": [],
+        }
+
+    @staticmethod
+    def _base_repo_actions(*, repo_folder_url: str | None, repo_path: str | None) -> dict:
+        return {
+            "open_repo": {
+                "label": "Open Repo Folder",
+                "enabled": bool(repo_folder_url),
+                "url": repo_folder_url,
+                "source": "published" if repo_folder_url else "missing",
+                "reason": None if repo_folder_url else "Publish metadata is not available for this run.",
+            },
+            "copy_repo_path": {
+                "label": "Copy Repo Path",
+                "enabled": bool(repo_path),
+                "value": repo_path,
+                "source": "published" if repo_path else "missing",
+                "reason": None if repo_path else "Publish metadata is not available for this run.",
+            },
         }
 
     def _artifact_action(
@@ -737,17 +879,32 @@ class ActivityService:
         }
 
     def _preferred_artifact(self, artifacts: list[dict], kind: str) -> dict | None:
-        predicate = self._is_pdf if kind == "pdf" else self._is_markdown
+        if kind == "bundle":
+            predicate = self._is_bundle
+        else:
+            predicate = self._is_pdf if kind == "pdf" else self._is_markdown
         candidates = [artifact for artifact in artifacts if predicate(artifact)]
         if not candidates:
             return None
-        primary_types = {"pdf": {"release_note_pdf", "mop_pdf"}, "markdown": {"release_note", "mop"}}
+        primary_types = {
+            "pdf": {"release_note_pdf", "mop_pdf"},
+            "markdown": {"release_note", "mop"},
+            "bundle": {"mop_bundle_zip"},
+        }
         primary = [
             artifact
             for artifact in candidates
             if str(artifact.get("artifact_type") or "") in primary_types.get(kind, set())
         ]
         return primary[-1] if primary else candidates[-1]
+
+    def _is_bundle(self, artifact: dict) -> bool:
+        filename = str((artifact.get("metadata") or {}).get("filename") or "").lower()
+        return (
+            str(artifact.get("artifact_type") or "") == "mop_bundle_zip"
+            or filename == "mop-bundle.zip"
+            or str(artifact.get("mime_type") or "").lower() in {"application/zip", "application/x-zip-compressed"}
+        )
 
     def _artifact_repo_web_base(self) -> str | None:
         if not self.settings:
@@ -809,6 +966,183 @@ class ActivityService:
         folder_name = quote(str(publish_state["folder_name"]).strip("/"))
         return f"{raw_base}/{quote(branch)}/{folder_name}/{quote(filename)}"
 
+    def _mop_bundle_context_for_chat(self, detail: dict, artifacts: list[dict]) -> dict | None:
+        node = detail.get("node") or {}
+        if node.get("workflow_type") != "mop_generation":
+            return None
+        bundle_artifact = self._preferred_artifact(artifacts, "bundle")
+        source = "missing"
+        bundle_bytes: bytes | None = None
+        filename = self.artifact_filename("mop_generation", "bundle")
+        if bundle_artifact:
+            filename = (bundle_artifact.get("metadata") or {}).get("filename") or filename
+            bundle_bytes = self._read_binary_artifact(bundle_artifact, max_bytes=20_000_000)
+            source = "local"
+        if bundle_bytes is None:
+            publish_state = node.get("publish_state") or self._publish_state(detail.get("events") or [])
+            raw_url = self._published_raw_url(publish_state, filename)
+            if raw_url:
+                bundle_bytes = self._fetch_published_bundle(raw_url, max_bytes=20_000_000)
+                source = "published"
+        if bundle_bytes is None:
+            return {"status": "unavailable", "filename": filename, "reason": "mop-bundle.zip could not be read from local storage or published GitHub raw URL"}
+        return self._inspect_mop_bundle_zip(bundle_bytes, filename=filename, source=source)
+
+    def _read_binary_artifact(self, artifact: dict, *, max_bytes: int) -> bytes | None:
+        if not self.artifact_storage_root:
+            return None
+        try:
+            root = self.artifact_storage_root.resolve()
+            path = (root / str(artifact.get("storage_path") or "")).resolve()
+            if root not in path.parents and path != root:
+                return None
+            if not path.exists() or path.stat().st_size > max_bytes:
+                return None
+            return path.read_bytes()
+        except OSError:
+            return None
+
+    def _fetch_published_bundle(self, raw_url: str, *, max_bytes: int) -> bytes | None:
+        parsed = urlparse(raw_url)
+        if parsed.scheme != "https" or parsed.netloc.lower() != "raw.githubusercontent.com":
+            return None
+        raw_base = self._artifact_repo_raw_base()
+        if not raw_base or not raw_url.startswith(raw_base.rstrip("/") + "/"):
+            return None
+        try:
+            request = Request(raw_url, headers={"User-Agent": "bosgenesis-esda-activity-chat"})
+            with urlopen(request, timeout=8) as response:
+                content_length = response.headers.get("Content-Length")
+                if content_length and int(content_length) > max_bytes:
+                    return None
+                data = response.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    return None
+                return data
+        except (OSError, URLError, ValueError):
+            return None
+
+    def _inspect_mop_bundle_zip(self, content: bytes, *, filename: str, source: str) -> dict:
+        if not zipfile.is_zipfile(BytesIO(content)):
+            return {"status": "unavailable", "filename": filename, "source": source, "reason": "bundle is not a valid zip archive"}
+        configmaps: list[dict] = []
+        file_names: list[str] = []
+        text_files: list[str] = []
+        evidence: list[dict] = []
+        skipped_large = 0
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            infos = [info for info in archive.infolist() if not info.is_dir()]
+            for info in infos[:600]:
+                name = info.filename.replace("\\", "/")
+                file_names.append(name)
+                if info.file_size > 700_000:
+                    skipped_large += 1
+                    continue
+                if not self._is_bundle_text_file(name):
+                    continue
+                text_files.append(name)
+                try:
+                    raw = archive.read(info, pwd=None)
+                except (OSError, RuntimeError, zipfile.BadZipFile):
+                    continue
+                text = raw.decode("utf-8", errors="replace")
+                discovered = self._configmaps_from_text(name, text)
+                if discovered:
+                    configmaps.extend(discovered)
+                    evidence.extend(
+                        {
+                            "file": item["file"],
+                            "name": item.get("name"),
+                            "namespace": item.get("namespace"),
+                            "source_label": item.get("source_label"),
+                            "excerpt": self._excerpt_around_configmap(text),
+                        }
+                        for item in discovered[:3]
+                    )
+                elif "configmap" in name.lower():
+                    source_type, source_label = self._bundle_source_category(name)
+                    configmaps.append({"file": name, "name": None, "namespace": None, "confidence": "filename_match", "source_type": source_type, "source_label": source_label})
+        return {
+            "status": "available",
+            "filename": filename,
+            "source": source,
+            "file_count": len(file_names),
+            "text_file_count": len(text_files),
+            "skipped_large_files": skipped_large,
+            "files_sample": file_names[:80],
+            "configmap_count": len(configmaps),
+            "configmaps": configmaps[:30],
+            "evidence": evidence[:10],
+        }
+
+    @staticmethod
+    def _is_bundle_text_file(name: str) -> bool:
+        lowered = name.lower()
+        return lowered.endswith((".yaml", ".yml", ".json", ".md", ".txt", ".properties", ".conf", ".ini", ".env"))
+
+    def _configmaps_from_text(self, filename: str, text: str) -> list[dict]:
+        lowered = text.lower()
+        if "configmap" not in lowered:
+            return []
+        source_type, source_label = self._bundle_source_category(filename)
+        matches: list[dict] = []
+        yaml_docs = re.split(r"(?m)^---\s*$", text)
+        for doc in yaml_docs:
+            if re.search(r"(?im)^\s*kind\s*:\s*ConfigMap\s*$", doc) or re.search(r'"kind"\s*:\s*"ConfigMap"', doc):
+                matches.append(
+                    {
+                        "file": filename,
+                        "name": self._clean_manifest_name(self._metadata_value(doc, "name")),
+                        "namespace": self._clean_manifest_name(self._metadata_value(doc, "namespace")),
+                        "confidence": "kind_configmap",
+                        "source_type": source_type,
+                        "source_label": source_label,
+                    }
+                )
+        return matches
+
+    @staticmethod
+    def _bundle_source_category(filename: str) -> tuple[str, str]:
+        lowered = filename.lower().replace("\\", "/")
+        if "/kubernetes-manifests/raw/" in lowered or "/kubernetes-manifests/rendered/" in lowered:
+            return "raw_manifest", "Raw/rendered manifest"
+        if "/templates/" in lowered:
+            return "helm_template", "Helm template"
+        if lowered.endswith("artifact.json") or "/artifact.json" in lowered:
+            return "bundle_metadata", "Bundle metadata"
+        if lowered.endswith((".md", ".markdown", ".txt")):
+            return "documentation", "Documentation/reference"
+        return "reference", "Other"
+
+    @staticmethod
+    def _clean_manifest_name(value: str | None) -> str | None:
+        if not value:
+            return None
+        text = value.strip().strip('"\'')
+        if text.startswith("{{") or "{{" in text or "}}" in text:
+            return "templated"
+        return text[:160]
+
+    @staticmethod
+    def _metadata_value(text: str, key: str) -> str | None:
+        json_match = re.search(rf'"{re.escape(key)}"\s*:\s*"([^"\\]+)"', text)
+        if json_match:
+            return json_match.group(1)[:160]
+        metadata_match = re.search(r"(?ims)^\s*metadata\s*:\s*(.*?)(?:^\S|\Z)", text)
+        search_area = metadata_match.group(1) if metadata_match else text
+        yaml_match = re.search(rf"(?im)^\s*{re.escape(key)}\s*:\s*['\"]?([^'\"\n#]+)", search_area)
+        if yaml_match:
+            return yaml_match.group(1).strip()[:160]
+        return None
+
+    @staticmethod
+    def _excerpt_around_configmap(text: str) -> str:
+        index = text.lower().find("configmap")
+        if index < 0:
+            return text[:700]
+        start = max(index - 260, 0)
+        end = min(index + 700, len(text))
+        return text[start:end].strip()
     def _artifact_texts_for_chat(self, artifacts: list[dict]) -> list[dict]:
         texts = []
         for artifact in [item for item in artifacts if self._is_markdown(item)][-3:]:

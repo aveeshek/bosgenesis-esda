@@ -285,14 +285,16 @@ function renderDetail(detail) {
   activityEls.detailStatus.textContent = statusLabels[visualStatus] || visualStatus;
   activityEls.detailStatus.className = `activity-detail-status ${statusClass(visualStatus)}`;
   const artifactSummary = node.artifact_summary || {};
+  const artifactStatusHtml = node.workflow_type === "mop_generation"
+    ? `<span>${artifactSummary.has_bundle ? "MoP bundle ready" : "MoP bundle missing"}</span>`
+    : `<span>${artifactSummary.has_markdown ? "Markdown ready" : "Markdown missing"}</span><span>${artifactSummary.has_pdf ? "PDF ready" : "PDF missing"}</span>`;
   activityEls.detailSummary.innerHTML = `
     <strong>${escapeHtml(node.repository || "Unknown resource")}</strong>
     <span>${escapeHtml(node.workflow_label || "Activity")}</span>
     <span>${escapeHtml(node.release_name || node.namespace || "current")}</span>
     <span>${escapeHtml(formatDate(node.created_at))}</span>
     <span>${escapeHtml(node.model_profile?.label || "Unknown model")}</span>
-    <span>${artifactSummary.has_markdown ? "Markdown ready" : "Markdown missing"}</span>
-    <span>${artifactSummary.has_pdf ? "PDF ready" : "PDF missing"}</span>
+    ${artifactStatusHtml}
   `;
   activityState.activeDetail = detail;
   renderArtifactActions(detail.artifact_actions || {});
@@ -316,11 +318,14 @@ function renderStage(stage, index) {
 
 function showTooltip(node, event) {
   if (!activityEls.tooltip) return;
+  const artifactStatus = node.workflow_type === "mop_generation"
+    ? (node.artifact_summary?.has_bundle ? "MoP bundle" : "No MoP bundle")
+    : `${node.artifact_summary?.has_markdown ? "MD" : "No MD"} / ${node.artifact_summary?.has_pdf ? "PDF" : "No PDF"}`;
   activityEls.tooltip.innerHTML = `
     <strong>${escapeHtml(node.title)}</strong>
     <span>${escapeHtml(node.workflow_label || "Activity")} | ${escapeHtml(node.repository)} | ${escapeHtml(node.release_name || node.namespace || "current")}</span>
     <span>${escapeHtml(statusLabels[node.visual_status] || node.visual_status)} | ${escapeHtml(node.duration_label)}</span>
-    <span>${node.artifact_summary?.has_markdown ? "MD" : "No MD"} / ${node.artifact_summary?.has_pdf ? "PDF" : "No PDF"}</span>
+    <span>${escapeHtml(artifactStatus)}</span>
   `;
   activityEls.tooltip.setAttribute("aria-hidden", "false");
   activityEls.tooltip.classList.add("is-visible");
@@ -399,11 +404,34 @@ function updateChatControls() {
 function renderArtifactActions(artifactActions) {
   if (!activityEls.artifactActions) return;
   const actions = artifactActions.actions || {};
+  const workflowType = artifactActions.workflow_type || activityState.activeDetail?.node?.workflow_type || "";
+  const isMop = workflowType === "mop_generation";
   const publishState = artifactActions.publish_state || {};
-  const canUpload = Boolean(activityState.activeRunId && Object.keys(actions).length);
   const uploadReason = publishState.published && publishState.folder_name
     ? "Overwrite the published GitHub artifact for this run."
     : "Create this run artifact folder in GitHub, then overwrite that file for future uploads.";
+  const openRepo = actions.open_repo || {};
+  const copyRepo = actions.copy_repo_path || {};
+
+  if (isMop) {
+    const bundle = actions.bundle || {};
+    const canUploadBundle = Boolean(activityState.activeRunId && (bundle.enabled || publishState.folder_name || Object.keys(actions).length));
+    activityEls.artifactActions.innerHTML = `
+      <div class="activity-artifact-action-row">
+        ${artifactActionLink(bundle)}
+        ${repoActionLink(openRepo)}
+        ${copyRepoButton(copyRepo)}
+        ${githubUploadButton("bundle", "Upload MoP Bundle Github", canUploadBundle, uploadReason)}
+      </div>
+      <div class="activity-artifact-source">
+        ${escapeHtml(artifactActions.repo_path || "Local ESDA MoP bundle fallback will be used when published artifacts are unavailable.")}
+      </div>
+    `;
+    bindArtifactActionControls();
+    return;
+  }
+
+  const canUpload = Boolean(activityState.activeRunId && Object.keys(actions).length);
   if (!Object.keys(actions).length) {
     activityEls.artifactActions.innerHTML = `
     <div class="activity-artifact-action-row">
@@ -417,8 +445,6 @@ function renderArtifactActions(artifactActions) {
   }
   const markdown = actions.markdown || {};
   const pdf = actions.pdf || {};
-  const openRepo = actions.open_repo || {};
-  const copyRepo = actions.copy_repo_path || {};
   activityEls.artifactActions.innerHTML = `
     <div class="activity-artifact-action-row">
       ${artifactActionLink(markdown)}
@@ -468,22 +494,32 @@ function copyRepoButton(action) {
 
 function githubUploadButton(kind, label, enabled, reason) {
   const disabled = enabled ? "" : " disabled";
-  const hint = enabled ? reason : "Select a run with Markdown/PDF artifacts before uploading.";
+  const missingKind = kind === "bundle" ? "MoP bundle" : "Markdown/PDF";
+  const hint = enabled ? reason : `Select a run with ${missingKind} artifacts before uploading.`;
   return `<button class="btn btn-sm btn-outline-secondary activity-artifact-button activity-github-upload-button" type="button" data-github-upload-kind="${escapeHtml(kind)}" title="${escapeHtml(hint)}"${disabled}><span>${escapeHtml(label)}</span><em>overwrite</em></button>`;
 }
 
 function showGithubUploadPanel(kind) {
   if (!activityEls.artifactActions || !activityState.activeRunId) return;
   activityEls.artifactActions.querySelector(".activity-github-upload-panel")?.remove();
-  const normalizedKind = kind === "pdf" ? "pdf" : "markdown";
-  const label = normalizedKind === "pdf" ? "PDF" : "Markdown";
-  const accept = normalizedKind === "pdf" ? ".pdf,application/pdf" : ".md,.markdown,.txt,text/markdown,text/plain";
-  const action = activityState.activeDetail?.artifact_actions?.actions?.[normalizedKind] || {};
   const workflowType = activityState.activeDetail?.node?.workflow_type;
-  const filename = action.filename || (workflowType === "mop_generation"
-    ? (normalizedKind === "pdf" ? "mop.pdf" : "mop.md")
-    : (normalizedKind === "pdf" ? "release-notes.pdf" : "release-notes.md"));
+  const normalizedKind = workflowType === "mop_generation" || kind === "bundle" ? "bundle" : kind === "pdf" ? "pdf" : "markdown";
+  const label = normalizedKind === "bundle" ? "MoP Bundle" : normalizedKind === "pdf" ? "PDF" : "Markdown";
+  const accept = normalizedKind === "bundle"
+    ? ".zip,application/zip,application/x-zip-compressed"
+    : normalizedKind === "pdf"
+      ? ".pdf,application/pdf"
+      : ".md,.markdown,.txt,text/markdown,text/plain";
+  const action = activityState.activeDetail?.artifact_actions?.actions?.[normalizedKind] || {};
+  const filename = action.filename || (normalizedKind === "bundle"
+    ? "mop-bundle.zip"
+    : normalizedKind === "pdf"
+      ? "release-notes.pdf"
+      : "release-notes.md");
   const folder = activityState.activeDetail?.artifact_actions?.publish_state?.folder_name || "new GitHub folder for this run";
+  const guidance = normalizedKind === "bundle"
+    ? "Choose the updated MoP bundle zip. ESDA will overwrite the published bundle, or create this run folder if it was only local."
+    : `Choose the updated ${label} file. ESDA will overwrite the published file, or create this run folder if it was only local.`;
   const panel = document.createElement("div");
   panel.className = "activity-github-upload-panel";
   panel.innerHTML = `
@@ -496,7 +532,7 @@ function showGithubUploadPanel(kind) {
       <button class="btn btn-sm btn-primary" type="button" data-upload-submit disabled>Upload ${escapeHtml(label)}</button>
       <button class="btn btn-sm btn-outline-secondary" type="button" data-upload-cancel>Cancel</button>
     </div>
-    <div class="activity-github-upload-status" data-upload-status>Choose the updated ${escapeHtml(label)} file. ESDA will overwrite the published file, or create this run folder if it was only local.</div>
+    <div class="activity-github-upload-status" data-upload-status>${escapeHtml(guidance)}</div>
   `;
   activityEls.artifactActions.appendChild(panel);
   const input = panel.querySelector(".activity-github-upload-input");
