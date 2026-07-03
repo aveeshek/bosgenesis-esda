@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     artifact_git_command_timeout_seconds: int = 120
     qdrant_url: str = "http://localhost:6333"
     redis_url: str = ""
+    log_level: str = "INFO"
+    log_dir: str = "logs"
+    log_file_enabled: bool = True
+    log_file_name: str = "esda-debug.log"
+    log_max_bytes: int = 10_000_000
+    log_backup_count: int = 5
+    mop_execution_debug_log_enabled: bool = True
+    mop_execution_debug_log_file: str = "mop-execution-debug.log"
 
     azure_openai_endpoint: str = ""
     azure_openai_api_key: str = ""
@@ -85,6 +93,19 @@ class Settings(BaseSettings):
     mop_default_target_namespace: str = "generic-namespace"
     mop_generated_name_prefix: str = "agent-ai"
     mop_artifact_folder_prefix: str = "mop"
+    mop_execution_agent_url: str = ""
+    mop_execution_agent_mcp_url: str = "http://mop-execution-agent.bosgenesis.local"
+    mop_execution_agent_transport: str = "auto"
+    mop_execution_agent_api_key: str = ""
+    mop_execution_agent_auth_header: str = "x-api-key"
+    mop_execution_agent_timeout_seconds: int = 300
+    mop_execution_agent_poll_interval_seconds: float = 5
+    mop_execution_agent_poll_attempts: int = 120
+    mop_execution_demo_pass_through_enabled: bool = False
+    mop_execution_allowed_target_namespaces: str = Field(default="agent-testing")
+    mop_execution_default_target_namespace: str = "agent-testing"
+    mop_execution_generated_name_prefix: str = "agent-ai"
+    mop_execution_report_folder_prefix: str = "mop-execution"
 
     mcp_k8s_inspector_url: str = ""
     mcp_k8s_inspector_api_key: str = ""
@@ -106,6 +127,14 @@ class Settings(BaseSettings):
     @property
     def mop_allowed_namespace_list(self) -> list[str]:
         return [item.strip() for item in self.mop_allowed_namespaces.split(",") if item.strip()]
+
+    @property
+    def mop_execution_allowed_target_namespace_list(self) -> list[str]:
+        return [
+            item.strip()
+            for item in self.mop_execution_allowed_target_namespaces.split(",")
+            if item.strip()
+        ]
 
     @property
     def azure_deployment_name(self) -> str:
@@ -146,6 +175,23 @@ class Settings(BaseSettings):
             raise ValueError(f"MOP_CREATION_AGENT_TRANSPORT must be one of {sorted(allowed)}")
         return normalized
 
+    @field_validator("mop_execution_agent_transport")
+    @classmethod
+    def validate_mop_execution_agent_transport(cls, value: str) -> str:
+        normalized = value.lower()
+        allowed = {"auto", "mcp", "rest"}
+        if normalized not in allowed:
+            raise ValueError(f"MOP_EXECUTION_AGENT_TRANSPORT must be one of {sorted(allowed)}")
+        return normalized
+
+    @field_validator("log_level")
+    @classmethod
+    def validate_log_level(cls, value: str) -> str:
+        normalized = value.upper()
+        allowed = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
+        if normalized not in allowed:
+            raise ValueError(f"LOG_LEVEL must be one of {sorted(allowed)}")
+        return normalized
     @field_validator("azure_openai_auth_mode")
     @classmethod
     def validate_azure_openai_auth_mode(cls, value: str) -> str:

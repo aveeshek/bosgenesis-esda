@@ -16,6 +16,9 @@ SECRET_KEY_PARTS = (
     "api_key",
     "apikey",
     "credential",
+    "archive_base64",
+    "content_base64",
+    "bundle_base64",
 )
 
 

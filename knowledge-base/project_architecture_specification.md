@@ -38,6 +38,7 @@ Implemented and verified:
 - MoP Generation is implemented as a read-only bundle workflow at `/mop-generation`. It uses source namespace, target namespace placeholder, environment, intent, optional Helm release, analysis depth, GPT-backed classifier/planner/verifier/recovery chains, MCP adapters, professional MoP Creation Agent artifacts where available, local bundle assembly, bundle download, Git publishing, and Activity inclusion.
 - MoP artifacts now center on `mop-bundle.zip` as the final Git-published artifact. The bundle includes root MoP Markdown/PDF, installation notes, `machine_execution_plan.yaml`, metadata, `deployment-artifacts/`, `deployment-artifacts.zip`, preserved agent payloads, and raw generated ConfigMaps under `deployment-artifacts/kubernetes-manifests/raw/` when present.
 - Activity is multi-workflow and supports Release Note and MoP Generation timeline nodes, workflow filters, run details, artifact downloads, and artifact-grounded chat.
+- MoP Execution is implemented as the governed execution workflow at `/mop-execution`. It selects a generated `mop-bundle.zip`, performs ESDA-side preflight, registers and validates the bundle through `bosgenesis-mop-execution-agent`, creates dry-run jobs, handles decision-required states, gates mutation behind human approval, polls mutation/validation/report states, and stores redacted execution evidence in PostgreSQL.
 
 Current V1 scope decision:
 
@@ -228,6 +229,7 @@ Recommended:
 | Floating Transaction Sidebar | Shared component | Hidden-by-default left drawer listing previous transactions and restoring selected runs. |
 | Release Notes | `/release-notes` | Generate draft release notes from GitHub URLs using GPT-5 and `release-note-agent`, with refresh-safe live progress and PostgreSQL audit logs. |
 | MoP Generation | `/mop-generation` | Generate read-only MoP deployment bundles using GPT-5 plus k8s-inspector, helm-manager, and mop-creation MCP agents; exposes complete bundle download and publish status. |
+| MoP Execution | `/mop-execution` | Execute validated MoP bundles through `bosgenesis-mop-execution-agent` with dry-run, approval, mutation, validation, rollback/cleanup, reports, and Activity visibility. |
 | Activity | `/activity` | Browse Release Note and MoP Generation timeline history, inspect run stages/artifacts, ask artifact-grounded questions, download artifacts/bundles, and upload reviewed Release Note replacements to the configured artifact GitHub repo. |
 | Run Detail | `/runs/{run_id}` | Plan, tool calls, approvals, evidence, final report restored from persisted run state. |
 | Approval Queue | `/approvals` | Pending approvals and historical decisions. |
@@ -285,6 +287,31 @@ Required safety behavior:
 - Kubernetes secrets must not be read. Secret references may be represented as redacted metadata.
 - All model reasoning must be captured only as safe summaries, decisions, policy notes, and validation explanations. Hidden chain-of-thought must not be stored or displayed.
 - The final MoP bundle must include explicit assumptions, missing evidence, rollback plan, validation plan, human approval notes, execution readiness status, machine plan, metadata, deployment artifacts, and zip archives.
+
+### 7.5 MoP Execution Page Specification
+
+The MoP Execution page is the governed runtime surface for generated MoP bundles and must reuse the final Release Notes/MoP Generation visual baseline.
+
+Required page behavior:
+
+- Route: `/mop-execution`.
+- Reuse top navigation, global model selector, profile menu, matte-glass panels, shared sphere animation, Autonomy Notes, copy/maximize controls, result panel, and bottom Agent Activity Feed.
+- Bundle source selector supports Activity run, artifact repository folder, and uploaded bundle.
+- Activity-run selection lists successful `mop_generation` runs with `mop-bundle.zip` and shows source namespace, generated time, publish folder, checksum when available, and bundle size.
+- Target namespace is selected during execution and is not inherited blindly from MoP Generation placeholders.
+- Execution modes begin with `dry_run_only`; mutation controls are hidden or disabled until validation, dry-run, and approval gates pass.
+- ESDA generates a correlation ID and idempotency keys for bundle validation, dry-run creation/start, instruction submission, approval submission, mutation creation/start, rollback, and cleanup.
+- ESDA performs local preflight before agent calls: bundle presence, required files, source Secret exposure, cluster-scoped destructive actions, and namespace mismatch warnings.
+- Autonomy Notes shows ephemeral live working stream and persisted safe summaries together while the page session remains open. Only safe summaries reload after refresh.
+- Agent Activity Feed nodes are Intake, Preflight, Agent Health, Bundle Validate, Dry-run Job, Dry-run, Observations, Decision, Dry-run Report, Approval, Mutation Job, Mutation, Validation, Reports, Rollback/Cleanup, Complete.
+- Result panel shows validation errors, dry-run observations, decision-required context, approval state, mutation state, validation matrix, report links, rollback-required state, and cleanup/revert actions.
+
+Required safety behavior:
+
+- ESDA must not directly call Kubernetes or Helm mutation tools. All dry-run, mutation, validation, rollback, cleanup, and reports go through `bosgenesis-mop-execution-agent`.
+- ESDA may use GPT-5 to summarize options and instructions, but it must not auto-submit repair instructions or approval rationales.
+- Mutation requires accepted human approval tied to operator identity, target namespace, dry-run job ID, command fingerprints, scope, rationale, and expiry.
+- Unknown mutation outcome, ambiguity, validation failure, or rollback-required state must pause the workflow for operator review.
 
 ---
 
@@ -438,7 +465,46 @@ Publish folder naming must be `YYMMDD_HHMMSS_<job-name>`. Each publish folder mu
 
 MoP publish folder naming must be `YYMMDD_HHMMSS_mop_<job-name>`. The Git-published file is `mop-bundle.zip`; local ESDA storage also retains individual Markdown/PDF/metadata files for preview and download where needed.
 
+### 8.6 MoP Execution Implementation Modules and Agent Contract
+
+| Module | Contract |
+|---|---|
+| `backend/app/mop_execution.py` | Owns bundle-source metadata, Activity-run bundle discovery, execution run helpers, preflight checks, required-file validation, namespace policy checks, and normalized execution events. |
+| `backend/app/tools/mop_execution_agent.py` | Typed REST client for `bosgenesis-mop-execution-agent`; maps health/readiness/capabilities, bundle registration, bundle validation, jobs, observations, events, approvals, instructions, reports, rollback, cleanup, and namespace revert. |
+| `backend/app/main.py` MoP Execution routes | Orchestrates page requests, preflight, bundle registration, validation, dry-run creation/start/polling, decision handling, approval, mutation, validation, report retrieval, and SSE events. |
+| `backend/app/templates/mop_execution.html` | Renders the MoP Execution page using the shared ESDA matte-glass/sphere design. |
+| `backend/app/static/js/mop_execution.js` | Owns page state, bundle selection, live progress, Autonomy Notes, result panel rendering, approval controls, decision cards, polling, report links, and activity feed status. |
+
+Execution-agent REST contract used by ESDA:
+
+| Stage | Endpoint |
+|---|---|
+| Health | `GET /healthz` |
+| Readiness | `GET /readyz` |
+| Capabilities | `GET /v1/capabilities` |
+| Effective config | `GET /v1/config/effective` |
+| Register bundle | `POST /v1/artifact-bundles` |
+| Validate bundle | `POST /v1/artifact-bundles/{bundle_id}/validate` |
+| Create job | `POST /v1/jobs` |
+| Start job | `POST /v1/jobs/{job_id}/start` |
+| Get/list jobs | `GET /v1/jobs/{job_id}`, `GET /v1/jobs` |
+| Observations/events/audit | `GET /v1/jobs/{job_id}/observations`, `GET /v1/jobs/{job_id}/events`, `GET /v1/jobs/{job_id}/audit-events` |
+| Decision/instruction | `GET /v1/jobs/{job_id}/decision-required`, `POST /v1/jobs/{job_id}/instructions` |
+| Approval | `POST /v1/jobs/{job_id}/approval` |
+| Reports | `GET /v1/jobs/{job_id}/reports`, `GET /v1/reports/{report_id}`, `GET /v1/reports/{report_id}/download` |
+| Report generation | `POST /v1/jobs/{job_id}/reports/execution-summary`, `/validation`, `/rollback`, `/change-summary`, `/release-notes` |
+| Rollback/cleanup/revert | execution-agent rollback endpoints and `POST /v1/namespaces/{namespace}/revert` when namespace cleanup is requested |
+
+Bundle-source contract:
+
+- Uploaded bundles and local bundles may be passed as local file paths only when the execution agent can resolve that path.
+- Published Activity bundles must be passed as `source.type = object_store` with a raw GitHub HTTPS URL for `mop-bundle.zip`.
+- ESDA must register the bundle first and store the returned `bundle_id`; validation and jobs must reference that `bundle_id`.
+- The execution agent must include an `object_store` resolver that can download HTTPS zip bundles, enforce size limits, safely extract the archive, and validate required files.
+- If the deployed agent lacks the resolver, ESDA should surface the agent error `bundle_source_not_locally_resolvable:object_store` as a deployment/version mismatch requiring execution-agent redeploy.
+
 ---
+
 ## 9. Azure GPT-5 Integration
 
 ### 9.1 Model Configuration

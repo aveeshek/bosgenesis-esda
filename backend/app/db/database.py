@@ -327,6 +327,21 @@ class RunRepository:
             "artifact_publish_failed",
             "run_completed",
             "run_failed",
+            "preflight_completed",
+            "agent_health_checked",
+            "bundle_validated",
+            "dry_run_job_created",
+            "mutation_job_created",
+            "job_started",
+            "job_state_polled",
+            "observations_received",
+            "decision_required",
+            "policy_decision_recorded",
+            "instruction_submitted",
+            "approval_submitted",
+            "reports_updated",
+            "rollback_cleanup_updated",
+            "safe_reasoning_summary",
         }
         with self.database.session() as db:
             query = select(AgentRun).where(AgentRun.user_id == user_id)

@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --app-bg: #f5f7fb;
   --app-surface: rgba(255, 255, 255, 0.94);
   --app-border: #d9e2ec;
@@ -3073,4 +3073,260 @@ body:has(#mop-autonomy-modal.show) .modal-backdrop.show {
   opacity: 0.95;
   position: relative;
   z-index: 2;
+}
+
+.decision-required-card {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(255, 112, 132, 0.18), rgba(92, 93, 178, 0.28));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 18px 42px rgba(20, 13, 55, 0.18);
+  backdrop-filter: blur(18px) saturate(120%);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.decision-card-header,
+.decision-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.decision-card-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 800;
+  color: #fff;
+}
+
+.decision-context-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin: 0.85rem 0;
+}
+
+.decision-context-grid > div,
+.decision-safe-options,
+.decision-schema-details,
+.decision-instruction-form {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(36, 24, 77, 0.34);
+}
+
+.decision-context-grid > div {
+  padding: 0.7rem;
+  min-width: 0;
+}
+
+.decision-context-grid span,
+.decision-schema-details summary {
+  display: block;
+  color: rgba(255, 255, 255, 0.64);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.decision-context-grid strong {
+  display: block;
+  margin-top: 0.2rem;
+  overflow-wrap: anywhere;
+  color: #fff;
+  font-size: 0.9rem;
+}
+
+.decision-error {
+  margin-bottom: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  background: rgba(255, 97, 114, 0.2);
+  border: 1px solid rgba(255, 180, 190, 0.28);
+}
+
+.decision-safe-options {
+  padding: 0.8rem;
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+.decision-schema-details {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+}
+
+.decision-schema-details summary {
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.decision-schema-box {
+  margin: 0.75rem 0 0;
+  max-height: 160px;
+  overflow: auto;
+  color: rgba(255, 255, 255, 0.88);
+  background: rgba(18, 13, 48, 0.52);
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.decision-unsafe-list {
+  margin: 0.75rem 0 0;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.decision-instruction-form {
+  margin-top: 0.75rem;
+  padding: 0.85rem;
+}
+
+.decision-instruction-form .form-control,
+.decision-instruction-form .form-select {
+  color: #fff;
+  background-color: rgba(36, 24, 77, 0.48);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.decision-instruction-form .form-control::placeholder {
+  color: rgba(255, 255, 255, 0.48);
+}
+
+.decision-card-actions {
+  margin-top: 0.75rem;
+}
+
+@media (max-width: 767.98px) {
+  .decision-context-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.approval-gate-card {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(28, 21, 72, 0.34));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 18px 40px rgba(20, 14, 50, 0.18);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.approval-gate-header,
+.approval-fingerprint-shell > span,
+.approval-evidence-grid span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.approval-gate-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #fff;
+}
+
+.approval-report-summary {
+  margin: 0.75rem 0 1rem;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.approval-evidence-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.approval-evidence-box {
+  min-height: 4.25rem;
+  max-height: 12rem;
+  margin: 0.35rem 0 0;
+  padding: 0.75rem;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(16, 12, 44, 0.42);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+}
+
+.approval-fingerprint-shell {
+  margin-top: 0.75rem;
+}
+
+.approval-gate-form {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.approval-gate-form textarea,
+.approval-gate-form select {
+  background: rgba(34, 24, 78, 0.58);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.approval-gate-form textarea::placeholder {
+  color: rgba(255, 255, 255, 0.52);
+}
+
+
+.mop-execution-workspace .release-progress-panel {
+  max-height: calc(100vh - 7.5rem);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-bottom: 8.5rem;
+  scrollbar-gutter: stable;
+}
+
+.mop-execution-workspace .approval-gate-card {
+  max-height: min(42rem, calc(100vh - 12rem));
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.mop-execution-workspace .approval-gate-form {
+  position: sticky;
+  bottom: 0;
+  margin-left: -1rem;
+  margin-right: -1rem;
+  margin-bottom: -1rem;
+  padding: 0.9rem 1rem 1rem;
+  background: linear-gradient(180deg, rgba(74, 54, 132, 0.92), rgba(56, 44, 115, 0.98));
+  backdrop-filter: blur(18px) saturate(125%);
+  border-radius: 0 0 12px 12px;
+}
+
+.mop-execution-workspace .release-progress-panel.is-approval-ready .release-sphere-stage {
+  min-height: clamp(180px, 22vh, 245px);
+  margin-bottom: 0.75rem;
+  padding-block: 0.7rem;
+}
+
+.mop-execution-workspace .release-progress-panel.is-approval-ready .release-sphere-dock {
+  width: min(20vmin, 190px, 54%);
+}
+
+.mop-execution-workspace .release-progress-panel.is-approval-ready .release-sphere-title {
+  font-size: clamp(1rem, 1.45vw, 1.35rem);
+}
+
+.mop-execution-workspace .release-progress-panel.is-approval-ready .approval-gate-card {
+  min-height: min(32rem, calc(100vh - 18rem));
+  margin-top: 0.25rem;
+}
+@media (max-width: 991.98px) {
+  .approval-evidence-grid {
+    grid-template-columns: 1fr;
+  }
 }

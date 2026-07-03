@@ -49,6 +49,24 @@ MOP_STAGE_DEFINITIONS = [
     {"id": "publish", "label": "Export"},
     {"id": "complete", "label": "Complete"},
 ]
+MOP_EXECUTION_STAGE_DEFINITIONS = [
+    {"id": "intake", "label": "Intake"},
+    {"id": "preflight", "label": "Preflight"},
+    {"id": "agent_health", "label": "Agent Health"},
+    {"id": "bundle_validate", "label": "Bundle Validate"},
+    {"id": "dry_run_job", "label": "Dry-run Job"},
+    {"id": "dry_run", "label": "Dry-run"},
+    {"id": "observations", "label": "Observations"},
+    {"id": "decision", "label": "Decision"},
+    {"id": "dry_run_report", "label": "Dry-run Report"},
+    {"id": "approval", "label": "Approval"},
+    {"id": "mutation_job", "label": "Mutation Job"},
+    {"id": "mutation", "label": "Mutation"},
+    {"id": "validation", "label": "Validation"},
+    {"id": "reports", "label": "Reports"},
+    {"id": "rollback_cleanup", "label": "Rollback/Cleanup"},
+    {"id": "complete", "label": "Complete"},
+]
 
 
 class ActivityService:
@@ -180,14 +198,15 @@ class ActivityService:
         repo_folder_url = self._published_folder_url(publish_state)
         repo_path = self._published_repo_path(publish_state)
         actions = self._base_repo_actions(repo_folder_url=repo_folder_url, repo_path=repo_path)
-        if run.workflow_type == "mop_generation":
+        if run.workflow_type in {"mop_generation", "mop_execution"}:
             bundle = self._preferred_artifact(artifacts, "bundle")
+            label = "Download Execution Reports" if run.workflow_type == "mop_execution" else "Download MoP Bundle"
             actions = {
                 "bundle": self._artifact_action(
                     run_id=run_id,
                     workflow_type=run.workflow_type,
                     kind="bundle",
-                    label="Download MoP Bundle",
+                    label=label,
                     filename=self.artifact_filename(run.workflow_type, "bundle"),
                     artifact=bundle,
                     publish_state=publish_state,
@@ -239,7 +258,7 @@ class ActivityService:
         run = self.repository.get_run(run_id)
         if not run or run.workflow_type not in self._activity_workflow_types():
             return None
-        if run.workflow_type == "mop_generation":
+        if run.workflow_type in {"mop_generation", "mop_execution"}:
             if normalized_kind != "bundle":
                 return None
         elif normalized_kind not in {"markdown", "pdf"}:
@@ -504,7 +523,7 @@ class ActivityService:
         return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
     def _activity_workflow_types(self) -> tuple[str, ...]:
-        return ("release_note_creation", "mop_generation")
+        return ("release_note_creation", "mop_generation", "mop_execution")
 
     def _workflow_filter(self, workflow_type: str | None) -> tuple[str, ...]:
         allowed = self._activity_workflow_types()
@@ -517,6 +536,7 @@ class ActivityService:
         return {
             "release_note_creation": "Release Notes",
             "mop_generation": "MoP Generation",
+            "mop_execution": "MoP Execution",
         }.get(str(workflow_type or ""), "Activity")
 
     def artifact_filename(self, workflow_type: str | None, kind: str) -> str:
@@ -524,7 +544,16 @@ class ActivityService:
             if kind == "bundle":
                 return "mop-bundle.zip"
             return "mop.pdf" if kind == "pdf" else "mop.md"
+        if workflow_type == "mop_execution":
+            return "mop-execution-reports.zip" if kind == "bundle" else "execution-report.json"
         return "release-notes.pdf" if kind == "pdf" else "release-notes.md"
+
+    def workflow_badge(self, workflow_type: str | None) -> str:
+        return {
+            "release_note_creation": "RN",
+            "mop_generation": "MOP",
+            "mop_execution": "EXEC",
+        }.get(str(workflow_type or ""), "ACT")
 
     def _build_node(self, transaction: dict, events: list[dict], artifacts: list[dict]) -> dict:
         workflow_type = transaction.get("workflow_type")
@@ -546,7 +575,7 @@ class ActivityService:
             "title": transaction.get("session_name") or transaction.get("title") or transaction["run_id"],
             "workflow_type": workflow_type,
             "workflow_label": self.workflow_label(workflow_type),
-            "workflow_badge": "MOP" if workflow_type == "mop_generation" else "RN",
+            "workflow_badge": self.workflow_badge(workflow_type),
             "repository": resource_label,
             "resource_label": resource_label,
             "github_url": target_url,
@@ -571,7 +600,7 @@ class ActivityService:
         }
 
     def _build_stages(self, events: list[dict], workflow_type: str | None = None) -> list[dict]:
-        definitions = MOP_STAGE_DEFINITIONS if workflow_type == "mop_generation" else STAGE_DEFINITIONS
+        definitions = self._stage_definitions_for(workflow_type)
         stages = {
             definition["id"]: {
                 "id": definition["id"],
@@ -602,9 +631,18 @@ class ActivityService:
                 stage["payload"] = self._safe_payload(event.get("payload") or {})
         return [stages[definition["id"]] for definition in definitions]
 
+    def _stage_definitions_for(self, workflow_type: str | None) -> list[dict]:
+        if workflow_type == "mop_generation":
+            return MOP_STAGE_DEFINITIONS
+        if workflow_type == "mop_execution":
+            return MOP_EXECUTION_STAGE_DEFINITIONS
+        return STAGE_DEFINITIONS
+
     def _stage_updates(self, event: dict, workflow_type: str | None = None) -> list[tuple[str, str]]:
         if workflow_type == "mop_generation":
             return self._mop_stage_updates(event)
+        if workflow_type == "mop_execution":
+            return self._mop_execution_stage_updates(event)
         return self._release_note_stage_updates(event)
 
     def _mop_stage_updates(self, event: dict) -> list[tuple[str, str]]:
@@ -655,6 +693,78 @@ class ActivityService:
             if (payload.get("artifact_publish") or {}).get("status") == "success":
                 updates.append(("publish", "success"))
             return updates
+        if event_type == "run_failed":
+            return [("complete", "failed")]
+        return []
+
+    def _mop_execution_stage_updates(self, event: dict) -> list[tuple[str, str]]:
+        event_type = event.get("event_type")
+        payload = event.get("payload") or {}
+        if event_type == "run_started":
+            return [("intake", "success")]
+        if event_type == "preflight_completed":
+            return [("preflight", "success" if payload.get("passed") is not False else "failed")]
+        if event_type == "agent_health_checked":
+            return [("agent_health", "success" if payload.get("healthy") is not False else "failed")]
+        if event_type == "bundle_validated":
+            validation = payload.get("bundle_validation") or {}
+            valid = validation.get("valid") is not False and str(validation.get("status") or "").lower() not in {"failed", "invalid"}
+            return [("bundle_validate", "success" if valid else "failed")]
+        if event_type == "dry_run_job_created":
+            return [("dry_run_job", "success")]
+        if event_type == "mutation_job_created":
+            return [("mutation_job", "success")]
+        if event_type == "job_started":
+            phase = str(payload.get("phase") or "")
+            if "mutation" in phase:
+                return [("mutation", "running")]
+            return [("dry_run", "running")]
+        if event_type == "job_state_polled":
+            state = str(payload.get("current_state") or "").lower()
+            phase = str(payload.get("current_phase") or "").lower()
+            updates: list[tuple[str, str]] = []
+            if state in {"decision_required", "paused"}:
+                updates.append(("decision", "running"))
+            if state in {"dry_run_succeeded", "waiting_for_approval"}:
+                updates.append(("dry_run", "success"))
+                updates.append(("approval", "running"))
+            if state in {"failed", "failed_safe"}:
+                updates.append(("complete", "failed"))
+            if state in {"succeeded", "completed"}:
+                updates.append(("complete", "success"))
+            if "validation" in phase or state == "validating":
+                updates.append(("validation", "running"))
+            if state in {"validation_succeeded", "succeeded", "completed"}:
+                updates.append(("validation", "success"))
+            if "mutation" in phase or state == "mutation_running":
+                updates.append(("mutation", "running"))
+            return updates
+        if event_type == "observations_received":
+            return [("observations", "success")]
+        if event_type == "decision_required":
+            return [("decision", "running")]
+        if event_type == "instruction_submitted":
+            return [("decision", "success")]
+        if event_type == "policy_decision_recorded":
+            decision = str((payload.get("policy_decision") or {}).get("decision") or "allow").lower()
+            status = "failed" if decision in {"deny", "blocked"} else "success"
+            return [("observations", status)]
+        if event_type == "approval_submitted":
+            return [("approval", "success" if payload.get("accepted") is not False else "failed")]
+        if event_type == "reports_updated":
+            reports = payload.get("reports") or {}
+            report_type = str(reports.get("report_type") or reports.get("type") or "").lower()
+            if "dry" in report_type:
+                return [("dry_run_report", "success")]
+            return [("reports", "success")]
+        if event_type == "rollback_cleanup_updated":
+            state = payload.get("state") or {}
+            status = str(state.get("status") or "success").lower()
+            return [("rollback_cleanup", "failed" if status in {"failed", "blocked"} else "success")]
+        if event_type == "safe_reasoning_summary":
+            return [("observations", "success")]
+        if event_type == "run_completed":
+            return [("complete", "success")]
         if event_type == "run_failed":
             return [("complete", "failed")]
         return []
@@ -1234,6 +1344,8 @@ class ActivityService:
     ) -> str:
         if workflow_type == "mop_generation":
             return namespace or self._first_payload_value(events, "namespace") or "MoP"
+        if workflow_type == "mop_execution":
+            return namespace or self._first_payload_value(events, "target_namespace") or "MoP Execution"
         for artifact in artifacts:
             title = str(artifact.get("title") or "").strip()
             if title:
@@ -1279,6 +1391,12 @@ class ActivityService:
             if ns and environment:
                 return f"{ns} ({environment})"
             return ns or target_url or "Unknown namespace"
+        if workflow_type == "mop_execution":
+            ns = namespace or self._first_payload_value(events, "target_namespace")
+            bundle_id = self._first_payload_value(events, "bundle_id")
+            if bundle_id:
+                return f"{ns or 'target'} execution ({bundle_id})"
+            return f"{ns or 'target'} execution"
         return self._repo_label(target_url)
 
     def _target_environment(self, target_url: str | None) -> str | None:
@@ -1398,11 +1516,3 @@ class ActivityService:
         mime = str(artifact.get("mime_type") or "").lower()
         path = str(artifact.get("storage_path") or "").lower()
         return "pdf" in mime or path.endswith(".pdf")
-
-
-
-
-
-
-
-

@@ -230,6 +230,31 @@ Primary MCP integrations:
 
 ---
 
+## 3.7 MoP Execution Implementation Direction
+
+MoP Execution is the governed runtime companion for MoP Generation. It consumes a previously generated `mop-bundle.zip`, validates it through `bosgenesis-mop-execution-agent`, runs dry-run first, pauses for human approval before mutation, and then delegates all approved mutation, validation, rollback, cleanup, and reporting to the execution agent.
+
+High-level behavior:
+
+- Route: `/mop-execution`.
+- ESDA provides the page shell, bundle selection, policy preflight, live progress, safe summaries, activity map, result panel, and operator controls.
+- ESDA does not directly mutate Kubernetes or Helm resources. The MoP Execution Agent is the only execution control plane for dry-run, mutation, validation, rollback, cleanup, and reports.
+- Bundle sources include Activity MoP Generation runs, artifact repository folders, and uploaded bundles.
+- For published Activity bundles, ESDA registers the bundle with the execution agent using an `object_store` source that points to the raw GitHub `mop-bundle.zip` URL. This avoids sending large archives inline and avoids assuming the cluster agent can see the ESDA local filesystem.
+- ESDA calls the execution agent health, readiness, capabilities, bundle registration, bundle validation, job, observation, approval, instruction, report, rollback, cleanup, and namespace revert APIs.
+- The execution graph stores `bundle_id`, `dry_run_job_id`, `mutation_job_id`, `target_namespace`, `correlation_id`, idempotency keys, report metadata, safe summaries, redacted observations, and audit events in PostgreSQL.
+- Live working notes remain ephemeral and page-local. Safe reasoning summaries and structured agent results are persisted and can reload after refresh.
+- The UI blocks mutation controls until bundle validation and dry-run succeed and an in-scope human approval is accepted.
+- The Activity page will later show MoP Execution runs and reports alongside Release Notes and MoP Generation.
+
+Current compatibility note:
+
+- ESDA now uses the execution-agent contract `POST /v1/artifact-bundles` followed by `POST /v1/artifact-bundles/{bundle_id}/validate`.
+- Published bundles are passed as `source.type = object_store`.
+- The deployed `bosgenesis-mop-execution-agent` must include the `object_store` resolver. If the old agent image is still running, validation can fail with `bundle_source_not_locally_resolvable:object_store`; this is a deployment/version mismatch, not an ESDA UI flow failure.
+
+---
+
 ## 4. Target Users
 
 | User Type | Usage |
