@@ -210,6 +210,70 @@ def test_mop_execution_artifact_repo_folder_maps_to_local_bundle(tmp_path, monke
         assert response.status_code == 200
         assert response.json()["valid"] is True
 
+
+def _pvc_cleanup_bundle_bytes() -> bytes:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "artifact.json",
+            json.dumps(
+                {
+                    "bundle_id": "bundle_pvc_cleanup",
+                    "source_namespace": "bosgenesis",
+                    "target_namespace_placeholder": "agent-testing",
+                    "generated_release_name": "agent-ai-bosgenesis",
+                    "target_environment": "kubernetes_with_helm",
+                }
+            ),
+        )
+        archive.writestr(
+            "machine_execution_plan.yaml",
+            "steps:\n"
+            "- command: kubectl delete -f generated/persistentvolumeclaim-ch-ui.yaml -n agent-testing --ignore-not-found\n"
+            "- command: kubectl delete -f generated/persistentvolumeclaim-dify-storage.yaml -n agent-testing --ignore-not-found\n",
+        )
+        archive.writestr("mop-bosgenesis-to-agent-testing.human-mop.md", "# Human MoP\n")
+        archive.writestr("mop-bosgenesis-to-agent-testing.pdf", b"%PDF-1.4\n")
+        archive.writestr("deployment-artifacts.zip", b"PK\x03\x04")
+        archive.writestr(
+            "deployment-artifacts/artifact-index.json",
+            json.dumps({"kubernetes_manifests": ["deployment-artifacts/kubernetes-manifests/app.yaml"]}),
+        )
+        archive.writestr(
+            "deployment-artifacts/kubernetes-manifests/app.yaml",
+            "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: demo\n  namespace: agent-testing\n",
+        )
+    return buffer.getvalue()
+
+
+def test_mop_execution_preflight_allows_namespaced_pvc_cleanup_commands(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
+
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        user_id = login.json()["user"]["user_id"]
+        artifact = _seed_bundle_run(client, user_id, _pvc_cleanup_bundle_bytes(), run_id="mop_generation_pvc_cleanup")
+
+        preflight = client.post(
+            "/api/mop-execution/preflight",
+            json={
+                "source_type": "activity_run",
+                "run_id": "mop_generation_pvc_cleanup",
+                "artifact_id": artifact["artifact_id"],
+                "target_namespace": "agent-testing",
+            },
+        )
+
+        assert preflight.status_code == 200
+        result = preflight.json()
+        assert result["valid"] is True
+        statuses = {check["id"]: check["status"] for check in result["checks"]}
+        details = {check["id"]: check["detail"] for check in result["checks"]}
+        assert statuses["no_cluster_scoped_destructive_actions"] == "passed"
+        assert "Cluster-scoped destructive command detected" not in details["no_cluster_scoped_destructive_actions"]
+        assert not result["failures"]
+
 def _latest_style_bundle_bytes() -> bytes:
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:

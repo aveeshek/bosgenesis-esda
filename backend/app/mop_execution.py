@@ -311,6 +311,18 @@ class MopExecutionRunStore:
         self.repository.update_status(run_id, "completed", final_report=final_report)
         return event
 
+    def mark_completed_with_review(self, *, run_id: str, final_report: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        event_payload = {"status": "completed_with_review", **(payload or {})}
+        event = self._record(
+            run_id,
+            "run_completed",
+            "MoP Execution completed with validation review",
+            event_payload,
+            status="completed_with_review",
+        )
+        self.repository.update_status(run_id, "completed_with_review", final_report=final_report)
+        return event
+
     def mark_failed(self, *, run_id: str, reason: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         event = self._record(
             run_id,
@@ -786,7 +798,7 @@ class MopExecutionPreflightService:
             r"(?im)\b(?:kubectl\s+delete|helm\s+uninstall|helm\s+delete|kubectl\s+replace\s+--force)\b[^\n]*",
             machine_plan,
         )
-        cluster_destructive = [line.strip() for line in destructive if re.search(r"clusterrole|namespace|crd|customresourcedefinition|storageclass|persistentvolume|webhook", line, re.IGNORECASE)]
+        cluster_destructive = [line.strip() for line in destructive if self._is_cluster_scoped_destructive_command(line)]
         unconditional_destructive = [line for line in cluster_destructive if not self._is_approval_gated_cleanup_command(line)]
         approval_gated_destructive = [line for line in cluster_destructive if self._is_approval_gated_cleanup_command(line)]
         if unconditional_destructive:
@@ -976,6 +988,19 @@ class MopExecutionPreflightService:
     @staticmethod
     def _is_approval_gated_cleanup_command(line: str) -> bool:
         return bool(re.search(r"\b(approval|approved|only if|cleanup|rollback|revert|after review|human)\b", line, re.IGNORECASE))
+
+    @staticmethod
+    def _is_cluster_scoped_destructive_command(line: str) -> bool:
+        patterns = (
+            r"\bclusterroles?\b",
+            r"\bclusterrolebindings?\b",
+            r"\b(namespaces?|ns)\b",
+            r"\b(crds?|customresourcedefinitions?)\b",
+            r"\bstorageclasses?\b",
+            r"\b(persistentvolumes?|pv)\b",
+            r"\b(mutatingwebhookconfigurations?|validatingwebhookconfigurations?|webhooks?)\b",
+        )
+        return any(re.search(pattern, line, re.IGNORECASE) for pattern in patterns)
 
     @staticmethod
     def _manifest_namespaces(text: str) -> list[str]:

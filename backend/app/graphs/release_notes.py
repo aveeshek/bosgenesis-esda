@@ -326,7 +326,7 @@ class ReleaseNoteGraph:
         await self._emit(
             release_note.run_id,
             "reasoning_summary",
-            "GPT-5 planning summary",
+            f"{selected_model.get('short_label') or selected_model.get('label') or 'Model'} planning summary",
             {"reasoning_summary": plan_model.reasoning_summary},
         )
 

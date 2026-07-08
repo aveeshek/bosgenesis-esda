@@ -462,6 +462,25 @@ class RunRepository:
             view.hidden_at = datetime.now(UTC)
             return True
 
+    def clear_transactions(self, *, user_id: str, workflow_type: str | None = None) -> int:
+        with self.database.session() as db:
+            query = select(AgentRun).where(AgentRun.user_id == user_id)
+            if workflow_type:
+                query = query.where(AgentRun.workflow_type == workflow_type)
+            runs = db.scalars(query).all()
+            hidden_at = datetime.now(UTC)
+            cleared = 0
+            for run in runs:
+                view = db.get(UserRunView, {"user_id": user_id, "run_id": run.run_id})
+                if not view:
+                    db.add(UserRunView(user_id=user_id, run_id=run.run_id, hidden_at=hidden_at))
+                    cleared += 1
+                    continue
+                if view.hidden_at is None:
+                    cleared += 1
+                view.hidden_at = hidden_at
+            return cleared
+
     def create_artifact(
         self,
         *,

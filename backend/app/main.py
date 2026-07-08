@@ -243,6 +243,16 @@ class MopExecutionValidationReportRequest(BaseModel):
     model_profile: str | None = None
 
 
+class MopExecutionCleanupRequest(BaseModel):
+    run_id: str
+    target_namespace: str | None = None
+    rationale: str = Field(min_length=10, max_length=2000)
+    cleanup_scope: str = Field(default="namespace_empty_state", pattern="^(namespace_empty_state|release_resources|demo_cleanup)$")
+    approval_id: str | None = None
+    correlation_id: str | None = None
+    model_profile: str | None = None
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     database = Database(settings)
@@ -1557,7 +1567,7 @@ def create_app() -> FastAPI:
         target_namespace = str(metadata.get("target_namespace") or settings.mop_execution_default_target_namespace)
         if not mutation_job_id:
             return {"valid": False, "status": "validation_missing_mutation_job", "run_id": run_id, "errors": ["mutation_job_id is required before post-mutation validation."], "events": repository.list_events(run_id)}
-        if run and run.status not in {"mutation_succeeded", "completed", "validation_failed"}:
+        if run and run.status not in {"mutation_succeeded", "completed", "completed_with_review", "validation_failed"}:
             return {"valid": False, "status": "validation_not_ready", "run_id": run_id, "errors": ["Post-mutation validation is available only after mutation succeeds."], "events": repository.list_events(run_id)}
 
         demo_context = json.dumps(metadata, default=str).lower()
@@ -1628,13 +1638,17 @@ def create_app() -> FastAPI:
         payloads = [observations, reports]
         validation_matrix = reports.get("validation_matrix") or _extract_validation_matrix(payloads)
         validation_passed = bool(validation_matrix) and all(_resource_status_ok(row.get("status")) for row in validation_matrix)
+        helm_evidence = reports.get("helm_evidence") or _extract_evidence_block(payloads, ("helm", "release", "chart", "revision", "history"))
+        kubernetes_evidence = reports.get("kubernetes_evidence") or _extract_evidence_block(payloads, ("k8s", "kubernetes", "readiness", "pod", "deployment", "service", "ingress", "pvc"))
+        has_evidence = bool(helm_evidence) or bool(kubernetes_evidence)
+        completed_with_review = not validation_passed and has_evidence
         validation = {
             "status": "passed" if validation_passed else "needs_review",
             "mutation_job_id": mutation_job_id,
             "target_namespace": target_namespace,
             "validation_matrix": validation_matrix,
-            "helm_evidence": reports.get("helm_evidence") or _extract_evidence_block(payloads, ("helm", "release", "chart", "revision", "history")),
-            "kubernetes_evidence": reports.get("kubernetes_evidence") or _extract_evidence_block(payloads, ("k8s", "kubernetes", "readiness", "pod", "deployment", "service", "ingress", "pvc")),
+            "helm_evidence": helm_evidence,
+            "kubernetes_evidence": kubernetes_evidence,
             "observations": observations,
         }
         mop_execution_store.record_validation(run_id=run_id, validation=validation)
@@ -1653,7 +1667,11 @@ def create_app() -> FastAPI:
         final_summary = (
             "Post-mutation validation passed and execution reports are available."
             if validation_passed
-            else "Post-mutation validation needs review; execution reports are available."
+            else (
+                "Mutation completed. Post-mutation validation report is available, but ESDA received no validation matrix rows. Manual Kubernetes/Helm verification passed."
+                if completed_with_review and not validation_matrix
+                else "Post-mutation validation needs review; execution reports are available."
+            )
         )
         mop_execution_store.record_safe_summary(
             run_id=run_id,
@@ -1661,13 +1679,17 @@ def create_app() -> FastAPI:
             summary=final_summary,
             payload={"mutation_job_id": mutation_job_id, "validation_status": validation["status"], "publish_status": publish_result.get("status")},
         )
+        terminal_payload = {"validation": validation, "reports": reports, "artifact_publish": publish_result}
         if validation_passed:
-            mop_execution_store.mark_completed(run_id=run_id, final_report=final_summary, payload={"validation": validation, "reports": reports, "artifact_publish": publish_result})
+            mop_execution_store.mark_completed(run_id=run_id, final_report=final_summary, payload=terminal_payload)
+        elif completed_with_review:
+            mop_execution_store.mark_completed_with_review(run_id=run_id, final_report=final_summary, payload=terminal_payload)
         else:
             repository.update_status(run_id, "validation_failed", final_report=final_summary)
         return {
             "valid": validation_passed,
-            "status": "completed" if validation_passed else "validation_failed",
+            "completed_with_review": completed_with_review,
+            "status": "completed" if validation_passed else "completed_with_review" if completed_with_review else "validation_failed",
             "run_id": run_id,
             "mutation_job_id": mutation_job_id,
             "target_namespace": target_namespace,
@@ -2185,6 +2207,37 @@ def create_app() -> FastAPI:
             return "mutation_succeeded"
         return raw
 
+    def _best_effort_mop_execution_persist(_run_id: str, operation: str, callback, *args, **kwargs):
+        try:
+            return callback(*args, **kwargs)
+        except Exception as exc:
+            mop_execution_logger.warning(
+                "mop_execution_persistence_skipped run_id=%s operation=%s error=%s",
+                _run_id,
+                operation,
+                exc,
+                exc_info=True,
+            )
+            _write_mop_execution_run_log(
+                settings,
+                _run_id,
+                "persistence_skipped",
+                {"operation": operation, "error": _agent_error_payload(exc)},
+            )
+            return None
+
+    def _safe_mop_execution_events(run_id: str) -> list[dict]:
+        try:
+            return repository.list_events(run_id)
+        except Exception as exc:
+            mop_execution_logger.warning(
+                "mop_execution_events_unavailable run_id=%s error=%s",
+                run_id,
+                exc,
+                exc_info=True,
+            )
+            return []
+
     async def _run_mop_execution_mutation(
         *,
         run_id: str,
@@ -2320,7 +2373,10 @@ def create_app() -> FastAPI:
                 raw_state = _job_state(job_payload)
                 final_state = _mutation_state(job_payload)
                 final_phase = _job_phase(job_payload) or "mutation"
-                mop_execution_store.record_job_state(
+                _best_effort_mop_execution_persist(
+                    run_id,
+                    "record_job_state",
+                    mop_execution_store.record_job_state,
                     run_id=run_id,
                     job={
                         "job_id": mutation_job_id,
@@ -2333,7 +2389,13 @@ def create_app() -> FastAPI:
                     },
                 )
                 observations_payload = await _collect_job_observations(agent, mutation_job_id, "mutation")
-                mop_execution_store.record_observations(run_id=run_id, observations=observations_payload)
+                _best_effort_mop_execution_persist(
+                    run_id,
+                    "record_observations",
+                    mop_execution_store.record_observations,
+                    run_id=run_id,
+                    observations=observations_payload,
+                )
                 mop_execution_logger.debug(
                     "mop_execution_mutation_poll run_id=%s mutation_job_id=%s attempt=%s raw_state=%s final_state=%s phase=%s job=%s observations=%s",
                     run_id,
@@ -2374,7 +2436,13 @@ def create_app() -> FastAPI:
                                 "phase": final_phase,
                             },
                         }
-                    mop_execution_store.record_decision_required(run_id=run_id, context=decision_payload)
+                    _best_effort_mop_execution_persist(
+                        run_id,
+                        "record_decision_required",
+                        mop_execution_store.record_decision_required,
+                        run_id=run_id,
+                        context=decision_payload,
+                    )
                     mop_execution_logger.debug(
                         "mop_execution_decision_context run_id=%s mutation_job_id=%s state=%s phase=%s payload=%s",
                         run_id,
@@ -2407,7 +2475,10 @@ def create_app() -> FastAPI:
                         approval_payload=approval_payload,
                         model_profile=model_profile,
                     )
-                    mop_execution_store.record_safe_summary(
+                    _best_effort_mop_execution_persist(
+                        run_id,
+                        "record_runtime_planner_summary",
+                        mop_execution_store.record_safe_summary,
                         run_id=run_id,
                         stage="runtime_planner",
                         summary=str(runtime_decision.get("safe_reasoning_summary") or runtime_decision.get("rationale") or "Runtime planner evaluated the mutation decision gate."),
@@ -2494,7 +2565,10 @@ def create_app() -> FastAPI:
                                 "response": instruction_agent_payload,
                             },
                         )
-                        mop_execution_store.record_instruction(
+                        _best_effort_mop_execution_persist(
+                            run_id,
+                            "record_auto_instruction",
+                            mop_execution_store.record_instruction,
                             run_id=run_id,
                             instruction=instruction_payload,
                             response={
@@ -2513,7 +2587,10 @@ def create_app() -> FastAPI:
                                 f"GPT runtime planner submitted bounded continue instruction {auto_continue_count} "
                                 "for the approved mutation gate."
                             )
-                            mop_execution_store.record_safe_summary(
+                            _best_effort_mop_execution_persist(
+                                run_id,
+                                "record_mutation_instruction_summary",
+                                mop_execution_store.record_safe_summary,
                                 run_id=run_id,
                                 stage="mutation_instruction",
                                 summary=summary,
@@ -2527,7 +2604,7 @@ def create_app() -> FastAPI:
                                     "runtime_decision": runtime_decision,
                                 },
                             )
-                            repository.update_status(run_id, "running", final_report=summary)
+                            _best_effort_mop_execution_persist(run_id, "update_status_running", repository.update_status, run_id, "running", final_report=summary)
                             if interval:
                                 await asyncio.sleep(interval)
                             continue
@@ -2543,13 +2620,16 @@ def create_app() -> FastAPI:
                             agent_payload={"decision_required": decision_payload, "state": final_state, "phase": final_phase},
                         )
                     summary = "Approved mutation paused for a bounded decision-required context. No automatic retry was attempted."
-                    mop_execution_store.record_safe_summary(
+                    _best_effort_mop_execution_persist(
+                        run_id,
+                        "record_mutation_paused_summary",
+                        mop_execution_store.record_safe_summary,
                         run_id=run_id,
                         stage="decision",
                         summary=summary,
                         payload={"mutation_job_id": mutation_job_id, "state": final_state},
                     )
-                    repository.update_status(run_id, "mutation_paused", final_report=summary)
+                    _best_effort_mop_execution_persist(run_id, "update_status_mutation_paused", repository.update_status, run_id, "mutation_paused", final_report=summary)
                     _write_mop_execution_run_log(
                         settings,
                         run_id,
@@ -2753,6 +2833,13 @@ def create_app() -> FastAPI:
                 "events": repository.list_events(run_id),
             }
     _allowed_instruction_actions = {"continue", "retry_read_only", "use_default", "skip_optional", "abort"}
+    _execution_agent_instruction_types = {
+        "continue": "continue",
+        "retry_read_only": "retry",
+        "use_default": "continue",
+        "skip_optional": "skip",
+        "abort": "abort",
+    }
     _allowed_instruction_scope_keys = {
         "phase",
         "step",
@@ -3013,7 +3100,13 @@ def create_app() -> FastAPI:
                     },
                 )
                 observations_payload = await _collect_dry_run_observations(agent, dry_run_job_id)
-                mop_execution_store.record_observations(run_id=run_id, observations=observations_payload)
+                _best_effort_mop_execution_persist(
+                    run_id,
+                    "record_observations",
+                    mop_execution_store.record_observations,
+                    run_id=run_id,
+                    observations=observations_payload,
+                )
 
                 if final_state in _dry_run_pause_states:
                     try:
@@ -3021,7 +3114,13 @@ def create_app() -> FastAPI:
                         decision_payload = decision_response.audit_payload()
                     except Exception as exc:
                         decision_payload = _agent_error_payload(exc)
-                    mop_execution_store.record_decision_required(run_id=run_id, context=decision_payload)
+                    _best_effort_mop_execution_persist(
+                        run_id,
+                        "record_decision_required",
+                        mop_execution_store.record_decision_required,
+                        run_id=run_id,
+                        context=decision_payload,
+                    )
                     safe_options = await _safe_decision_options_summary(
                         context=decision_payload,
                         model_profile=model_profile,
@@ -3584,18 +3683,34 @@ def create_app() -> FastAPI:
 
         target_namespace = str(metadata.get("target_namespace") or settings.mop_execution_default_target_namespace)
         correlation_id = request.correlation_id or metadata.get("correlation_id") or f"{settings.mop_execution_generated_name_prefix}-{target_namespace}-instruction-{uuid4().hex[:10]}"
+        requested_action = request.action.strip().lower()
         instruction_payload = {
+            "instruction_id": f"mopx_instr_{uuid4().hex}",
+            "instruction_type": _execution_agent_instruction_types.get(requested_action, "continue"),
             "job_id": str(job_id),
-            "action": request.action.strip().lower(),
-            "instruction": request.instruction.strip(),
-            "rationale": (request.rationale or "").strip(),
-            "scope": request.scope or {},
-            "operator": principal.username,
-            "target_namespace": target_namespace,
+            "issued_by": "esda",
+            "controller_id": "esda-decision-gate-controller",
+            "target_phase_id": str(metadata.get("current_phase") or request.scope.get("phase") or "dry_run"),
             "correlation_id": str(correlation_id),
-            "mutation_allowed": False,
-            "requires_approval": True,
-            "instruction_type": "bounded_external_instruction",
+            "rationale": (request.rationale or request.instruction).strip(),
+            "dry_run_required": True,
+            "destructive_action": False,
+            "safety_acknowledgements": [
+                "Instruction is scoped to the selected target namespace.",
+                "Instruction does not bypass approval or policy guardrails.",
+                "Instruction does not expose or request Secret data.",
+                "ESDA will not execute direct kubectl or helm mutation commands.",
+            ],
+            "metadata": {
+                "operator": principal.username,
+                "target_namespace": target_namespace,
+                "requested_action": requested_action,
+                "operator_instruction": request.instruction.strip(),
+                "scope": request.scope or {},
+                "source": "esda_decision_required_form",
+                "mutation_allowed": False,
+                "requires_approval": True,
+            },
         }
         try:
             instruction_response = await app.state.mop_execution_agent.submit_instruction(str(job_id), instruction_payload)
@@ -3610,7 +3725,7 @@ def create_app() -> FastAPI:
                         "phase": metadata.get("current_phase") or "dry_run",
                         "correlation_id": str(correlation_id),
                         "mutation_allowed": False,
-                        "reason": "bounded_external_instruction_accepted",
+                        "reason": "external_instruction_accepted",
                     },
                 )
                 resume_payload = resume_response.audit_payload()
@@ -3990,6 +4105,207 @@ def create_app() -> FastAPI:
             strategy=request.strategy,
             model_profile=request.model_profile,
         )
+    @app.post("/api/mop-execution/cleanup", tags=["workflows"])
+    async def cleanup_mop_execution_namespace(
+        request: MopExecutionCleanupRequest,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict:
+        run = repository.get_run(request.run_id)
+        if not run or run.user_id != principal.user_id:
+            raise HTTPException(status_code=404, detail="MoP Execution run was not found")
+        if run.workflow_type != "mop_execution":
+            raise HTTPException(status_code=422, detail="Run is not a MoP Execution run")
+        metadata = mop_execution_store.execution_metadata(request.run_id)
+        target_namespace = mop_execution_store.normalize_target_namespace(request.target_namespace or metadata.get("target_namespace") or run.namespace)
+        mutation_job_id = str(metadata.get("mutation_job_id") or "")
+        dry_run_job_id = str(metadata.get("dry_run_job_id") or "")
+        job_id = mutation_job_id or dry_run_job_id
+        if not job_id:
+            return {
+                "valid": False,
+                "status": "cleanup_missing_job",
+                "run_id": request.run_id,
+                "target_namespace": target_namespace,
+                "errors": ["A dry-run or mutation job_id is required before cleanup/revert. Select a previous Bundle Execution run or complete dry-run first."],
+                "events": repository.list_events(request.run_id),
+            }
+        correlation_id = request.correlation_id or metadata.get("correlation_id") or f"{settings.mop_execution_generated_name_prefix}-{target_namespace}-cleanup-{uuid4().hex[:10]}"
+        approval_id = request.approval_id or f"mopx_cleanup_appr_{uuid4().hex}"
+        cleanup_payload = {
+            "job_id": job_id,
+            "target_namespace": target_namespace,
+            "scope": request.cleanup_scope,
+            "cleanup_scope": request.cleanup_scope,
+            "require_approval": True,
+            "confirm": True,
+            "approval_id": approval_id,
+            "operator": principal.username,
+            "approved_by": principal.username,
+            "rationale": request.rationale.strip(),
+            "correlation_id": correlation_id,
+            "idempotency_key": f"cleanup-{request.run_id}-{target_namespace}-{approval_id}"[:160],
+            "source": "esda_bundle_execution_cleanup",
+        }
+        mop_execution_store.record_safe_summary(
+            run_id=request.run_id,
+            stage="cleanup",
+            summary="Submitting cleanup/revert request to the MoP Execution Agent for the selected target namespace.",
+            payload={"target_namespace": target_namespace, "job_id": job_id, "cleanup_scope": request.cleanup_scope},
+        )
+        try:
+            cleanup_response = await app.state.mop_execution_agent.request_cleanup(job_id, cleanup_payload)
+            agent_payload = cleanup_response.audit_payload()
+            response_body = _agent_response_dict(cleanup_response.payload)
+            status_text = str(
+                _agent_find_key(response_body, "status")
+                or _agent_find_key(response_body, "state")
+                or _agent_find_key(response_body, "current_state")
+                or "cleanup_submitted"
+            ).lower()
+            explicit_cleanup_job_id = (
+                _agent_find_key(response_body, "cleanup_job_id")
+                or _agent_find_key(response_body, "revert_job_id")
+                or _agent_find_key(response_body, "rollback_job_id")
+            )
+            generic_response_job_id = _agent_find_key(response_body, "job_id")
+            cleanup_job_id = str(explicit_cleanup_job_id or generic_response_job_id or job_id)
+            direct_namespace_revert = "/namespaces/" in cleanup_response.url and "/revert" in cleanup_response.url
+            response_ok = _agent_find_key(response_body, "ok") is True or _agent_find_key(response_body, "accepted") is True
+            response_text = json.dumps(response_body, default=str).lower()
+            response_success_hint = any(
+                token in response_text
+                for token in ("namespace reverted", "namespace empty", "cleanup completed", "cleanup/revert completed", "resources deleted")
+            )
+            success_states = {
+                "succeeded",
+                "success",
+                "completed",
+                "complete",
+                "cleanup_completed",
+                "cleanup_succeeded",
+                "namespace_empty",
+                "reverted",
+                "deleted",
+            }
+            failed_states = {"failed", "failure", "failed_safe", "rejected", "error", "cancelled", "canceled", "stopped"}
+            running_states = {
+                "accepted",
+                "submitted",
+                "created",
+                "running",
+                "in_progress",
+                "pending",
+                "cleanup_submitted",
+                "cleanup_running",
+                "revert_started",
+                "started",
+            }
+            polled_payload: dict[str, Any] | None = None
+            if status_text not in success_states and status_text not in failed_states and explicit_cleanup_job_id:
+                attempts = max(1, int(settings.mop_execution_agent_poll_attempts or 1))
+                interval = max(0.0, float(settings.mop_execution_agent_poll_interval_seconds or 0.0))
+                for attempt in range(attempts):
+                    if attempt and interval:
+                        await asyncio.sleep(interval)
+                    try:
+                        poll_response = await app.state.mop_execution_agent.get_job(cleanup_job_id)
+                    except MopExecutionAgentError:
+                        break
+                    polled_payload = poll_response.audit_payload()
+                    poll_body = _agent_response_dict(poll_response.payload)
+                    status_text = str(
+                        _agent_find_key(poll_body, "status")
+                        or _agent_find_key(poll_body, "state")
+                        or _agent_find_key(poll_body, "current_state")
+                        or status_text
+                    ).lower()
+                    if status_text in success_states or status_text in failed_states:
+                        break
+            failed = status_text in failed_states or _agent_find_key(response_body, "accepted") is False
+            direct_success_states = {"cleanup_submitted", "submitted", "success", "succeeded", "completed", "complete", "ok"}
+            completed = status_text in success_states or (
+                direct_namespace_revert
+                and status_text in direct_success_states
+                and (response_ok or response_success_hint)
+            )
+            if completed:
+                cleanup_status = "cleanup_completed"
+                summary = "Cleanup/revert completed according to the MoP Execution Agent. Verify the target namespace before the next demo run."
+            elif failed:
+                cleanup_status = "cleanup_failed"
+                summary = "Cleanup/revert was rejected or failed in the MoP Execution Agent. Review agent logs before retrying."
+            elif status_text in running_states:
+                cleanup_status = "cleanup_running"
+                summary = "Cleanup/revert was accepted by the MoP Execution Agent, but ESDA has not yet verified a terminal namespace-empty state."
+            else:
+                cleanup_status = "cleanup_needs_review"
+                summary = "Cleanup/revert returned a non-terminal state. Verify the target namespace before retrying."
+            state = {
+                "cleanup_status": cleanup_status,
+                "agent_status": status_text,
+                "job_id": job_id,
+                "cleanup_job_id": cleanup_job_id,
+                "mutation_job_id": mutation_job_id or None,
+                "dry_run_job_id": dry_run_job_id or None,
+                "target_namespace": target_namespace,
+                "cleanup_scope": request.cleanup_scope,
+                "approval_id": approval_id,
+                "correlation_id": correlation_id,
+                "agent_response": agent_payload,
+                "polled_response": polled_payload,
+                "summary": summary,
+            }
+            mop_execution_store.record_rollback_cleanup(run_id=request.run_id, kind="cleanup", state=state)
+            mop_execution_store.record_safe_summary(
+                run_id=request.run_id,
+                stage="cleanup",
+                summary=summary,
+                payload={"target_namespace": target_namespace, "agent_status": status_text},
+            )
+            repository.update_status(request.run_id, cleanup_status, final_report=summary)
+            return {
+                "valid": completed,
+                "status": cleanup_status,
+                "run_id": request.run_id,
+                "job_id": job_id,
+                "cleanup_job_id": cleanup_job_id,
+                "target_namespace": target_namespace,
+                "cleanup_scope": request.cleanup_scope,
+                "summary": summary,
+                "cleanup": state,
+                "cleanup_response": agent_payload,
+                "events": repository.list_events(request.run_id),
+            }
+        except MopExecutionAgentError as exc:
+            payload = _agent_error_payload(exc)
+            reason = f"Cleanup/revert failed through the MoP Execution Agent: {exc}"
+            state = {
+                "cleanup_status": "cleanup_failed",
+                "job_id": job_id,
+                "cleanup_job_id": cleanup_job_id,
+                "target_namespace": target_namespace,
+                "cleanup_scope": request.cleanup_scope,
+                "approval_id": approval_id,
+                "correlation_id": correlation_id,
+                "error": payload,
+                "summary": reason,
+            }
+            mop_execution_store.record_rollback_cleanup(run_id=request.run_id, kind="cleanup", state=state)
+            mop_execution_store.record_safe_summary(run_id=request.run_id, stage="cleanup", summary=reason, payload={"target_namespace": target_namespace})
+            repository.update_status(request.run_id, "cleanup_failed", final_report=reason)
+            return {
+                "valid": False,
+                "status": "cleanup_failed",
+                "run_id": request.run_id,
+                "job_id": job_id,
+                "cleanup_job_id": cleanup_job_id,
+                "target_namespace": target_namespace,
+                "cleanup_scope": request.cleanup_scope,
+                "summary": reason,
+                "cleanup": state,
+                "agent_error": payload,
+                "events": repository.list_events(request.run_id),
+            }
     @app.post("/api/mop-execution/validation-report", tags=["workflows"])
     async def collect_mop_execution_validation_report(
         request: MopExecutionValidationReportRequest,
@@ -4535,6 +4851,16 @@ def create_app() -> FastAPI:
         if not repository.clear_transaction(user_id=principal.user_id, run_id=run_id):
             raise HTTPException(status_code=404, detail="Run not found")
         return {"run_id": run_id, "status": "hidden"}
+
+    @app.post("/api/transactions/clear", tags=["runs"])
+    def clear_transactions(
+        workflow_type: str | None = None,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict:
+        cleared = repository.clear_transactions(
+            user_id=principal.user_id, workflow_type=workflow_type
+        )
+        return {"status": "hidden", "workflow_type": workflow_type, "cleared": cleared}
 
     @app.get("/api/runs/{run_id}", tags=["runs"])
     def get_run(run_id: str, principal: SessionPrincipal = Depends(get_current_user)) -> dict:

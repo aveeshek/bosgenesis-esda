@@ -135,7 +135,7 @@ def test_mop_execution_store_persists_redacted_metadata_and_activity_projection(
                 bundle_source={"run_id": "mop_run_1", "secret": "bundle-secret"},
                 target_namespace="agent-testing",
                 execution_mode="dry_run_then_approval",
-                model_profile={"profile_id": "azure_gpt5_pro", "label": "GPT 5 Pro"},
+                model_profile={"profile_id": "azure_gpt5_pro", "label": "SIGMA 5 PRO"},
                 operator="admin",
             )
         )

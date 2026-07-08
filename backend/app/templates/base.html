@@ -13,10 +13,9 @@
       <header class="app-header">
         <div class="app-header-inner">
           <a class="brand-lockup" href="/" aria-label="BOS Genesis ESDA home">
-            <span class="brand-mark" aria-hidden="true">AI</span>
             <span class="brand-copy">
               <span class="brand-title">BOS Genesis ESDA</span>
-              <span class="brand-subtitle">AI Workflow Console</span>
+              <span class="brand-subtitle">Workflow Console</span>
             </span>
           </a>
 
@@ -27,8 +26,8 @@
             </button>
             <a class="app-nav-link {% if current_path == '/' %}is-active{% endif %}" href="/">Health Check</a>
             <a class="app-nav-link {% if current_path.startswith('/release-notes') %}is-active{% endif %}" href="/release-notes">Release Notes</a>
-            <a class="app-nav-link {% if current_path.startswith('/mop-generation') %}is-active{% endif %}" href="/mop-generation">MoP Generation</a>
-            <a class="app-nav-link {% if current_path.startswith('/mop-execution') %}is-active{% endif %}" href="/mop-execution">MoP Execution</a>
+            <a class="app-nav-link {% if current_path.startswith('/mop-generation') %}is-active{% endif %}" href="/mop-generation">Bundle Generation</a>
+            <a class="app-nav-link {% if current_path.startswith('/mop-execution') %}is-active{% endif %}" href="/mop-execution">Bundle Execution</a>
             <a class="app-nav-link {% if current_path.startswith('/activity') %}is-active{% endif %}" href="/activity">Activity</a>
             <a class="app-nav-link {% if current_path.startswith('/approvals') %}is-active{% endif %}" href="/approvals">Approvals</a>
             <a class="app-nav-link {% if current_path.startswith('/l4-audit') %}is-active{% endif %}" href="/l4-audit">L4 Audit</a>
@@ -75,7 +74,10 @@
             <div class="transaction-sidebar-eyebrow">History</div>
             <h2>Workflow Runs</h2>
           </div>
-          <button id="transaction-sidebar-close" class="transaction-sidebar-close" type="button" aria-label="Close transaction history">x</button>
+          <div class="transaction-sidebar-actions">
+            <button id="transaction-clear-all" class="transaction-clear-all" type="button" disabled>Clear All</button>
+            <button id="transaction-sidebar-close" class="transaction-sidebar-close" type="button" aria-label="Close transaction history">x</button>
+          </div>
         </div>
         <div id="transaction-sidebar-status" class="transaction-sidebar-status">Loading transactions...</div>
         <div id="transaction-list" class="transaction-list" role="list"></div>

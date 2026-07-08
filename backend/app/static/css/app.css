@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   --app-bg: #f5f7fb;
   --app-surface: rgba(255, 255, 255, 0.94);
   --app-border: #d9e2ec;
@@ -1187,6 +1187,35 @@ body.transaction-sidebar-open .transaction-sidebar-backdrop {
   margin: 0.1rem 0 0;
 }
 
+.transaction-sidebar-actions {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.45rem;
+}
+
+.transaction-clear-all {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  color: var(--app-text);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 0.42rem 0.72rem;
+  text-transform: uppercase;
+}
+
+.transaction-clear-all:hover:not(:disabled),
+.transaction-clear-all:focus-visible:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.34);
+  outline: none;
+}
+
+.transaction-clear-all:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
 .transaction-sidebar-close {
   align-items: center;
   background: rgba(255, 255, 255, 0.12);

@@ -6,6 +6,7 @@ def test_azure_settings_support_openai_env_aliases() -> None:
     settings = Settings(
         azure_openai_endpoint="https://example.openai.azure.com/",
         azure_openai_auth_mode="azure_cli",
+        azure_openai_gpt5_deployment="",
         openai_deployment="bos-trainium-sigma-gpt-4.1-mini",
         openai_api_version="2024-12-01-preview",
     )
@@ -51,6 +52,16 @@ def test_model_profiles_include_requested_azure_and_ollama_profiles() -> None:
     assert profiles["ollama_llama70b"]["model_name"] == "llama3.3:70b"
     assert profiles["ollama_gemma4"]["endpoint"] == "http://ollama.bosgenesis.local/v1"
     assert profiles["ollama_gemma4"]["model_name"] == "gemma4:26b"
+    assert profiles["azure_gpt5_pro"]["label"] == "SIGMA 5 PRO"
+    assert profiles["azure_gpt5_pro"]["short_label"] == "SIGMA 5 PRO"
+    assert profiles["azure_gpt41_mini"]["label"] == "SIGMA 4.1"
+    assert profiles["azure_gpt41_mini"]["short_label"] == "SIGMA 4.1"
+    assert profiles["ollama_llama70b"]["label"] == "TRAINIUM BEHEMOTH"
+    assert profiles["ollama_llama70b"]["short_label"] == "TRAINIUM BEHEMOTH"
+    assert profiles["ollama_gemma4"]["label"] == "TRAINIUM GEMMA"
+    assert profiles["ollama_gemma4"]["short_label"] == "TRAINIUM GEMMA"
+    assert profiles["azure_configured"]["label"] == "CUSTOM"
+    assert profiles["azure_configured"]["short_label"] == "CUSTOM"
 
 
 def test_azure_cli_auth_mode_uses_azure_chat_openai_path(monkeypatch) -> None:

@@ -141,8 +141,8 @@ def test_release_notes_page_renders_model_selectors(tmp_path, monkeypatch) -> No
         assert response.status_code == 200
         assert 'id="model_profile"' in response.text
         assert 'id="llm-model-profile"' not in response.text
-        assert "GPT 5 Pro" in response.text
-        assert "Llama70B" in response.text
+        assert "SIGMA 5 PRO" in response.text
+        assert "TRAINIUM BEHEMOTH" in response.text
         assert 'id="release-progress-panel"' in response.text
         assert 'id="release-sphere-canvas"' in response.text
         assert "col-xl-6 release-progress-column" in response.text
@@ -218,6 +218,58 @@ def test_run_transactions_list_snapshot_and_clear(tmp_path, monkeypatch) -> None
         assert [item["run_id"] for item in hidden_rows] == [run_id]
         assert hidden_rows[0]["hidden_at"] is not None
 
+def test_clear_transactions_filters_by_workflow(tmp_path, monkeypatch) -> None:
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        user_id = login.json()["user"]["user_id"]
+        repository = client.app.state.repository
+
+        repository.create_run(
+            run_id="mop_execution_clear_all_1",
+            user_id=user_id,
+            goal="Execute MoP bundle",
+            target_url=None,
+            namespace="agent-testing",
+            workflow_type="mop_execution",
+        )
+        repository.create_run(
+            run_id="mop_execution_clear_all_2",
+            user_id=user_id,
+            goal="Cleanup MoP bundle",
+            target_url=None,
+            namespace="agent-testing",
+            workflow_type="mop_execution",
+        )
+        repository.create_run(
+            run_id="release_note_survives_clear_all",
+            user_id=user_id,
+            goal="Generate release notes for https://github.com/example/repo",
+            target_url="https://github.com/example/repo",
+            namespace=None,
+            workflow_type="release_note_creation",
+        )
+
+        clear = client.post("/api/transactions/clear?workflow_type=mop_execution")
+        assert clear.status_code == 200
+        assert clear.json()["cleared"] == 2
+
+        mop_visible = client.get("/api/transactions?workflow_type=mop_execution")
+        assert mop_visible.status_code == 200
+        assert mop_visible.json()["transactions"] == []
+
+        release_visible = client.get("/api/transactions?workflow_type=release_note_creation")
+        assert release_visible.status_code == 200
+        assert [item["run_id"] for item in release_visible.json()["transactions"]] == [
+            "release_note_survives_clear_all"
+        ]
+
+        mop_hidden = client.get("/api/transactions?workflow_type=mop_execution&include_hidden=true")
+        assert mop_hidden.status_code == 200
+        assert {item["run_id"] for item in mop_hidden.json()["transactions"]} == {
+            "mop_execution_clear_all_1",
+            "mop_execution_clear_all_2",
+        }
 
 def test_release_note_graph_has_artifact_publisher_wired(tmp_path, monkeypatch) -> None:
     with build_test_client(tmp_path, monkeypatch) as client:
@@ -275,7 +327,7 @@ def test_activity_release_note_timeline_api_and_detail(tmp_path, monkeypatch) ->
             "Release-note generation started",
             {
                 "github_url": "https://github.com/aveeshek/bosgenesis-mop-creation-agent",
-                "model_profile": {"profile_id": "azure_gpt5_pro", "label": "GPT-5 Pro", "short_label": "GPT-5"},
+                "model_profile": {"profile_id": "azure_gpt5_pro", "label": "SIGMA 5 PRO", "short_label": "SIGMA 5 PRO"},
             },
         )
         repository.add_event(run_id, "workflow_classified", "Workflow classified", {"workflow_type": "release_note_creation"})
@@ -348,7 +400,7 @@ def test_activity_release_note_timeline_api_and_detail(tmp_path, monkeypatch) ->
         assert node["publish_state"]["folder_name"] == "260627_173012_v0.0.1"
         assert node["artifact_summary"]["has_markdown"] is True
         assert node["artifact_summary"]["has_pdf"] is True
-        assert node["model_profile"]["label"] == "GPT-5 Pro"
+        assert node["model_profile"]["label"] == "SIGMA 5 PRO"
 
         detail_response = client.get(f"/api/activity/release-notes/{run_id}")
         assert detail_response.status_code == 200
@@ -429,7 +481,7 @@ def test_activity_mop_timeline_api_detail_download_and_chat(tmp_path, monkeypatc
             {
                 "namespace": "bosgenesis",
                 "target_environment": "kubernetes_generic",
-                "model_profile": {"profile_id": "azure_gpt5_pro", "label": "GPT-5 Pro", "short_label": "GPT-5"},
+                "model_profile": {"profile_id": "azure_gpt5_pro", "label": "SIGMA 5 PRO", "short_label": "SIGMA 5 PRO"},
             },
         )
         repository.add_event(run_id, "workflow_classified", "Workflow classified", {"workflow_type": "mop_generation"})

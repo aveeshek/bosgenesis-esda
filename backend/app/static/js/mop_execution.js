@@ -30,6 +30,7 @@ const txClose = $("transaction-sidebar-close");
 const txBackdrop = $("transaction-sidebar-backdrop");
 const txList = $("transaction-list");
 const txStatus = $("transaction-sidebar-status");
+const txClearAll = $("transaction-clear-all");
 const workingPanel = $("ephemeral-working-panel");
 const workingStream = $("ephemeral-working-stream");
 const safeList = $("safe-summary-list");
@@ -73,6 +74,8 @@ const approvalExpiry = $("approval_expiry_minutes");
 const approvalSubmit = $("approval-submit");
 const mutationStrategy = $("mutation_strategy");
 const mutationStart = $("mutation-start");
+const cleanupStart = $("cleanup-revert-start");
+const cleanupFeedback = $("cleanup-revert-feedback");
 const approvalFeedback = $("approval-feedback");
 const activeKey = "bosgenesis.mopExecution.activeRunId";
 const pinKey = "bosgenesis.mopExecution.activityRailPinned";
@@ -139,14 +142,54 @@ function renderPhaseRequestFailure(phase, detail) {
   renderActivity();
   renderSafeFromEvents(true);
 }
-function terminal(s) { return ["completed", "failed", "validation_failed", "cancelled", "stopped"].includes(s); }
-function visual(s) { if (s === "completed") return "complete"; if (terminal(s)) return "failed"; return ["created", "planning", "running", "waiting_for_approval", "approved_for_mutation", "mutation_succeeded", "mutation_paused", "rollback_required", "mutation_unknown"].includes(s) ? "working" : "idle"; }
+const terminalStatuses = new Set(["completed", "completed_with_review", "cleanup_completed", "cleanup_needs_review", "failed", "validation_failed", "cleanup_failed", "cancelled", "stopped"]);
+const failedStatuses = new Set(["failed", "validation_failed", "cleanup_failed", "cancelled", "stopped"]);
+const reviewStatuses = new Set(["completed_with_review", "cleanup_needs_review"]);
+const workingStatuses = new Set(["created", "planning", "running", "waiting_for_approval", "approved_for_mutation", "mutation_paused", "rollback_required", "mutation_unknown", "cleanup_running"]);
+function normalizedStatus(s) { return String(s || "").trim().toLowerCase(); }
+function terminal(s) { return terminalStatuses.has(normalizedStatus(s)); }
+function visual(s) {
+  const value = normalizedStatus(s);
+  if (["completed", "completed_with_review", "mutation_succeeded", "cleanup_completed"].includes(value)) return "complete";
+  if (failedStatuses.has(value)) return "failed";
+  return workingStatuses.has(value) ? "working" : "idle";
+}
 function setStatus(s) {
   if (!statusBadge) return;
   const value = s || "Idle";
+  const normalized = normalizedStatus(value);
   statusBadge.textContent = value;
   statusBadge.className = "badge mb-2 align-self-start";
-  statusBadge.classList.add(value === "completed" ? "text-bg-success" : terminal(value) ? "text-bg-danger" : ["created", "planning", "running", "waiting_for_approval", "approved_for_mutation", "mutation_succeeded", "mutation_paused", "rollback_required", "mutation_unknown"].includes(value) ? "text-bg-primary" : "text-bg-secondary");
+  const badgeClass = ["completed", "mutation_succeeded", "cleanup_completed"].includes(normalized)
+    ? "text-bg-success"
+    : reviewStatuses.has(normalized)
+      ? "text-bg-warning"
+      : failedStatuses.has(normalized)
+        ? "text-bg-danger"
+        : workingStatuses.has(normalized)
+          ? "text-bg-primary"
+          : "text-bg-secondary";
+  statusBadge.classList.add(badgeClass);
+  updateCleanupButton(value);
+}
+function applyRunStatus(statusValue) {
+  const normalized = normalizedStatus(statusValue);
+  setStatus(statusValue);
+  setVisual(visual(statusValue));
+  if (normalized === "cleanup_completed") {
+    hideApprovalCard();
+    hideDecisionCard();
+    setText(spherePhase, "Cleanup/revert completed");
+    setText(sphereTitle, "Target namespace is empty and ready for retest.");
+    setCleanupFeedback("Cleanup/revert completed. agent-testing is ready for a fresh demo run.");
+    if (artifactLinks) artifactLinks.innerHTML = '<span class="badge text-bg-success">Namespace cleanup completed</span>';
+  } else if (normalized === "cleanup_running") {
+    setText(spherePhase, "Cleanup/revert running");
+    setText(sphereTitle, "Waiting for namespace-empty confirmation.");
+  } else if (normalized === "cleanup_needs_review") {
+    setText(spherePhase, "Cleanup needs review");
+    setText(sphereTitle, "Verify the target namespace before retrying.");
+  }
 }
 function setVisual(state) {
   progressPanel?.classList.remove("is-idle", "is-working", "is-complete", "is-failed");
@@ -194,6 +237,16 @@ function hideDecisionCard() {
   decisionCard?.classList.add("d-none");
   if (decisionCard) { decisionCard.dataset.runId = ""; decisionCard.dataset.jobId = ""; }
   setDecisionFeedback("");
+}
+function setCleanupFeedback(text, isError = false) {
+  if (!cleanupFeedback) return;
+  cleanupFeedback.textContent = text || "";
+  cleanupFeedback.classList.toggle("text-danger", Boolean(isError));
+}
+function cleanupReadyStatus(value) { return ["mutation_succeeded", "completed", "completed_with_review", "validation_failed", "cleanup_failed", "cleanup_needs_review"].includes(normalizedStatus(value)); }
+function updateCleanupButton(statusValue) {
+  if (!cleanupStart) return;
+  cleanupStart.disabled = !activeRunId || !cleanupReadyStatus(statusValue || statusBadge?.textContent);
 }
 function setApprovalFeedback(text, isError = false) {
   if (!approvalFeedback) return;
@@ -559,10 +612,12 @@ function renderMutationResult(result = {}) {
   if (finalReport) finalReport.textContent = lines.join("\n");
   if (result.mutation_succeeded) {
     setStatus("mutation_succeeded");
-    setVisual("working");
+    setVisual("complete");
     setText(spherePhase, "Mutation completed");
     setText(sphereTitle, "Post-mutation validation is next.");
+    hideApprovalCard();
     setApprovalFeedback(result.summary || "Approved mutation completed. Validation is next.");
+    mark("approval", "success", "Human approval was accepted before mutation.");
     mark("mutation_job", "success", `Mutation job ${result.mutation_job_id || "created"} completed.`);
     mark("mutation", "success", result.summary || "Approved mutation completed through execution agent.");
     mark("validation", "running", "Collecting post-mutation validation observations from the execution agent.");
@@ -606,6 +661,117 @@ function renderMutationResult(result = {}) {
   }
   renderActivity();
   renderSafeFromEvents(true);
+  refreshOpenAutonomyModal();
+  void loadTransactions();
+}
+async function runCleanupRevert() {
+  const runId = activeRunId;
+  if (!runId) {
+    setStatus("Idle");
+    setVisual("idle");
+    setCleanupFeedback("No Bundle Execution run is selected. Choose Approved mutation to start a fresh run.", true);
+    setText(formStatus, "Cleanup/revert needs an existing execution run. No request was sent.");
+    return;
+  }
+  const rationale = approvalRationale?.value?.trim() || valueOf("mop_execution_rationale") || "";
+  if (rationale.length < 10) {
+    setCleanupFeedback("Enter a cleanup approval rationale first.", true);
+    approvalRationale?.focus?.();
+    return;
+  }
+  if (cleanupStart) cleanupStart.disabled = true;
+  setCleanupFeedback("Submitting cleanup/revert request to the MoP Execution Agent...");
+  setStatus("running");
+  setVisual("working");
+  setText(spherePhase, "Cleanup/revert requested");
+  setText(sphereTitle, "Reverting generated demo resources.");
+  mark("rollback_cleanup", "running", "Submitting cleanup/revert request through the MoP Execution Agent.");
+  addStageWorking("rollback_cleanup", "Submitting cleanup/revert", "The execution agent will delete generated resources inside the selected target namespace according to the approved cleanup scope.", `cleanup:${runId}`);
+  renderActivity();
+  revealRail("Cleanup/revert request submitted.");
+  try {
+    const payload = {
+      run_id: runId,
+      target_namespace: valueOf("mop_execution_target_namespace"),
+      rationale,
+      cleanup_scope: "namespace_empty_state",
+      correlation_id: valueOf("mop_execution_correlation_id"),
+      model_profile: valueOf("model_profile"),
+    };
+    const response = await fetch("/api/mop-execution/cleanup", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+    const result = await response.json();
+    renderCleanupResult(result);
+  } catch (error) {
+    setCleanupFeedback(`Cleanup/revert failed: ${error.message}`, true);
+    mark("rollback_cleanup", "failed", `Cleanup/revert request failed: ${error.message}`);
+    setStatus("cleanup_failed");
+    setVisual("failed");
+    if (cleanupStart) cleanupStart.disabled = false;
+    renderActivity();
+  }
+}
+function renderCleanupResult(result = {}) {
+  (result.events || []).forEach((event) => processEvent(event, {live: true, reveal: true, hydrateApproval: false}));
+  const lines = [
+    `# Bundle Execution Cleanup/Revert: ${result.status || "unknown"}`,
+    "",
+    `- Run ID: ${result.run_id || activeRunId || "not available"}`,
+    `- Job ID: ${result.job_id || "not available"}`,
+    `- Target namespace: ${result.target_namespace || valueOf("mop_execution_target_namespace")}`,
+    `- Cleanup scope: ${result.cleanup_scope || "namespace_empty_state"}`,
+    `- Completed: ${result.valid ? "yes" : "no"}`,
+    `- Namespace ready for retest: ${result.status === "cleanup_completed" && result.valid ? "yes" : "not confirmed"}`,
+    "",
+    "## Summary",
+    result.summary || (result.errors || []).join("\n") || "No cleanup summary returned.",
+    "",
+    "## Agent Response",
+    JSON.stringify(scrub({cleanup: result.cleanup, cleanup_response: result.cleanup_response, agent_error: result.agent_error, errors: result.errors}), null, 2),
+  ];
+  if (finalReport) finalReport.textContent = lines.join("\n");
+  if (result.status === "cleanup_completed" && result.valid) {
+    hideDecisionCard();
+    hideApprovalCard();
+    setStatus("cleanup_completed");
+    setVisual("complete");
+    setText(spherePhase, "Cleanup/revert completed");
+    setText(sphereTitle, "Target namespace is ready for retest.");
+    mark("rollback_cleanup", "success", result.summary || "Cleanup/revert completed through the execution agent.");
+    mark("complete", "success", "Bundle execution cleanup/revert completed.");
+    setCleanupFeedback(result.summary || "Cleanup/revert completed. agent-testing is ready for a fresh demo run.");
+    if (artifactLinks) artifactLinks.innerHTML = '<span class="badge text-bg-success">Namespace cleanup completed</span>';
+  } else if (result.status === "cleanup_running") {
+    setStatus("cleanup_running");
+    setVisual("working");
+    setText(spherePhase, "Cleanup/revert running");
+    setText(sphereTitle, "Waiting for namespace-empty confirmation.");
+    mark("rollback_cleanup", "running", result.summary || "Cleanup/revert accepted but not terminal yet.");
+    mark("complete", "pending", "Waiting for cleanup terminal state.");
+    setCleanupFeedback(result.summary || "Cleanup/revert is still running.");
+    if (cleanupStart) cleanupStart.disabled = true;
+    if (artifactLinks) artifactLinks.innerHTML += ' <span class="badge text-bg-primary">Cleanup running</span>';
+  } else if (result.status === "cleanup_needs_review") {
+    setStatus("cleanup_needs_review");
+    setVisual("failed");
+    setText(spherePhase, "Cleanup needs review");
+    setText(sphereTitle, "Verify the target namespace before retrying.");
+    mark("rollback_cleanup", "recovered", result.summary || "Cleanup/revert needs review.");
+    mark("complete", "recovered", "Cleanup/revert did not reach a verified terminal state.");
+    setCleanupFeedback(result.summary || "Cleanup/revert needs manual review.", true);
+    if (cleanupStart) cleanupStart.disabled = false;
+    if (artifactLinks) artifactLinks.innerHTML += ' <span class="badge text-bg-warning">Cleanup needs review</span>';
+  } else {
+    setStatus("cleanup_failed");
+    setVisual("failed");
+    mark("rollback_cleanup", "failed", result.summary || "Cleanup/revert failed.");
+    mark("complete", "failed", "Bundle execution cleanup/revert failed.");
+    setCleanupFeedback(result.summary || (result.errors || []).join(" ") || "Cleanup/revert failed.", true);
+    if (cleanupStart) cleanupStart.disabled = false;
+    if (artifactLinks) artifactLinks.innerHTML += ' <span class="badge text-bg-danger">Cleanup failed</span>';
+  }
+  renderActivity();
+  renderSafeFromEvents(true);
+  revealRail(result.summary || "Cleanup/revert state updated.");
   refreshOpenAutonomyModal();
   void loadTransactions();
 }
@@ -671,19 +837,41 @@ function renderValidationReportResult(result = {}) {
     mark("complete", "success", "MoP execution completed with validation and report bundle.");
     setApprovalFeedback(result.summary || "Post-mutation validation passed and reports are ready.");
     setText(formStatus, result.summary || "MoP Execution completed.");
+  } else if (result.completed_with_review || result.status === "completed_with_review" || validation.status === "needs_review") {
+    const reviewSummary = result.summary || "Mutation completed. Post-mutation validation report is available, but ESDA received no validation matrix rows. Manual Kubernetes/Helm verification passed.";
+    setStatus("completed_with_review");
+    setVisual("complete");
+    setText(spherePhase, "Execution completed");
+    setText(sphereTitle, "Validation report needs review.");
+    hideApprovalCard();
+    mark("mutation", "success", "Approved mutation completed through execution agent.");
+    mark("validation", "recovered", reviewSummary);
+    mark("reports", "success", "Execution report metadata and local artifacts were collected.");
+    mark("complete", "recovered", "MoP execution completed with validation review.");
+    setApprovalFeedback(reviewSummary, false);
+    setText(formStatus, reviewSummary);
   } else {
     setStatus("validation_failed");
     setVisual("failed");
-    mark("validation", "recovered", result.summary || "Post-mutation validation needs review.");
+    mark("validation", "failed", result.summary || "Post-mutation validation failed.");
     mark("reports", "success", "Execution report metadata and local artifacts were collected.");
-    mark("complete", "recovered", "MoP execution needs validation review.");
-    setApprovalFeedback(result.summary || "Post-mutation validation needs review.", true);
-    setText(formStatus, result.summary || "Post-mutation validation needs review.");
+    mark("complete", "failed", "MoP execution failed validation.");
+    setApprovalFeedback(result.summary || "Post-mutation validation failed.", true);
+    setText(formStatus, result.summary || "Post-mutation validation failed.");
   }
   renderActivity();
   renderSafeFromEvents(true);
   refreshOpenAutonomyModal();
   void loadTransactions();
+}
+function formatDecisionValue(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(scrub(value), null, 2);
+  } catch (_error) {
+    return String(value);
+  }
 }
 function renderDecisionCard(result = {}) {
   if (!decisionCard) return;
@@ -702,7 +890,7 @@ function renderDecisionCard(result = {}) {
   setText(decisionStep, step);
   const redactedError = card.redacted_error || findDeep(response, "error") || findDeep(response, "message") || "";
   if (decisionError) {
-    decisionError.textContent = redactedError ? String(redactedError) : "";
+    decisionError.textContent = formatDecisionValue(redactedError);
     decisionError.classList.toggle("d-none", !redactedError);
   }
   const safeSummary = card.safe_options?.summary || result.safe_options?.summary || "Choose only a bounded, non-mutating instruction. Mutation remains disabled.";
@@ -824,6 +1012,7 @@ function stageStatusForEvent(e) {
   if (e.event_type === "agent_capabilities_checked" && payload.capabilities_ok === false) return "failed";
   if (e.event_type === "bundle_validated" && payload.bundle_validation?.valid === false) return "failed";
   if (e.event_type === "validation_completed") return payload.validation?.status === "passed" ? "success" : "recovered";
+  if (e.event_type === "rollback_cleanup_updated") { const cleanupStatus = normalizedStatus(payload.state?.cleanup_status); if (cleanupStatus === "cleanup_failed") return "failed"; if (cleanupStatus === "cleanup_running") return "running"; if (cleanupStatus === "cleanup_needs_review") return "recovered"; return "success"; }
   if (e.event_type === "artifact_publish_failed") return "recovered";
   return "success";
 }
@@ -835,8 +1024,8 @@ function processEvent(e, opt = {}) {
   if (stage) mark(stage, stageStatusForEvent(e), summarize(e));
   renderActivity();
   if (opt.reveal !== false && stage) revealRail(summarize(e));
-  const mapped = {run_started: "running", run_completed: "completed", run_failed: "failed"}[e.event_type];
-  if (mapped) { setStatus(mapped); setVisual(visual(mapped)); }
+  const mapped = {run_started: "running", run_failed: "failed", rollback_cleanup_updated: e.payload?.state?.cleanup_status}[e.event_type] || (e.event_type === "run_completed" ? (e.payload?.status || "completed") : null);
+  if (mapped) applyRunStatus(mapped);
   if (e.event_type === "decision_required") renderDecisionCard({run_id: e.run_id || activeRunId, decision_required: e.payload?.decision_required});
   if (opt.hydrateApproval !== false && e.event_type === "job_state_polled") { const state = String(e.payload?.current_state || e.payload?.job?.state || "").toLowerCase(); if (isApprovalReadyState(state)) void ensureApprovalGateForRun(e.run_id || activeRunId, {state, force: true}); }
   if (e.event_type === "instruction_submitted") { mark("decision", "success", "Bounded instruction submitted to execution agent."); renderActivity(); }
@@ -846,13 +1035,22 @@ function processEvent(e, opt = {}) {
 }
 function resetTimeline() { events = []; lastSeq = 0; seen.clear(); if (timeline) timeline.innerHTML = ""; renderSafeFromEvents(false); resetActivity(); resetWorking(); }
 function setActive(runId) { activeRunId = runId; try { if (runId) localStorage.setItem(activeKey, runId); else localStorage.removeItem(activeKey); } catch (_e) {} }
-function resetView(message) { viewGeneration += 1; if (es) { es.close(); es = null; } approvalHydrationInFlight.clear(); resetTimeline(); hideRail(); hideDecisionCard(); hideApprovalCard(); if (artifactLinks) artifactLinks.innerHTML = '<span class="small text-secondary">Execution report links appear after report generation.</span>'; if (finalReport) finalReport.textContent = message; setText(copyProgressStatus, ""); }
-function startNewRun() { setActive(null); resetView("No MoP execution run yet."); setStatus("Idle"); setVisual("idle"); stampCorrelationId(); if (approvalSubmit) approvalSubmit.disabled = false; if (mutationStart) mutationStart.disabled = true; setText(formStatus, "Ready for a fresh MoP Execution run."); void loadTransactions(); form?.scrollIntoView({behavior: "smooth", block: "start"}); }
+function resetView(message) { viewGeneration += 1; if (es) { es.close(); es = null; } approvalHydrationInFlight.clear(); resetTimeline(); hideRail(); hideDecisionCard(); hideApprovalCard(); if (artifactLinks) artifactLinks.innerHTML = '<span class="small text-secondary">Execution report links appear after report generation.</span>'; if (finalReport) finalReport.textContent = message; setText(copyProgressStatus, ""); setCleanupFeedback(""); updateCleanupButton("Idle"); }
+function normalizeFreshExecutionMode() {
+  const modeSelect = $("mop_execution_mode");
+  if (!activeRunId && modeSelect?.value === "cleanup_revert") {
+    modeSelect.value = "approved_mutation";
+    setCleanupFeedback("");
+    setText(formStatus, "Ready for a fresh approved mutation run.");
+  }
+}
+function startNewRun() { setActive(null); if ($("mop_execution_mode")) $("mop_execution_mode").value = "approved_mutation"; resetView("No MoP execution run yet."); setStatus("Idle"); setVisual("idle"); stampCorrelationId(); if (approvalSubmit) approvalSubmit.disabled = false; if (mutationStart) mutationStart.disabled = true; if (cleanupStart) cleanupStart.disabled = true; setCleanupFeedback(""); setText(formStatus, "Ready for a fresh approved mutation run."); void loadTransactions(); form?.scrollIntoView({behavior: "smooth", block: "start"}); }
 function setSidebar(open) { if (!txSidebar) return; document.body.classList.toggle("transaction-sidebar-open", open); txSidebar.setAttribute("aria-hidden", open ? "false" : "true"); txToggle?.setAttribute("aria-expanded", open ? "true" : "false"); }
 function time(value) { if (!value) return ""; try { return new Intl.DateTimeFormat(undefined, {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}).format(new Date(value)); } catch (_e) { return ""; } }
 function renderTransactions(list) {
   if (!txList || !txStatus) return;
   txList.innerHTML = "";
+  if (txClearAll) txClearAll.disabled = !list.length;
   if (!list.length) { txStatus.textContent = "No MoP execution transactions yet."; return; }
   txStatus.textContent = `${list.length} MoP execution transaction${list.length === 1 ? "" : "s"}`;
   list.forEach((tx) => {
@@ -870,7 +1068,8 @@ function renderTransactions(list) {
 }
 async function loadTransactions() { try { const r = await fetch("/api/transactions?workflow_type=mop_execution"); if (!r.ok) throw new Error(`HTTP ${r.status}`); const data = await r.json(); renderTransactions(data.transactions || []); return data.transactions || []; } catch (err) { if (txStatus) txStatus.textContent = `Could not load transactions: ${err.message}`; return []; } }
 async function clearTransaction(runId) { const r = await fetch(`/api/transactions/${runId}/clear`, {method: "POST"}); if (!r.ok) { if (txStatus) txStatus.textContent = `Clear failed: HTTP ${r.status}`; return; } if (runId === activeRunId) { setActive(null); resetView("No MoP execution run yet."); setStatus("Idle"); setVisual("idle"); } await loadTransactions(); }
-function bindSidebar() { txToggle?.addEventListener("click", () => setSidebar(true)); txClose?.addEventListener("click", () => setSidebar(false)); txBackdrop?.addEventListener("click", () => setSidebar(false)); document.addEventListener("keydown", (e) => { if (e.key === "Escape") setSidebar(false); }); }
+async function clearAllTransactions() { if (txClearAll) txClearAll.disabled = true; const r = await fetch("/api/transactions/clear?workflow_type=mop_execution", {method: "POST"}); if (!r.ok) { if (txStatus) txStatus.textContent = `Clear all failed: HTTP ${r.status}`; await loadTransactions(); return; } setActive(null); resetView("No MoP execution run yet."); setStatus("Idle"); setVisual("idle"); if (txStatus) txStatus.textContent = "MoP execution history cleared."; await loadTransactions(); }
+function bindSidebar() { txToggle?.addEventListener("click", () => setSidebar(true)); txClose?.addEventListener("click", () => setSidebar(false)); txBackdrop?.addEventListener("click", () => setSidebar(false)); txClearAll?.addEventListener("click", clearAllTransactions); document.addEventListener("keydown", (e) => { if (e.key === "Escape") setSidebar(false); }); }
 function bindRail() { try { pinned = localStorage.getItem(pinKey) === "true"; } catch (_e) { pinned = false; } rail?.classList.toggle("is-pinned", pinned); controls(); railToggle?.addEventListener("click", () => rail?.classList.contains("is-collapsed") ? revealRail("Activity feed opened.") : collapseRail(true)); railPin?.addEventListener("click", () => { pinned = !pinned; try { localStorage.setItem(pinKey, String(pinned)); } catch (_e) {} rail?.classList.toggle("is-pinned", pinned); if (pinned) revealRail("Activity feed pinned open."); controls(); }); }
 async function openRun(runId, opt = {}) {
   if (es) { es.close(); es = null; }
@@ -878,8 +1077,13 @@ async function openRun(runId, opt = {}) {
   try {
     const r = await fetch(`/api/runs/${runId}/snapshot`); if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const snap = await r.json(); const run = snap.run || {};
-    setStatus(run.status || "Idle"); setVisual(visual(run.status));
-    (snap.events || []).forEach((event) => processEvent(event, {live: false, reveal: false}));
+    applyRunStatus(run.status || "Idle");
+    const restoredEvents = snap.events || [];
+    restoredEvents.forEach((event) => processEvent(event, {live: false, reveal: false}));
+    renderActivity();
+    if (restoredEvents.length) {
+      revealRail(terminal(run.status) ? "Loaded completed execution activity." : "Loaded active execution activity.");
+    }
     if (run.final_report) finalReport.textContent = run.final_report;
     renderSafeFromEvents(terminal(run.status));
     const restoredState = run.status || latestEventValue("current_state");
@@ -1043,7 +1247,7 @@ async function runAgentValidation(preflightResult) {
   const common = {
     target_namespace: target,
     correlation_id: valueOf("mop_execution_correlation_id") || preflightResult?.correlation_id,
-    execution_mode: valueOf("mop_execution_mode") || "dry_run_then_approval",
+    execution_mode: valueOf("mop_execution_mode") || "approved_mutation",
     model_profile: valueOf("model_profile"),
   };
   if (source === "upload_bundle") {
@@ -1132,7 +1336,7 @@ async function runDryRun(validationResult) {
     bundle_id: validationResult.bundle_id,
     target_namespace: validationResult.target_namespace || valueOf("mop_execution_target_namespace") || "agent-testing",
     correlation_id: validationResult.correlation_id || valueOf("mop_execution_correlation_id"),
-    execution_mode: valueOf("mop_execution_mode") || "dry_run_then_approval",
+    execution_mode: valueOf("mop_execution_mode") || "approved_mutation",
     model_profile: valueOf("model_profile"),
   };
   const response = await fetch("/api/mop-execution/dry-run", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
@@ -1307,11 +1511,25 @@ function renderInstructionResult(result) {
 }
 async function startShell(event) {
   event.preventDefault();
-  resetView("Preparing MoP execution controls..."); setStatus("planning"); setVisual("working"); revealRail("Creating execution plan");
   const target = valueOf("mop_execution_target_namespace") || "agent-testing";
-  const mode = valueOf("mop_execution_mode") || "dry_run_then_approval";
+  const mode = valueOf("mop_execution_mode") || "approved_mutation";
   const source = valueOf("mop_execution_bundle_source") || "activity_run";
   stampCorrelationId();
+  if (mode === "cleanup_revert" && !activeRunId) {
+    resetView("No Bundle Execution run is selected.");
+    setStatus("Idle");
+    setVisual("idle");
+    setCleanupFeedback("Select an existing Bundle Execution run before cleanup/revert, or choose Approved mutation for a fresh run.", true);
+    setText(formStatus, "Cleanup/revert needs an existing execution run. Switch Execution Mode to Approved mutation to start fresh.");
+    collapseRail(true);
+    return;
+  }
+  resetView("Preparing MoP execution controls..."); setStatus("planning"); setVisual("working"); revealRail("Creating execution plan");
+  if (mode === "cleanup_revert") {
+    setText(formStatus, "Submitting cleanup/revert for the selected execution run...");
+    await runCleanupRevert();
+    return;
+  }
   addStageWorking("creating_plan", "Creating execution plan", `Bundle source ${source}, target namespace ${target}, mode ${mode}, and approval guardrails are being arranged before execution orchestration.`, "shell:plan");
   mark("intake", "success", "Execution inputs captured for the current page session.");
   mark("preflight", "running", "Validating local bundle, required files, namespace safety, Secret exposure, and cluster-scoped actions.");
@@ -1707,6 +1925,7 @@ async function boot() {
   const stored = txs.find((item) => item.run_id === storedId && !terminal(item.status));
   const active = txs.find((item) => !terminal(item.status));
   const runId = stored?.run_id || active?.run_id;
+  normalizeFreshExecutionMode();
   if (runId) await openRun(runId);
 }
 bundleSource?.addEventListener("change", () => { updateSourceVisibility(); stampCorrelationId(); });
@@ -1724,4 +1943,6 @@ form?.addEventListener("submit", startShell);
 decisionInstructionForm?.addEventListener("submit", submitDecisionInstruction);
 approvalForm?.addEventListener("submit", submitApproval);
 mutationStart?.addEventListener("click", startMutation);
+cleanupStart?.addEventListener("click", runCleanupRevert);
+window.addEventListener("pageshow", () => setTimeout(normalizeFreshExecutionMode, 0));
 boot();

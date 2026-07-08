@@ -5,7 +5,7 @@
   <div class="row g-3 align-items-stretch release-grid">
     <section class="col-12 col-xl-3 release-side-panel">
       <div class="panel release-form-panel">
-        <h2>MoP Execution</h2>
+        <h2>Bundle Execution</h2>
         <form id="mop-execution-form">
           <div class="mb-3">
             <label class="form-label" for="mop_execution_bundle_source">Bundle Source</label>
@@ -46,10 +46,8 @@
             <label class="form-label" for="mop_execution_mode">Execution Mode</label>
             <select class="form-select" id="mop_execution_mode" required>
               <option value="dry_run_then_approval">Dry-run then approval</option>
-              <option value="dry_run_only" selected>Dry-run only</option>
-              <option value="approved_mutation">Approved mutation (agent approval required)</option>
-              <option value="cleanup_revert">Cleanup/Revert</option>
-              <option value="rollback">Rollback</option>
+              <option value="dry_run_only">Dry-run only</option>
+              <option value="approved_mutation" selected>Approved mutation (agent approval required)</option>
             </select>
           </div>
           <div class="mb-3">
@@ -227,6 +225,10 @@
       <div class="panel draft-panel">
         <h2>Execution Result</h2>
         <div id="artifact-links" class="artifact-links mb-3"><span class="small text-secondary">Execution report links appear after report generation.</span></div>
+        <div class="d-flex gap-2 flex-wrap mb-3">
+          <button id="cleanup-revert-start" class="btn btn-sm btn-outline-light" type="button" disabled>Cleanup/Revert</button>
+          <span id="cleanup-revert-feedback" class="copy-feedback small text-secondary align-self-center" aria-live="polite"></span>
+        </div>
         <pre id="final-report" class="report-box">No MoP execution run yet.</pre>
       </div>
     </section>

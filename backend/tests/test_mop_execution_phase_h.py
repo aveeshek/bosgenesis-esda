@@ -126,7 +126,11 @@ def test_mop_execution_phase_h_submits_instruction_and_resumes_only_when_accepte
         assert result["resumed"] is True
         assert result["mutation_controls_enabled"] is False
         assert fake_agent.instruction_request is not None
-        assert fake_agent.instruction_request["mutation_allowed"] is False
+        assert fake_agent.instruction_request["instruction_type"] == "continue"
+        assert fake_agent.instruction_request["dry_run_required"] is True
+        assert fake_agent.instruction_request["destructive_action"] is False
+        assert fake_agent.instruction_request["metadata"]["mutation_allowed"] is False
+        assert fake_agent.instruction_request["metadata"]["requested_action"] == "continue"
         assert fake_agent.resume_request is not None
         assert fake_agent.resume_request["mutation_allowed"] is False
         event_types = [event["event_type"] for event in result["events"]]

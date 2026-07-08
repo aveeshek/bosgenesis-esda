@@ -440,8 +440,8 @@ class AzureGpt5Service:
         return {
             "azure_gpt5_pro": LlmModelProfile(
                 profile_id="azure_gpt5_pro",
-                label="GPT 5 Pro",
-                short_label="GPT-5",
+                label="SIGMA 5 PRO",
+                short_label="SIGMA 5 PRO",
                 provider="azure_openai",
                 endpoint=self.settings.azure_openai_gpt5_endpoint or azure_endpoint,
                 deployment=(
@@ -455,8 +455,8 @@ class AzureGpt5Service:
             ),
             "azure_gpt41_mini": LlmModelProfile(
                 profile_id="azure_gpt41_mini",
-                label="GPT-4.1 mini",
-                short_label="GPT-4.1",
+                label="SIGMA 4.1",
+                short_label="SIGMA 4.1",
                 provider="azure_openai",
                 endpoint=azure_endpoint,
                 deployment=self.settings.openai_deployment
@@ -469,8 +469,8 @@ class AzureGpt5Service:
             ),
             "ollama_llama70b": LlmModelProfile(
                 profile_id="ollama_llama70b",
-                label="Llama 3.3 70B",
-                short_label="Llama70B",
+                label="TRAINIUM BEHEMOTH",
+                short_label="TRAINIUM BEHEMOTH",
                 provider="ollama",
                 endpoint=self.settings.ollama_llama70b_base_url,
                 model_name=self.settings.ollama_llama70b_model,
@@ -478,8 +478,8 @@ class AzureGpt5Service:
             ),
             "ollama_gemma4": LlmModelProfile(
                 profile_id="ollama_gemma4",
-                label="Gemma4 26B",
-                short_label="Gemma4",
+                label="TRAINIUM GEMMA",
+                short_label="TRAINIUM GEMMA",
                 provider="ollama",
                 endpoint=self.settings.ollama_gemma_base_url,
                 model_name=self.settings.ollama_gemma_model,
@@ -487,8 +487,8 @@ class AzureGpt5Service:
             ),
             "azure_configured": LlmModelProfile(
                 profile_id="azure_configured",
-                label="Configured Azure OpenAI",
-                short_label="Azure",
+                label="CUSTOM",
+                short_label="CUSTOM",
                 provider="azure_openai",
                 endpoint=self.settings.azure_openai_endpoint,
                 deployment=self.settings.azure_deployment_name,
