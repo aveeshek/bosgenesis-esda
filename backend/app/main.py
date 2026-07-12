@@ -48,6 +48,7 @@ from backend.app.chains.release_notes import ReleaseNoteIntentClassifierChain
 from backend.app.config import get_settings
 from backend.app.db.database import Database, RunRepository
 from backend.app.db.models import User
+from backend.app.env_agent import env_agent_contract
 from backend.app.dependencies import (
     SESSION_COOKIE_NAME,
     get_current_user,
@@ -55,6 +56,7 @@ from backend.app.dependencies import (
 )
 from backend.app.graphs.diagnostic import DiagnosticGraph, DiagnosticInput
 from backend.app.graphs.event_bus import RunEventBus
+from backend.app.graphs.env_agent import EnvAgentRuntimeInput, EnvAgentWorkflowGraph
 from backend.app.graphs.mop_generation import MopGenerationGraph, MopGenerationInput
 from backend.app.graphs.release_notes import ReleaseNoteGraph, ReleaseNoteInput
 from backend.app.l4 import (
@@ -64,13 +66,20 @@ from backend.app.l4 import (
     ProcedureCreateRequest,
 )
 from backend.app.llm.azure_gpt5 import AzureGpt5Service
+from backend.app.memory import MemoryService
 from backend.app.mop_execution import MopExecutionPreflightService, MopExecutionRunRequest, MopExecutionRunStore
 from backend.app.logging.postgres_logger import PostgresLogger
 from backend.app.logging.redaction import redact
 from backend.app.logging.setup import configure_logging
 from backend.app.policy.evaluator import PolicyGuard
 from backend.app.repo_analysis import RepoAnalysisService
-from backend.app.tools.contracts import ToolExecutionRequest
+from backend.app.tools.contracts import ToolExecutionRequest, ToolExecutionResult
+from backend.app.tools.env_agents import (
+    EnvAgentDataIngestionTool,
+    EnvAgentHelmManagerTool,
+    EnvAgentK8sInspectorTool,
+    EnvAgentObservabilityTool,
+)
 from backend.app.tools.mcp_client import K8sInspectorMcpTool
 from backend.app.tools.mop_agents import (
     HelmManagerEvidenceTool,
@@ -136,6 +145,21 @@ class ActivityChatRequest(BaseModel):
     message: str
     selected_run_ids: list[str] = Field(default_factory=list)
     session_id: str | None = None
+    model_profile: str | None = None
+
+
+class EnvAgentChatRequest(BaseModel):
+    message: str = Field(min_length=3, max_length=4000)
+    namespace: str | None = None
+    session_id: str | None = None
+    mode: str = "auto"
+    scope: str = "prompt"
+    model_profile: str | None = None
+
+
+class EnvAgentRemediationExecuteRequest(BaseModel):
+    run_id: str = Field(min_length=3, max_length=80)
+    approval_id: str = Field(min_length=3, max_length=80)
     model_profile: str | None = None
 
 
@@ -253,6 +277,63 @@ class MopExecutionCleanupRequest(BaseModel):
     model_profile: str | None = None
 
 
+
+def _add_env_agent_state_events(repository: RunRepository, *, run_id: str, state: dict[str, Any]) -> None:
+    event_specs = [
+        ("workflow_classified", "Environment Chat workflow classified", "classification"),
+        ("plan_created", "Environment Chat tool plan created", "plan"),
+        ("inspection_completed", "Environment Chat read-only inspection completed", "evidence"),
+        ("evidence_correlated", "Environment Chat evidence correlation completed", "correlation"),
+        ("diagnosis_completed", "Environment Chat diagnosis completed", "diagnosis"),
+        ("remediation_proposal_created", "Environment Chat remediation proposal evaluated", "remediation"),
+        ("verification_completed", "Environment Chat verification completed", "verification"),
+        ("recovery_recommendation", "Environment Chat recovery recommendation selected", "recovery"),
+    ]
+    for event_type, message, key in event_specs:
+        value = state.get(key)
+        if value is None:
+            continue
+        payload = {key: value}
+        if key == "evidence":
+            payload["evidence_count"] = len(value or [])
+        repository.add_event(run_id, event_type, message, payload)
+
+_ENV_AGENT_MODE_VALUES = {"diagnostic_only", "propose_only", "approval_gated_remediation"}
+_ENV_AGENT_REMEDIATION_WORDS = re.compile(r"\b(fix|repair|restart|scale|patch|apply|create|replace|delete|remove|uninstall|rollback|install|installation|upgrade|deploy|proceed|approve|approved|approval|remediate|heal)\b", re.IGNORECASE)
+_ENV_AGENT_PROPOSAL_WORDS = re.compile(r"\b(propose|recommend|plan|what should)\b", re.IGNORECASE)
+_ENV_AGENT_NAMESPACE_PATTERNS = (
+    re.compile(r"\bin\s+([a-z0-9][a-z0-9-]*)\s+namespace\b", re.IGNORECASE),
+    re.compile(r"\b-n\s+([a-z0-9][a-z0-9-]*)\b", re.IGNORECASE),
+    re.compile(r"\b(?:namespace|ns)\s*[:=]\s*([a-z0-9][a-z0-9-]*)\b", re.IGNORECASE),
+    re.compile(r"\b(?:namespace|ns)\s+(?:named|called)\s+([a-z0-9][a-z0-9-]*)\b", re.IGNORECASE),
+)
+
+
+def _infer_env_agent_namespace(message: str, configured_namespaces: list[str]) -> str | None:
+    text = str(message or "")
+    for pattern in _ENV_AGENT_NAMESPACE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group(1).strip()
+    lowered = text.lower()
+    for namespace in configured_namespaces:
+        if re.search(rf"(^|[^a-z0-9-]){re.escape(namespace.lower())}([^a-z0-9-]|$)", lowered):
+            return namespace
+    return None
+
+
+def _infer_env_agent_mode(message: str, requested_mode: str | None) -> str:
+    mode = str(requested_mode or "auto").strip()
+    if mode in _ENV_AGENT_MODE_VALUES:
+        return mode
+    text = str(message or "")
+    if _ENV_AGENT_REMEDIATION_WORDS.search(text):
+        return "approval_gated_remediation"
+    if _ENV_AGENT_PROPOSAL_WORDS.search(text):
+        return "propose_only"
+    return "diagnostic_only"
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     database = Database(settings)
@@ -280,6 +361,7 @@ def create_app() -> FastAPI:
         tool_registry=tool_registry,
     )
     llm = AzureGpt5Service(settings)
+    memory_service = MemoryService(repository=repository, settings=settings)
     repo_analyzer = RepoAnalysisService(llm=llm)
     workflow_classifier = ReleaseNoteIntentClassifierChain(llm)
     graph = DiagnosticGraph(
@@ -325,6 +407,20 @@ def create_app() -> FastAPI:
 
     mop_execution_agent = MopExecutionAgentClient(settings)
     mop_execution_store = MopExecutionRunStore(repository=repository, settings=settings)
+    env_k8s_inspector = EnvAgentK8sInspectorTool(settings)
+    env_helm_manager = EnvAgentHelmManagerTool(settings)
+    env_data_ingestion = EnvAgentDataIngestionTool(settings)
+    env_observability = EnvAgentObservabilityTool(settings)
+    env_agent_workflow_graph = EnvAgentWorkflowGraph(
+        settings=settings,
+        llm=llm,
+        k8s_inspector=env_k8s_inspector,
+        helm_manager=env_helm_manager,
+        data_ingestion=env_data_ingestion,
+        observability=env_observability,
+        repository=repository,
+    )
+
     mop_execution_preflight = MopExecutionPreflightService(
         repository=repository, artifact_service=artifact_service, settings=settings
     )
@@ -365,12 +461,18 @@ def create_app() -> FastAPI:
     app.state.policy_guard = policy_guard
     app.state.approval_service = approval_service
     app.state.l4_service = l4_service
+    app.state.memory_service = memory_service
     app.state.graph = graph
     app.state.release_note_graph = release_note_graph
     app.state.mop_generation_graph = mop_generation_graph
     app.state.mop_execution_agent = mop_execution_agent
     app.state.mop_execution_store = mop_execution_store
     app.state.mop_execution_preflight = mop_execution_preflight
+    app.state.env_k8s_inspector = env_k8s_inspector
+    app.state.env_helm_manager = env_helm_manager
+    app.state.env_data_ingestion = env_data_ingestion
+    app.state.env_observability = env_observability
+    app.state.env_agent_workflow_graph = env_agent_workflow_graph
     app.state.workflow_classifier = workflow_classifier
     app.state.repo_analyzer = repo_analyzer
 
@@ -473,6 +575,299 @@ def create_app() -> FastAPI:
             autonomy_mode=request.autonomy_mode,
         )
 
+    def env_agent_first_remediation_action(remediation: dict) -> dict | None:
+        for action in remediation.get("actions") or []:
+            if not isinstance(action, dict):
+                continue
+            action_type = str(action.get("action_type") or "").strip().lower()
+            if action_type and action_type not in {"none", "block", "ask_clarification"}:
+                return action
+        return None
+
+    def env_agent_remediation_tool_request(
+        *,
+        run_id: str,
+        user_id: str,
+        namespace: str | None,
+        action: dict,
+    ) -> ToolExecutionRequest:
+        action_type = str(action.get("action_type") or "").strip().lower()
+        mapping = {
+            "rollout_restart": ("env.k8s_rollout_restart", "rollout_restart", "env.k8s_inspector"),
+            "scale": ("env.k8s_scale", "scale", "env.k8s_inspector"),
+            "patch": ("env.k8s_patch", "patch", "env.k8s_inspector"),
+            "apply": ("env.k8s_apply", "apply", "env.k8s_inspector"),
+            "delete": ("env.k8s_delete", "delete", "env.k8s_inspector"),
+            "helm_install": ("env.helm_install", "helm_install", "env.helm_manager"),
+            "helm_upgrade": ("env.helm_upgrade", "helm_upgrade", "env.helm_manager"),
+            "helm_uninstall": ("env.helm_uninstall", "helm_uninstall", "env.helm_manager"),
+            "helm_rollback": ("env.helm_rollback", "helm_rollback", "env.helm_manager"),
+        }
+        if action_type not in mapping:
+            raise ValueError(f"Unsupported Environment Chat remediation action: {action_type or 'missing'}")
+        logical_tool, route_tool, adapter_tool = mapping[action_type]
+        arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
+        arguments = dict(arguments)
+        target_kind = str(action.get("target_kind") or arguments.get("resource_kind") or arguments.get("kind") or "deployment").strip().lower()
+        target_name = str(action.get("target_name") or arguments.get("resource_name") or arguments.get("name") or arguments.get("release_name") or "").strip()
+        action_namespace = str(action.get("namespace") or arguments.get("namespace") or namespace or "").strip()
+        if not action_namespace:
+            raise ValueError("Remediation requires a concrete namespace in the prompt or proposed action.")
+        if namespace and action_namespace != namespace:
+            raise ValueError("Remediation action namespace does not match the selected Environment Chat namespace.")
+        if action_namespace in {"*", "all", "all-namespaces", "cluster"}:
+            raise ValueError("Cluster-wide remediation is outside the Environment Chat ODD.")
+        rendered_args = json.dumps(arguments, default=str).lower()
+        if "secret" in rendered_args and any(word in rendered_args for word in ("get", "list", "read")):
+            raise ValueError("Secret-reading remediation is blocked.")
+        if any(word in rendered_args for word in ("delete namespace", "remove namespace", "kubectl delete namespace", "clusterrole", "clusterrolebinding", "customresourcedefinition", "--all-namespaces")):
+            raise ValueError("Cluster-wide or namespace deletion remediation is blocked.")
+        arguments["namespace"] = action_namespace
+        if action_type in {"rollout_restart", "scale", "patch", "delete"}:
+            arguments.setdefault("resource_kind", target_kind or "deployment")
+            arguments.setdefault("resource_name", target_name)
+            if not arguments.get("resource_name") or str(arguments.get("resource_name")).lower() in {"unknown", "none"}:
+                raise ValueError(f"{action_type} requires a concrete Kubernetes resource name.")
+        if action_type == "scale" and "replicas" not in arguments:
+            raise ValueError("Scale remediation requires an explicit replica count.")
+        if action_type == "patch" and "patch" not in arguments:
+            raise ValueError("Patch remediation requires an explicit patch document.")
+        if action_type == "apply" and not arguments.get("manifest"):
+            raise ValueError("Apply remediation requires an explicit manifest document.")
+        if action_type in {"apply", "delete"} and target_kind in {"namespace", "clusterrole", "clusterrolebinding", "customresourcedefinition", "crd"}:
+            raise ValueError("Cluster-wide Kubernetes mutations are blocked in Environment Chat.")
+        if action_type in {"helm_install", "helm_upgrade"}:
+            arguments.setdefault("release_name", target_name or "nginx")
+            if not arguments.get("release_name") or str(arguments.get("release_name")).lower() in {"unknown", "none"}:
+                raise ValueError("Helm install or upgrade requires a concrete release name.")
+            if not arguments.get("chart_ref"):
+                raise ValueError("Helm install or upgrade requires a chart_ref, for example bitnami/nginx.")
+        if action_type in {"helm_rollback", "helm_uninstall"}:
+            arguments.setdefault("release_name", target_name)
+            if not arguments.get("release_name") or str(arguments.get("release_name")).lower() in {"unknown", "none"}:
+                raise ValueError("Helm rollback or uninstall requires a concrete release name.")
+        return ToolExecutionRequest(
+            run_id=run_id,
+            step_id=f"env_remediation_{action_type}",
+            tool_name=logical_tool,
+            workflow_type="env_agent",
+            environment="kubernetes_generic",
+            namespace=action_namespace,
+            user_id=user_id,
+            arguments={
+                "tool_name": route_tool,
+                "adapter_tool": adapter_tool,
+                "action": action_type,
+                "operation": action_type,
+                "resource": arguments.get("resource_name") or arguments.get("release_name") or target_name,
+                "kind": arguments.get("resource_kind") or target_kind,
+                "arguments": arguments,
+                "rollback_plan": action.get("rollback_plan") or [],
+                "verification_plan": action.get("verification_plan") or [],
+            },
+            autonomy_mode="approval_gated_remediation",
+        )
+
+    def env_agent_create_remediation_approval(
+        *,
+        run_id: str,
+        principal: SessionPrincipal,
+        request: ToolExecutionRequest,
+        decision: Any,
+        remediation: dict,
+        action: dict,
+    ) -> dict:
+        return repository.create_approval_request(
+            approval_id=f"appr_{uuid4().hex}",
+            run_id=run_id,
+            requested_by_user_id=principal.user_id,
+            workflow_type=request.workflow_type,
+            tool_name=request.tool_name,
+            environment=request.environment,
+            namespace=request.namespace,
+            risk_level=decision.risk_level,
+            request_json=request.model_dump(),
+            policy_decision=decision.to_dict(),
+            expected_impact=decision.expected_impact,
+            rollback_note=decision.rollback_note,
+            expires_at=datetime.now(UTC) + timedelta(minutes=settings.approval_expiration_minutes),
+        )
+
+    def env_agent_adapter_request(tool_request: ToolExecutionRequest) -> tuple[Any, ToolExecutionRequest]:
+        adapter_tool = str(tool_request.arguments.get("adapter_tool") or "")
+        route_tool = str(tool_request.arguments.get("tool_name") or "")
+        arguments = tool_request.arguments.get("arguments") if isinstance(tool_request.arguments.get("arguments"), dict) else {}
+        if adapter_tool == "env.helm_manager" or tool_request.tool_name in {"env.helm_install", "env.helm_upgrade", "env.helm_uninstall", "env.helm_rollback"}:
+            adapter = env_helm_manager
+            adapter_name = "env.helm_manager"
+        else:
+            adapter = env_k8s_inspector
+            adapter_name = "env.k8s_inspector"
+        return adapter, ToolExecutionRequest(
+            run_id=tool_request.run_id,
+            step_id=f"{tool_request.step_id}_adapter",
+            tool_name=adapter_name,
+            workflow_type=tool_request.workflow_type,
+            environment=tool_request.environment,
+            namespace=tool_request.namespace,
+            user_id=tool_request.user_id,
+            arguments={"tool_name": route_tool, "arguments": dict(arguments)},
+            autonomy_mode="approved_execution",
+        )
+
+    def env_agent_verification_request(tool_request: ToolExecutionRequest) -> tuple[Any, ToolExecutionRequest]:
+        arguments = tool_request.arguments.get("arguments") if isinstance(tool_request.arguments.get("arguments"), dict) else {}
+        if tool_request.tool_name in {"env.helm_install", "env.helm_upgrade", "env.helm_uninstall", "env.helm_rollback"}:
+            adapter = env_helm_manager
+            request = ToolExecutionRequest(
+                run_id=tool_request.run_id,
+                step_id=f"{tool_request.step_id}_verify",
+                tool_name="env.helm_manager",
+                workflow_type=tool_request.workflow_type,
+                environment=tool_request.environment,
+                namespace=tool_request.namespace,
+                user_id=tool_request.user_id,
+                arguments={"tool_name": "helm_release_list" if tool_request.tool_name == "env.helm_uninstall" else "helm_release_status", "arguments": {"release_name": arguments.get("release_name"), "namespace": tool_request.namespace}},
+                autonomy_mode="observe_only",
+            )
+        else:
+            adapter = env_k8s_inspector
+            request = ToolExecutionRequest(
+                run_id=tool_request.run_id,
+                step_id=f"{tool_request.step_id}_verify",
+                tool_name="env.k8s_inspector",
+                workflow_type=tool_request.workflow_type,
+                environment=tool_request.environment,
+                namespace=tool_request.namespace,
+                user_id=tool_request.user_id,
+                arguments={"tool_name": "deployment_status", "arguments": {"namespace": tool_request.namespace}},
+                autonomy_mode="observe_only",
+            )
+        return adapter, request
+    def env_agent_result_text(result: ToolExecutionResult) -> str:
+        chunks = [json.dumps(result.error or {}, default=str), json.dumps(result.validation_result or {}, default=str), json.dumps(result.output or {}, default=str)]
+        return " ".join(chunks).lower()
+
+    def env_agent_repo_missing(result: ToolExecutionResult) -> bool:
+        text = env_agent_result_text(result)
+        return "repo" in text and "not found" in text
+
+    def env_agent_request_with_arguments(base_request: ToolExecutionRequest, *, step_suffix: str, route_tool: str, arguments: dict, autonomy_mode: str = "approved_execution") -> ToolExecutionRequest:
+        return ToolExecutionRequest(
+            run_id=base_request.run_id,
+            step_id=f"{base_request.step_id}_{step_suffix}",
+            tool_name=base_request.tool_name,
+            workflow_type=base_request.workflow_type,
+            environment=base_request.environment,
+            namespace=base_request.namespace,
+            user_id=base_request.user_id,
+            arguments={"tool_name": route_tool, "arguments": dict(arguments)},
+            autonomy_mode=autonomy_mode,
+        )
+
+    async def env_agent_run_adapter_attempt(
+        *,
+        run_id: str,
+        attempt_label: str,
+        adapter: Any,
+        adapter_request: ToolExecutionRequest,
+        logical_tool_name: str,
+    ) -> tuple[ToolExecutionResult, int, dict]:
+        result, duration_ms = await adapter.execute(adapter_request)
+        attempt = {
+            "label": attempt_label,
+            "tool_name": logical_tool_name,
+            "adapter_tool_name": adapter_request.tool_name,
+            "route_tool_name": adapter_request.arguments.get("tool_name"),
+            "status": result.status,
+            "duration_ms": duration_ms,
+            "request": adapter_request.model_dump(),
+            "result": result.model_dump(),
+        }
+        repository.add_tool_call(
+            run_id=run_id,
+            tool_name=f"{logical_tool_name}.{attempt_label}",
+            status=result.status,
+            request_json=adapter_request.model_dump(),
+            response_json={"duration_ms": duration_ms, "result": result.model_dump()},
+        )
+        repository.add_event(
+            run_id,
+            "remediation_operator_attempt",
+            f"Environment Chat operator attempt: {attempt_label}",
+            redact(attempt),
+        )
+        return result, duration_ms, attempt
+
+    def env_agent_oci_fallback_args(arguments: dict) -> dict | None:
+        chart_ref = str(arguments.get("chart_ref") or "")
+        explicit = str(arguments.get("oci_fallback_chart_ref") or "")
+        if explicit:
+            updated = dict(arguments)
+            updated["chart_ref"] = explicit
+            updated["fallback_source_chart_ref"] = chart_ref
+            return updated
+        if chart_ref.startswith("bitnami/") and "/" in chart_ref:
+            updated = dict(arguments)
+            updated["chart_ref"] = f"oci://registry-1.docker.io/bitnamicharts/{chart_ref.rsplit('/', 1)[-1]}"
+            updated["fallback_source_chart_ref"] = chart_ref
+            return updated
+        return None
+
+    async def env_agent_execute_with_operator_logic(tool_request: ToolExecutionRequest) -> tuple[ToolExecutionResult, int, list[dict]]:
+        adapter, adapter_request = env_agent_adapter_request(tool_request)
+        attempts: list[dict] = []
+        route_tool = str(adapter_request.arguments.get("tool_name") or "")
+        arguments = adapter_request.arguments.get("arguments") if isinstance(adapter_request.arguments.get("arguments"), dict) else {}
+        helm_tools = {"env.helm_install", "env.helm_upgrade", "env.helm_uninstall", "env.helm_rollback"}
+        if tool_request.tool_name not in helm_tools:
+            result, duration_ms, attempt = await env_agent_run_adapter_attempt(run_id=tool_request.run_id, attempt_label="execute", adapter=adapter, adapter_request=adapter_request, logical_tool_name=tool_request.tool_name)
+            return result, duration_ms, [attempt]
+
+        dry_args = dict(arguments)
+        dry_args["dry_run"] = True
+        dry_request = env_agent_request_with_arguments(adapter_request, step_suffix="dry_run", route_tool=route_tool, arguments=dry_args, autonomy_mode="dry_run")
+        dry_result, dry_duration_ms, dry_attempt = await env_agent_run_adapter_attempt(run_id=tool_request.run_id, attempt_label="dry_run", adapter=adapter, adapter_request=dry_request, logical_tool_name=tool_request.tool_name)
+        attempts.append(dry_attempt)
+        final_args = dict(arguments)
+
+        if dry_result.status != "success" and env_agent_repo_missing(dry_result):
+            public_repo = arguments.get("public_repo") if isinstance(arguments.get("public_repo"), dict) else {}
+            if public_repo.get("name") and public_repo.get("url"):
+                repo_add_request = env_agent_request_with_arguments(
+                    adapter_request,
+                    step_suffix="repo_add",
+                    route_tool="helm_repo_add",
+                    arguments={"name": public_repo["name"], "url": public_repo["url"], "force_update": True, "actor": "esda"},
+                )
+                repo_add_result, _, repo_add_attempt = await env_agent_run_adapter_attempt(run_id=tool_request.run_id, attempt_label="repo_add", adapter=adapter, adapter_request=repo_add_request, logical_tool_name=tool_request.tool_name)
+                attempts.append(repo_add_attempt)
+                if repo_add_result.status == "success":
+                    repo_update_request = env_agent_request_with_arguments(adapter_request, step_suffix="repo_update", route_tool="helm_repo_update", arguments={"actor": "esda"})
+                    _, _, repo_update_attempt = await env_agent_run_adapter_attempt(run_id=tool_request.run_id, attempt_label="repo_update", adapter=adapter, adapter_request=repo_update_request, logical_tool_name=tool_request.tool_name)
+                    attempts.append(repo_update_attempt)
+                    dry_result, dry_duration_ms, dry_attempt = await env_agent_run_adapter_attempt(run_id=tool_request.run_id, attempt_label="dry_run_after_repo_update", adapter=adapter, adapter_request=dry_request, logical_tool_name=tool_request.tool_name)
+                    attempts.append(dry_attempt)
+
+        if dry_result.status != "success" and env_agent_repo_missing(dry_result):
+            fallback_args = env_agent_oci_fallback_args(arguments)
+            if fallback_args:
+                final_args = fallback_args
+                fallback_dry_args = dict(fallback_args)
+                fallback_dry_args["dry_run"] = True
+                fallback_dry_request = env_agent_request_with_arguments(adapter_request, step_suffix="oci_dry_run", route_tool=route_tool, arguments=fallback_dry_args, autonomy_mode="dry_run")
+                dry_result, dry_duration_ms, dry_attempt = await env_agent_run_adapter_attempt(run_id=tool_request.run_id, attempt_label="oci_dry_run", adapter=adapter, adapter_request=fallback_dry_request, logical_tool_name=tool_request.tool_name)
+                attempts.append(dry_attempt)
+
+        if dry_result.status != "success":
+            return dry_result, dry_duration_ms, attempts
+
+        execute_args = dict(final_args)
+        execute_args["dry_run"] = False
+        execute_request = env_agent_request_with_arguments(adapter_request, step_suffix="execute", route_tool=route_tool, arguments=execute_args)
+        execution_result, execution_duration_ms, execution_attempt = await env_agent_run_adapter_attempt(run_id=tool_request.run_id, attempt_label="execute", adapter=adapter, adapter_request=execute_request, logical_tool_name=tool_request.tool_name)
+        attempts.append(execution_attempt)
+        return execution_result, execution_duration_ms, attempts
     @app.get("/health", tags=["system"])
     def health() -> dict:
         return {"status": "ok", "app": settings.app_name}
@@ -591,6 +986,491 @@ def create_app() -> FastAPI:
             ),
         )
 
+    def env_agent_admin_principal(principal: SessionPrincipal | None = None) -> SessionPrincipal:
+        if principal:
+            return principal
+        with database.session() as db:
+            user = db.scalar(select(User).where(User.username == settings.admin_username))
+            if not user or not user.is_active:
+                raise HTTPException(status_code=401, detail="Environment Chat admin user is not available")
+            return SessionPrincipal(user_id=user.user_id, username=user.username, roles=list(user.roles or []))
+
+
+    @app.get("/env-agent", response_class=HTMLResponse, tags=["pages"])
+    def env_agent_page(request: Request) -> HTMLResponse:
+        principal = env_agent_admin_principal(get_current_user_or_none(request))
+        contract = env_agent_contract(settings)
+        return templates.TemplateResponse(
+            request,
+            "env_agent.html",
+            template_context(principal, env_agent_contract=contract),
+        )
+
+    @app.get("/api/env-agent/contract", tags=["workflows"])
+    def env_agent_contract_api(principal: SessionPrincipal | None = Depends(get_current_user_or_none)) -> dict:
+        principal = env_agent_admin_principal(principal)
+        contract = env_agent_contract(settings)
+        contract["user"] = public_user(principal)
+        return contract
+
+    @app.get("/api/env-agent/sessions", tags=["workflows"])
+    def list_env_agent_sessions(
+        include_hidden: bool = Query(False),
+        principal: SessionPrincipal | None = Depends(get_current_user_or_none),
+    ) -> dict:
+        principal = env_agent_admin_principal(principal)
+        return {
+            "sessions": repository.list_chat_sessions(
+                user_id=principal.user_id,
+                workflow_type="env_agent",
+                include_hidden=include_hidden,
+            )
+        }
+
+    @app.get("/api/env-agent/sessions/{session_id}", tags=["workflows"])
+    def get_env_agent_session(
+        session_id: str,
+        principal: SessionPrincipal | None = Depends(get_current_user_or_none),
+    ) -> dict:
+        principal = env_agent_admin_principal(principal)
+        snapshot = repository.get_chat_session_snapshot(
+            session_id=session_id,
+            user_id=principal.user_id,
+            workflow_type="env_agent",
+        )
+        if not snapshot:
+            raise HTTPException(status_code=404, detail="Environment Chat session not found")
+        snapshot["memory_context"] = memory_service.env_agent_context(
+            user_id=principal.user_id,
+            session_id=session_id,
+        )
+        return snapshot
+
+    @app.post("/api/env-agent/chat", tags=["workflows"])
+    async def env_agent_chat(
+        request: EnvAgentChatRequest,
+        principal: SessionPrincipal | None = Depends(get_current_user_or_none),
+    ) -> dict:
+        principal = env_agent_admin_principal(principal)
+        contract = env_agent_contract(settings)
+        allowed_namespaces = contract["namespaces"]
+        requested_session_id = (request.session_id or "").strip() or None
+        session_exists = False
+        if requested_session_id:
+            session = repository.get_chat_session(session_id=requested_session_id, user_id=principal.user_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Environment Chat session not found")
+            chat_session_id = requested_session_id
+            session_exists = True
+        else:
+            chat_session_id = f"chat_{uuid4().hex}"
+
+        memory_context = memory_service.env_agent_context(
+            user_id=principal.user_id,
+            session_id=chat_session_id if session_exists else None,
+        )
+        namespace = (
+            request.namespace
+            or _infer_env_agent_namespace(request.message, allowed_namespaces)
+            or memory_context.get("latest_namespace")
+            or ""
+        ).strip() or None
+        mode = _infer_env_agent_mode(request.message, request.mode)
+        scope = (request.scope or "prompt").strip() or "prompt"
+        model_profile = request.model_profile or settings.llm_default_model_profile
+        run_id = f"env_{uuid4().hex}"
+        target_url = f"env-agent://prompt/{quote(namespace or 'runtime', safe='')}"
+        if not session_exists:
+            repository.create_chat_session(
+                session_id=chat_session_id,
+                user_id=principal.user_id,
+                title=request.message[:120] or f"Environment Chat {namespace or 'prompt'}",
+            )
+        repository.create_run(
+            run_id=run_id,
+            user_id=principal.user_id,
+            goal=request.message,
+            target_url=target_url,
+            namespace=namespace,
+            workflow_type="env_agent",
+        )
+        repository.add_chat_message(
+            session_id=chat_session_id,
+            run_id=run_id,
+            role="user",
+            content=request.message,
+            payload={
+                "namespace": namespace,
+                "mode": mode,
+                "scope": scope,
+                "model_profile": model_profile,
+                "memory_context_loaded": bool(session_exists),
+            },
+        )
+        repository.add_event(
+            run_id,
+            "run_started",
+            "Environment Chat prompt started",
+            {
+                "workflow_type": "env_agent",
+                "chat_session_id": chat_session_id,
+                "session_continuation": session_exists,
+                "namespace": namespace,
+                "mode": mode,
+                "scope": scope,
+                "model_profile": llm.describe_model_profile(model_profile),
+                "prompt": request.message,
+            },
+        )
+        repository.add_event(
+            run_id,
+            "memory_context_loaded",
+            "Environment Chat memory context loaded",
+            {
+                "session_id": chat_session_id,
+                "short_term_provider": memory_context.get("short_term", {}).get("provider"),
+                "short_term_message_count": memory_context.get("short_term", {}).get("message_count", 0),
+                "langmem_enabled": memory_context.get("short_term", {}).get("langmem_enabled"),
+                "langmem_available": memory_context.get("short_term", {}).get("langmem_available"),
+                "long_term_provider": memory_context.get("long_term", {}).get("provider"),
+                "long_term_memory_count": memory_context.get("long_term", {}).get("memory_count", 0),
+                "latest_namespace": memory_context.get("latest_namespace"),
+            },
+        )
+        state: dict[str, Any] = {}
+        final_report = "Environment Chat completed."
+        status = "needs_review"
+        try:
+            state = await env_agent_workflow_graph.run(
+                EnvAgentRuntimeInput(
+                    run_id=run_id,
+                    user_id=principal.user_id,
+                    user_text=request.message,
+                    namespace=namespace,
+                    mode=mode,
+                    model_profile=model_profile,
+                    user_roles=list(principal.roles),
+                    execute_tools=True,
+                )
+            )
+            _add_env_agent_state_events(repository, run_id=run_id, state=state)
+            final_report = str(state.get("final_report") or "Environment Chat completed.")
+            status = str(state.get("status") or "needs_review")
+            remediation = state.get("remediation") or {}
+            approval_payload = None
+            if mode == "approval_gated_remediation" and remediation.get("approval_required"):
+                try:
+                    action = env_agent_first_remediation_action(remediation)
+                    if not action:
+                        raise ValueError("No executable remediation action was produced.")
+                    tool_request = env_agent_remediation_tool_request(
+                        run_id=run_id,
+                        user_id=principal.user_id,
+                        namespace=namespace,
+                        action=action,
+                    )
+                    decision = policy_guard.evaluate_tool(tool_request, user_roles=principal.roles)
+                    if decision.decision == "deny":
+                        status = "blocked"
+                        approval_payload = {
+                            "status": "blocked",
+                            "reason": "Policy denied the proposed remediation action.",
+                            "decision": decision.to_dict(),
+                            "request": tool_request.model_dump(),
+                            "action": action,
+                        }
+                    else:
+                        approval = env_agent_create_remediation_approval(
+                            run_id=run_id,
+                            principal=principal,
+                            request=tool_request,
+                            decision=decision,
+                            remediation=remediation,
+                            action=action,
+                        )
+                        approval_payload = {
+                            "status": approval["status"],
+                            "approval": approval,
+                            "decision": decision.to_dict(),
+                            "request": tool_request.model_dump(),
+                            "action": action,
+                            "proposal": remediation,
+                        }
+                        status = "proposal_ready"
+                    repository.add_event(
+                        run_id,
+                        "remediation_approval_requested",
+                        "Environment Chat remediation approval gate prepared",
+                        approval_payload,
+                    )
+                    final_report += (
+                        "\n\n## Approval Gate\n"
+                        f"- Status: `{approval_payload['status']}`\n"
+                        f"- Tool: `{approval_payload.get('request', {}).get('tool_name', 'n/a')}`\n"
+                        "- Execution remains blocked until a human approves and submits the typed remediation action."
+                    )
+                except ValueError as exc:
+                    status = "blocked"
+                    approval_payload = {"status": "blocked", "reason": str(exc), "proposal": remediation}
+                    repository.add_event(
+                        run_id,
+                        "remediation_approval_blocked",
+                        "Environment Chat remediation approval gate blocked",
+                        approval_payload,
+                    )
+                    final_report += f"\n\n## Approval Gate\n- Status: `blocked`\n- Reason: {exc}"
+            raw_final_report = final_report
+            formatted_answer = await llm.env_agent_present_answer(
+                user_text=request.message,
+                raw_report=raw_final_report,
+                state=state | {"memory_context": memory_context},
+                model_profile="azure_gpt5_pro",
+            )
+            final_report = str(formatted_answer.get("markdown") or raw_final_report)
+            repository.add_event(
+                run_id,
+                "answer_formatted",
+                "Environment Chat answer formatted for Environment Chat",
+                {
+                    "formatter": formatted_answer,
+                    "raw_report_preview": raw_final_report[:2000],
+                },
+            )
+            terminal_event = "run_completed" if status in {"completed", "proposal_ready"} else "run_needs_review"
+            repository.update_status(run_id, status, final_report=final_report)
+            repository.add_chat_message(
+                session_id=chat_session_id,
+                run_id=run_id,
+                role="assistant",
+                content=final_report,
+                payload={
+                    "status": status,
+                    "formatted_by": formatted_answer.get("formatter"),
+                    "formatter_model_profile": formatted_answer.get("model_profile"),
+                    "safe_reasoning_summaries": state.get("safe_summaries") or [],
+                    "evidence_count": len(state.get("evidence") or []),
+                },
+            )
+            repository.add_event(
+                run_id,
+                terminal_event,
+                f"Environment Chat finished with status {status}",
+                {
+                    "status": status,
+                    "final_report": final_report,
+                    "evidence_count": len(state.get("evidence") or []),
+                    "safe_reasoning_summaries": state.get("safe_summaries") or [],
+                },
+            )
+        except Exception as exc:
+            logger.exception("env_agent_failed run_id=%s", run_id)
+            final_report = f"Environment Chat failed: {exc}"
+            status = "failed"
+            repository.update_status(run_id, status, final_report=final_report)
+            repository.add_chat_message(
+                session_id=chat_session_id,
+                run_id=run_id,
+                role="assistant",
+                content=final_report,
+                payload={"status": status, "error": str(exc)},
+            )
+            repository.add_event(
+                run_id,
+                "run_failed",
+                "Environment Chat failed",
+                {"status": status, "error": str(exc)},
+            )
+
+        memory_update = memory_service.remember_env_agent_turn(
+            user_id=principal.user_id,
+            session_id=chat_session_id,
+            run_id=run_id,
+            namespace=namespace,
+            user_text=request.message,
+            assistant_text=final_report,
+            status=status,
+            state=state,
+        )
+        repository.add_event(
+            run_id,
+            "memory_updated",
+            "Environment Chat memory updated",
+            {
+                "session_id": chat_session_id,
+                "short_term_provider": memory_context.get("short_term", {}).get("provider"),
+                "long_term_provider": "postgres",
+                "long_term_memory_id": memory_update.get("long_term", {}).get("memory_id"),
+            },
+        )
+        snapshot = repository.get_run_snapshot(run_id) or {}
+        snapshot["events_url"] = f"/api/runs/{run_id}/events"
+        snapshot["chat_session_id"] = chat_session_id
+        snapshot["memory_context"] = memory_service.env_agent_context(
+            user_id=principal.user_id,
+            session_id=chat_session_id,
+        )
+        return {
+            "run_id": run_id,
+            "chat_session_id": chat_session_id,
+            "status": status,
+            "answer": final_report,
+            "events_url": f"/api/runs/{run_id}/events",
+            "snapshot": snapshot,
+        }
+
+    @app.post("/api/env-agent/remediation/execute", tags=["workflows"])
+    async def env_agent_remediation_execute(
+        request: EnvAgentRemediationExecuteRequest,
+        principal: SessionPrincipal | None = Depends(get_current_user_or_none),
+    ) -> dict:
+        principal = env_agent_admin_principal(principal)
+        approval = approval_service.get_request(request.approval_id)
+        if not approval:
+            raise HTTPException(status_code=404, detail="Approval not found")
+        if approval.get("run_id") != request.run_id:
+            raise HTTPException(status_code=409, detail="Approval does not belong to the selected Environment Chat run.")
+        if approval.get("status") != "approved":
+            raise HTTPException(status_code=409, detail=f"Approval is {approval.get('status')}; approve it before execution.")
+        tool_request = ToolExecutionRequest(**approval["request"])
+        if tool_request.workflow_type != "env_agent":
+            raise HTTPException(status_code=422, detail="Approval is not for an Environment Chat remediation.")
+        decision = policy_guard.evaluate_tool(tool_request, user_roles=principal.roles)
+        if decision.decision == "deny":
+            repository.add_event(
+                request.run_id,
+                "remediation_execution_blocked",
+                "Environment Chat remediation execution blocked by policy recheck",
+                {"approval": approval, "decision": decision.to_dict(), "request": tool_request.model_dump()},
+            )
+            repository.update_status(request.run_id, "blocked", final_report="Approved Environment Chat remediation was blocked by policy recheck.")
+            snapshot = repository.get_run_snapshot(request.run_id) or {}
+            raise HTTPException(status_code=403, detail={"message": "Policy recheck denied the approved remediation.", "snapshot": snapshot})
+
+        repository.add_event(
+            request.run_id,
+            "remediation_approval_confirmed",
+            "Environment Chat remediation approval confirmed",
+            {"approval": approval, "decision": decision.to_dict(), "request": tool_request.model_dump()},
+        )
+        repository.add_event(
+            request.run_id,
+            "remediation_execution_started",
+            "Environment Chat approved remediation execution started",
+            {"tool_name": tool_request.tool_name, "arguments": redact(tool_request.arguments), "approval_id": request.approval_id},
+        )
+
+        adapter, adapter_request = env_agent_adapter_request(tool_request)
+        execution_result, duration_ms, operator_attempts = await env_agent_execute_with_operator_logic(tool_request)
+        repository.add_tool_call(
+            run_id=request.run_id,
+            tool_name=tool_request.tool_name,
+            status=execution_result.status,
+            request_json=tool_request.model_dump(),
+            response_json={"duration_ms": duration_ms, "operator_attempts": operator_attempts, "result": execution_result.model_dump()},
+        )
+        repository.add_event(
+            request.run_id,
+            "remediation_action_executed",
+            "Environment Chat typed remediation action executed",
+            {
+                "tool_name": tool_request.tool_name,
+                "adapter_tool_name": adapter_request.tool_name,
+                "status": execution_result.status,
+                "duration_ms": duration_ms,
+                "operator_attempts": operator_attempts,
+                "result": execution_result.model_dump(),
+            },
+        )
+
+        verification_result = None
+        verification_duration_ms = 0
+        if execution_result.status == "success":
+            verify_adapter, verify_request = env_agent_verification_request(tool_request)
+            verification_result, verification_duration_ms = await verify_adapter.execute(verify_request)
+            repository.add_tool_call(
+                run_id=request.run_id,
+                tool_name=f"{tool_request.tool_name}.verify",
+                status=verification_result.status,
+                request_json=verify_request.model_dump(),
+                response_json={"duration_ms": verification_duration_ms, "result": verification_result.model_dump()},
+            )
+            repository.add_event(
+                request.run_id,
+                "remediation_verified",
+                "Environment Chat remediation verification completed",
+                {
+                    "status": verification_result.status,
+                    "duration_ms": verification_duration_ms,
+                    "result": verification_result.model_dump(),
+                },
+            )
+
+        verification_status = verification_result.status if verification_result else "skipped"
+        if execution_result.status == "success" and verification_status in {"success", "skipped"}:
+            status = "completed"
+            terminal_event = "run_completed"
+            summary = "Approved Environment Chat remediation executed and post-action verification completed."
+        elif execution_result.status == "success":
+            status = "needs_review"
+            terminal_event = "run_needs_review"
+            summary = "Approved Environment Chat remediation executed, but verification needs review."
+        else:
+            status = "needs_review"
+            terminal_event = "run_needs_review"
+            summary = "Approved Environment Chat remediation did not complete successfully; no blind retry was attempted."
+
+        operator_attempt_labels = [str(attempt.get("label") or "unknown") for attempt in operator_attempts]
+        final_report = (
+            f"# Environment Chat Remediation: {status}\n\n"
+            f"- Run ID: `{request.run_id}`\n"
+            f"- Approval ID: `{request.approval_id}`\n"
+            f"- Tool: `{tool_request.tool_name}`\n"
+            f"- Namespace: `{tool_request.namespace}`\n"
+            f"- Execution status: `{execution_result.status}`\n"
+            f"- Verification status: `{verification_status}`\n"
+            f"- Operator attempts: `{', '.join(operator_attempt_labels) or 'none'}`\n\n"
+            f"## Summary\n{summary}\n\n"
+            "## Guardrails\n"
+            "- Executed through a typed MCP tool only.\n"
+            "- No raw shell or unapproved action was used.\n"
+            "- Verification used a read-only follow-up MCP call when execution succeeded."
+        )
+        repository.add_event(
+            request.run_id,
+            "safe_reasoning_summary",
+            "Safe Environment Chat summary: remediation execution",
+            {
+                "stage": "execute",
+                "stage_label": "Remediation Execution",
+                "reasoning_summary": summary,
+                "execution_status": execution_result.status,
+                "verification_status": verification_status,
+            },
+        )
+        repository.update_status(request.run_id, status, final_report=final_report)
+        repository.add_event(
+            request.run_id,
+            terminal_event,
+            f"Environment Chat remediation finished with status {status}",
+            {
+                "status": status,
+                "final_report": final_report,
+                "execution_status": execution_result.status,
+                "verification_status": verification_status,
+            },
+        )
+        snapshot = repository.get_run_snapshot(request.run_id) or {}
+        snapshot["events_url"] = f"/api/runs/{request.run_id}/events"
+        return {
+            "run_id": request.run_id,
+            "approval_id": request.approval_id,
+            "status": status,
+            "summary": summary,
+            "execution": execution_result.model_dump(),
+            "verification": verification_result.model_dump() if verification_result else None,
+            "operator_attempts": operator_attempts,
+            "snapshot": snapshot,
+        }
     @app.get("/activity", response_class=HTMLResponse, tags=["pages"])
     def activity_page(request: Request) -> HTMLResponse:
         principal = get_current_user_or_none(request)
@@ -646,8 +1526,13 @@ def create_app() -> FastAPI:
     def approve_request(
         approval_id: str,
         request: ApprovalDecisionRequest,
-        principal: SessionPrincipal = Depends(get_current_user),
+        principal: SessionPrincipal | None = Depends(get_current_user_or_none),
     ) -> dict:
+        existing_approval = approval_service.get_request(approval_id)
+        if existing_approval and existing_approval.get("workflow_type") == "env_agent":
+            principal = env_agent_admin_principal(principal)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
         require_approver(principal)
         approval = approval_service.approve(
             approval_id,

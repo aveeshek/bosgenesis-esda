@@ -9,6 +9,7 @@ WorkflowType = Literal[
     "mop_creation",
     "mop_generation",
     "mop_execution",
+    "env_agent",
     "helm_management",
     "k8s_management",
     "unknown",

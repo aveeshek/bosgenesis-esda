@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -66,6 +66,7 @@ class PolicyRules:
                 "mop_creation",
                 "mop_generation",
                 "mop_execution",
+                "env_agent",
                 "helm_management",
                 "k8s_management",
             },
@@ -76,14 +77,15 @@ class PolicyRules:
                 "raw_powershell",
                 "kubernetes_secret_read",
                 "namespace_delete",
-                "helm_uninstall",
                 "credential_extraction",
                 "unbounded_web_download",
             },
             approval_required_actions={
                 "kubernetes_restart",
                 "kubernetes_patch",
+                "kubernetes_delete",
                 "helm_upgrade",
+                "helm_uninstall",
                 "helm_rollback",
                 "production_write",
                 "long_running_job",
@@ -262,15 +264,17 @@ def classify_action(tool_name: str, arguments: dict[str, Any] | None = None) -> 
         return "raw_powershell"
     if "secret" in haystack and any(verb in haystack for verb in ("get", "list", "read")):
         return "kubernetes_secret_read"
-    if "namespace" in haystack and "delete" in haystack:
+    if "namespace" in haystack and ("delete" in haystack or "remove" in haystack):
         return "namespace_delete"
     if "helm" in lowered_tool and "uninstall" in haystack:
         return "helm_uninstall"
+    if "delete" in haystack or "remove" in haystack:
+        return "kubernetes_delete"
     if "restart" in haystack or "rollout_restart" in haystack:
         return "kubernetes_restart"
     if "patch" in haystack:
         return "kubernetes_patch"
-    if "helm" in lowered_tool and "upgrade" in haystack:
+    if "helm" in lowered_tool and ("upgrade" in haystack or "install" in haystack):
         return "helm_upgrade"
     if "helm" in lowered_tool and "rollback" in haystack:
         return "helm_rollback"
@@ -286,7 +290,9 @@ def expected_impact(action: str, request: ToolExecutionRequest) -> str:
     impacts = {
         "kubernetes_restart": f"May restart workload pods in {target}.",
         "kubernetes_patch": f"May change Kubernetes resource state in {target}.",
+        "kubernetes_delete": f"May delete an explicitly selected namespaced Kubernetes resource in {target}.",
         "helm_upgrade": f"May alter Helm-managed release state in {target}.",
+        "helm_uninstall": f"May uninstall a Helm release in {target}.",
         "helm_rollback": f"May roll a Helm release back in {target}.",
         "memory_write": "May persist new operational memory for future runs.",
         "artifact_write": "May create or update a durable artifact.",
@@ -299,7 +305,9 @@ def rollback_note(action: str) -> str:
     rollback_notes = {
         "kubernetes_restart": "Verify pod readiness; rollback is normally not applicable.",
         "kubernetes_patch": "Requires pre-change manifest or patch reversal plan.",
+        "kubernetes_delete": "Requires a recreate manifest, Helm source, or restore plan.",
         "helm_upgrade": "Requires previous revision and rollback validation plan.",
+        "helm_uninstall": "Requires reinstall chart/version values or restore plan.",
         "helm_rollback": "Requires target revision and post-rollback validation plan.",
     }
     return rollback_notes.get(action, "No rollback metadata required for this action.")
@@ -313,3 +321,9 @@ def _string_set(value: Any, default: set[str]) -> set[str]:
 
 def _is_mutation_action(action: str) -> bool:
     return action != "read_only"
+
+
+
+
+
+

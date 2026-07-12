@@ -36,6 +36,7 @@ operational_design_domain:
     - mop_creation
     - mop_generation
     - mop_execution
+    - env_agent
     - helm_management
     - k8s_management
   allowed_environments:
@@ -137,6 +138,7 @@ rollback_requirements:
     - helm_upgrade
     - helm_rollback
     - mop_execution
+    - env_agent
   fields:
     - rollback_plan
     - pre_change_state
@@ -358,4 +360,5 @@ prompt_governance:
     - policy_decision
     - validation_result
   store_hidden_chain_of_thought: false
+
 

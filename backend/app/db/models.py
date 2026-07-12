@@ -109,6 +109,25 @@ class RunEvent(Base):
     run: Mapped[AgentRun] = relationship(back_populates="events")
 
 
+class AgentMemory(Base):
+    __tablename__ = "agent_memories"
+
+    memory_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.user_id"), nullable=False)
+    workflow_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    memory_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    memory_scope: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    value_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    importance: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
 class UserRunView(Base):
     __tablename__ = "user_run_views"
 

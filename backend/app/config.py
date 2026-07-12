@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     admin_password: str = "admin"
 
     database_url: str = "postgresql+psycopg://esda:esda@localhost:5432/esda"
+    database_connect_timeout_seconds: int = 6
     postgres_log_schema: str = "public"
     artifact_storage_dir: str = "var/artifacts"
     artifact_git_publish_enabled: bool = True
@@ -106,6 +107,17 @@ class Settings(BaseSettings):
     mop_execution_default_target_namespace: str = "agent-testing"
     mop_execution_generated_name_prefix: str = "agent-ai"
     mop_execution_report_folder_prefix: str = "mop-execution"
+    env_agent_allowed_namespaces: str = Field(default="bosgenesis,signoz,agent-testing")
+    env_agent_default_namespace: str = "bosgenesis"
+    env_agent_default_mode: str = "diagnostic_only"
+    env_agent_tool_timeout_seconds: int = 120
+    env_agent_optional_tool_timeout_seconds: int = 60
+    env_agent_log_tail_lines: int = 200
+    env_agent_max_observation_chars: int = 4000
+    env_agent_short_term_memory_messages: int = 8
+    env_agent_long_term_memory_limit: int = 12
+    env_agent_data_ingestion_url: str = ""
+    env_agent_observability_url: str = ""
 
     mcp_k8s_inspector_url: str = ""
     mcp_k8s_inspector_api_key: str = ""

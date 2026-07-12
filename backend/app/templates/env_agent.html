@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block body %}
+<main class="container-fluid release-workspace mop-workspace env-agent-workspace py-3">
+  <div class="row g-3 align-items-stretch release-grid env-agent-grid">
+    <section class="col-12 release-progress-column">
+      <div class="panel progress-panel release-progress-panel is-idle" id="env-progress-panel">
+        <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
+          <h2 class="mb-0">Live Progress</h2>
+          <button id="copy-progress" class="btn btn-sm btn-outline-secondary" type="button">Copy Progress</button>
+        </div>
+        <div id="run-status" class="badge text-bg-secondary mb-2 align-self-start">Idle</div>
+
+        <div class="release-sphere-stage" id="env-sphere-stage" aria-live="polite">
+          <div class="release-sphere-dock" id="env-sphere-dock" aria-hidden="true">
+            <div class="release-sphere-glow"></div>
+            <canvas id="env-sphere-canvas" width="640" height="640"></canvas>
+          </div>
+          <div class="release-sphere-copy">
+            <div class="release-sphere-eyebrow">
+              <span class="pulse-dot" aria-hidden="true"></span>
+              <span id="env-sphere-phase">Ready for environment reasoning</span>
+            </div>
+            <div class="release-sphere-title" id="env-sphere-title"></div>
+          </div>
+        </div>
+
+        <div class="autonomy-stream-shell" aria-live="polite">
+          <section id="ephemeral-working-panel" class="working-stream-panel is-empty" aria-label="Live working stream and safe summaries">
+            <div class="stream-panel-header">
+              <div>
+                <div class="stream-eyebrow">Autonomy Notes</div>
+                <h3>Live Working Stream &amp; Safe Reasoning Summaries</h3>
+              </div>
+              <div class="d-flex gap-2 flex-wrap justify-content-end align-items-center">
+                <button id="autonomy-maximize" class="icon-glass-button" type="button" data-bs-toggle="modal" data-bs-target="#env-autonomy-modal" aria-label="Maximize autonomy notes">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" />
+                  </svg>
+                </button>
+                <button id="copy-logs" class="icon-glass-button" type="button" title="Copy logs" aria-label="Copy logs">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M8 7h10M8 12h10M8 17h7" />
+                    <path d="M5 7h.01M5 12h.01M5 17h.01" />
+                  </svg>
+                </button>
+                <span class="stream-privacy-badge">live not stored</span>
+                <span class="stream-privacy-badge is-persisted">safe summaries stored</span>
+              </div>
+            </div>
+            <div id="ephemeral-working-stream" class="working-stream-list">
+              <div class="stream-empty-state">Live model and agent working notes will appear while this page is connected.</div>
+            </div>
+            <div id="safe-summary-list" class="safe-summary-list" hidden>
+              <div class="stream-empty-state">Safe summaries will be stored after each prompt.</div>
+            </div>
+          </section>
+        </div>
+
+        <div id="timeline-scroll" class="timeline-scroll" tabindex="0" aria-label="Live progress events">
+          <ol id="timeline" class="timeline"></ol>
+        </div>
+        <div id="copy-progress-status" class="copy-feedback small text-secondary mt-2" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section class="col-12 release-side-panel env-chat-column">
+      <div class="panel draft-panel env-chat-panel">
+        <h2>Environment Chat</h2>
+        <div id="env-chat-transcript" class="activity-chat-transcript env-chat-transcript" aria-live="polite">
+          <div class="activity-chat-empty">Ask about pod health, restarts, services, Helm releases, or a bounded remediation proposal.</div>
+        </div>
+        <div id="env-remediation-card" class="working-note-item mt-3 d-none" aria-live="polite">
+          <div class="d-flex align-items-start justify-content-between gap-2">
+            <div>
+              <div class="working-note-label">Approval Gate</div>
+              <h3 id="env-remediation-title" class="mb-1">Typed remediation pending</h3>
+            </div>
+            <span id="env-remediation-status" class="stream-privacy-badge">pending</span>
+          </div>
+          <pre id="env-remediation-body" class="small mb-2"></pre>
+          <button id="env-remediation-approve" class="btn btn-primary btn-sm" type="button">Approve &amp; Execute</button>
+          <div id="env-remediation-feedback" class="copy-feedback small text-secondary mt-2"></div>
+        </div>
+        <form id="env-chat-form" class="activity-chat-composer mt-3">
+          <textarea id="env-chat-input" class="form-control" rows="4" placeholder="Tell me how many pods have issues in agent-testing namespace"></textarea>
+          <button id="env-chat-send" class="btn btn-primary" type="submit">Ask</button>
+        </form>
+      </div>
+    </section>
+  </div>
+
+</main>
+
+<div class="modal fade autonomy-notes-modal" id="env-autonomy-modal" tabindex="-1" aria-labelledby="env-autonomy-modal-title" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content autonomy-modal-content">
+      <div class="modal-header autonomy-modal-header">
+        <div>
+          <div class="stream-eyebrow">Autonomy Notes</div>
+          <h1 class="modal-title" id="env-autonomy-modal-title">Expanded Reasoning and Agent Logs</h1>
+        </div>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body autonomy-modal-body">
+        <section class="autonomy-modal-left" aria-label="Reasoning notes">
+          <div class="autonomy-modal-pane autonomy-modal-pane-live">
+            <div class="autonomy-modal-pane-header">
+              <span>Reasoning Streaming</span>
+              <span class="stream-privacy-badge">live not stored</span>
+            </div>
+            <div id="autonomy-modal-live" class="autonomy-modal-note-list">
+              <div class="stream-empty-state">No live reasoning stream is available in this page session.</div>
+            </div>
+          </div>
+          <div class="autonomy-modal-pane autonomy-modal-pane-summary">
+            <div class="autonomy-modal-pane-header">
+              <span>Reasoning Summary</span>
+              <span class="stream-privacy-badge is-persisted">stored</span>
+            </div>
+            <div id="autonomy-modal-summary" class="autonomy-modal-note-list">
+              <div class="stream-empty-state">No safe reasoning summaries are available yet.</div>
+            </div>
+          </div>
+        </section>
+        <section class="autonomy-modal-pane autonomy-modal-json-pane" aria-label="Formatted agent JSON logs">
+          <div class="autonomy-modal-pane-header">
+            <span>Agent JSON Logs</span>
+            <button id="autonomy-modal-copy-json" class="btn btn-sm btn-outline-secondary" type="button">Copy JSON</button>
+          </div>
+          <pre id="autonomy-modal-json" class="autonomy-modal-json">[]</pre>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/env_agent.js"></script>
+{% endblock %}
+

@@ -272,6 +272,69 @@ class AzureGpt5Service:
             result["markdown"] = fallback["markdown"]
         return result
 
+    async def env_agent_present_answer(
+        self,
+        *,
+        user_text: str,
+        raw_report: str,
+        state: dict,
+        model_profile: str | None = None,
+    ) -> dict:
+        preferred_profile = "azure_gpt5_pro"
+        profile = self._resolve_profile(preferred_profile)
+        formatter_profile_id = preferred_profile if self._profile_configured(profile) else model_profile
+        profile = self._resolve_profile(formatter_profile_id)
+        fallback = {
+            "markdown": raw_report.strip() or "ENV Agent completed without a display report.",
+            "reasoning_summary": "Used the raw ENV Agent report because GPT formatting was unavailable.",
+            "model_profile": profile.profile_id,
+            "model_label": profile.label,
+            "formatter": "fallback_raw_report",
+        }
+        if not self._profile_configured(profile):
+            return fallback
+        payload = {
+            "user_prompt": user_text,
+            "raw_report": raw_report,
+            "status": state.get("status"),
+            "namespace": state.get("namespace"),
+            "classification": state.get("classification"),
+            "diagnosis": state.get("diagnosis"),
+            "verification": state.get("verification"),
+            "remediation": state.get("remediation"),
+            "evidence": (state.get("evidence") or [])[:12],
+        }
+        try:
+            model = self._model(formatter_profile_id)
+            response = await model.ainvoke(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You format BOS Genesis Environment Chat output for operators. "
+                            "Use only the supplied raw report and redacted state. Do not invent tool results. "
+                            "Do not reveal hidden chain-of-thought. Return clean GitHub-flavored Markdown only. "
+                            "Prefer short sections: Status, Key Findings, Evidence, Recommended Next Step. "
+                            "Highlight statuses with bold text and backticked resource names. Keep it readable."
+                        ),
+                    },
+                    {"role": "user", "content": json.dumps(redact(payload), default=str)},
+                ]
+            )
+            markdown = str(response.content).strip()
+            if not markdown:
+                return fallback
+            return {
+                "markdown": markdown[:8000],
+                "reasoning_summary": "GPT-5 Pro formatted the ENV Agent answer from supplied evidence only.",
+                "model_profile": profile.profile_id,
+                "model_label": profile.label,
+                "formatter": "gpt5_pro_markdown_presenter",
+            }
+        except Exception as exc:
+            return fallback | {
+                "formatting_error": redact(str(exc))[:1000],
+            }
     def tool_binding_placeholder(self, tools: list[dict]) -> dict:
         return {
             "enabled": False,

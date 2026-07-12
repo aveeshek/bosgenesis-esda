@@ -5,11 +5,13 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.auth.security import hash_password
 from backend.app.config import Settings
 from backend.app.db.models import (
+    AgentMemory,
     AgentRun,
     ApprovalRequest,
     Artifact,
@@ -34,12 +36,40 @@ class Database:
         self.settings = settings
         from sqlalchemy import create_engine
 
-        self.engine = create_engine(settings.database_url, pool_pre_ping=True)
+        connect_args = self._connect_args(settings.database_url)
+        self.engine = create_engine(settings.database_url, pool_pre_ping=True, connect_args=connect_args)
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
 
     def init(self) -> None:
-        Base.metadata.create_all(self.engine)
-        self._seed_admin()
+        try:
+            Base.metadata.create_all(self.engine)
+            self._seed_admin()
+        except SQLAlchemyError as exc:
+            raise RuntimeError(self._startup_error_message(exc)) from exc
+
+    def _connect_args(self, database_url: str) -> dict:
+        if not database_url.startswith("postgresql"):
+            return {}
+        parsed = urlparse(database_url)
+        if "connect_timeout=" in parsed.query:
+            return {}
+        return {"connect_timeout": max(1, int(self.settings.database_connect_timeout_seconds))}
+
+    def _startup_error_message(self, exc: Exception) -> str:
+        parsed = urlparse(self.settings.database_url)
+        if self.settings.database_url.startswith("postgresql"):
+            host = parsed.hostname or "unknown-host"
+            port = parsed.port or 5432
+            database = parsed.path.lstrip("/") or "unknown-database"
+            return (
+                "ESDA could not connect to PostgreSQL during startup. "
+                f"Target={host}:{port}/{database}. "
+                f"Configured timeout={self.settings.database_connect_timeout_seconds}s. "
+                "Check VPN/network route, PostgreSQL service/listener, firewall, credentials, "
+                "and DATABASE_URL in .env before restarting ESDA. "
+                f"Original error: {exc}"
+            )
+        return f"ESDA database initialization failed: {exc}"
 
     def _seed_admin(self) -> None:
         with self.session() as db:
@@ -96,6 +126,9 @@ class RunRepository:
                     payload=payload or {},
                 )
             )
+            session = db.get(ChatSession, session_id)
+            if session:
+                session.updated_at = datetime.now(UTC)
 
     def get_chat_session(self, *, session_id: str, user_id: str) -> dict | None:
         with self.database.session() as db:
@@ -130,6 +163,181 @@ class RunRepository:
                 }
                 for message in messages
             ]
+    def list_chat_sessions(
+        self,
+        *,
+        user_id: str,
+        workflow_type: str | None = None,
+        include_hidden: bool = False,
+        limit: int = 50,
+    ) -> list[dict]:
+        with self.database.session() as db:
+            sessions = db.scalars(
+                select(ChatSession)
+                .where(ChatSession.user_id == user_id)
+                .order_by(ChatSession.updated_at.desc(), ChatSession.created_at.desc())
+                .limit(limit * 4)
+            ).all()
+            result: list[dict] = []
+            for session in sessions:
+                messages = db.scalars(
+                    select(ChatMessage)
+                    .where(ChatMessage.session_id == session.session_id)
+                    .order_by(ChatMessage.created_at, ChatMessage.message_id)
+                ).all()
+                run_ids = list(dict.fromkeys(message.run_id for message in messages if message.run_id))
+                if not run_ids:
+                    continue
+                query = select(AgentRun).where(AgentRun.run_id.in_(run_ids), AgentRun.user_id == user_id)
+                if workflow_type:
+                    query = query.where(AgentRun.workflow_type == workflow_type)
+                runs = db.scalars(query).all()
+                runs_by_id = {run.run_id: run for run in runs}
+                ordered_runs = [runs_by_id[run_id] for run_id in run_ids if run_id in runs_by_id]
+                visible_runs: list[AgentRun] = []
+                for run in ordered_runs:
+                    view = db.get(UserRunView, {"user_id": user_id, "run_id": run.run_id})
+                    hidden_at = view.hidden_at if view else None
+                    if hidden_at and not include_hidden:
+                        continue
+                    visible_runs.append(run)
+                if not visible_runs:
+                    continue
+                latest_run = sorted(
+                    visible_runs,
+                    key=lambda item: (item.updated_at, item.created_at, item.run_id),
+                    reverse=True,
+                )[0]
+                event_count = int(
+                    db.scalar(select(func.count()).select_from(RunEvent).where(RunEvent.run_id == latest_run.run_id))
+                    or 0
+                )
+                result.append(
+                    {
+                        "session_id": session.session_id,
+                        "title": session.title,
+                        "workflow_type": latest_run.workflow_type,
+                        "latest_run_id": latest_run.run_id,
+                        "status": latest_run.status,
+                        "goal": latest_run.goal,
+                        "namespace": latest_run.namespace,
+                        "run_count": len(visible_runs),
+                        "message_count": len(messages),
+                        "last_event_sequence": event_count,
+                        "created_at": session.created_at.isoformat(),
+                        "updated_at": session.updated_at.isoformat(),
+                    }
+                )
+                if len(result) >= limit:
+                    break
+            return result
+
+    def get_chat_session_snapshot(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        workflow_type: str | None = None,
+    ) -> dict | None:
+        session = self.get_chat_session(session_id=session_id, user_id=user_id)
+        if not session:
+            return None
+        messages = self.list_chat_messages(session_id=session_id, user_id=user_id) or []
+        run_ids = list(dict.fromkeys(message.get("run_id") for message in messages if message.get("run_id")))
+        snapshots = []
+        for run_id in run_ids:
+            snapshot = self.get_run_snapshot(str(run_id))
+            if not snapshot or snapshot.get("run", {}).get("user_id") != user_id:
+                continue
+            if workflow_type and snapshot.get("run", {}).get("workflow_type") != workflow_type:
+                continue
+            snapshots.append(snapshot)
+        latest_snapshot = None
+        if snapshots:
+            latest_snapshot = sorted(
+                snapshots,
+                key=lambda item: (item.get("run", {}).get("updated_at") or "", item.get("run", {}).get("created_at") or ""),
+                reverse=True,
+            )[0]
+        return {
+            "session": session,
+            "messages": messages,
+            "runs": snapshots,
+            "latest_snapshot": latest_snapshot,
+        }
+
+    def list_memories(
+        self,
+        *,
+        user_id: str,
+        workflow_type: str,
+        memory_type: str | None = None,
+        memory_scope: str | None = None,
+        scope_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        with self.database.session() as db:
+            query = select(AgentMemory).where(
+                AgentMemory.user_id == user_id,
+                AgentMemory.workflow_type == workflow_type,
+            )
+            if memory_type:
+                query = query.where(AgentMemory.memory_type == memory_type)
+            if memory_scope:
+                query = query.where(AgentMemory.memory_scope == memory_scope)
+            if scope_id:
+                query = query.where(AgentMemory.scope_id == scope_id)
+            rows = db.scalars(query.order_by(AgentMemory.updated_at.desc()).limit(limit)).all()
+            return [self._memory_to_dict(row) for row in rows]
+
+    def upsert_memory(
+        self,
+        *,
+        user_id: str,
+        workflow_type: str,
+        memory_type: str,
+        memory_scope: str,
+        scope_id: str,
+        key: str,
+        content: str,
+        value_json: dict | None = None,
+        importance: int = 1,
+    ) -> dict:
+        with self.database.session() as db:
+            existing = db.scalar(
+                select(AgentMemory).where(
+                    AgentMemory.user_id == user_id,
+                    AgentMemory.workflow_type == workflow_type,
+                    AgentMemory.memory_type == memory_type,
+                    AgentMemory.memory_scope == memory_scope,
+                    AgentMemory.scope_id == scope_id,
+                    AgentMemory.key == key,
+                )
+            )
+            now = datetime.now(UTC)
+            if existing:
+                existing.content = content
+                existing.value_json = value_json or {}
+                existing.importance = importance
+                existing.updated_at = now
+                return self._memory_to_dict(existing)
+            memory = AgentMemory(
+                memory_id=f"mem_{uuid4().hex}",
+                user_id=user_id,
+                workflow_type=workflow_type,
+                memory_type=memory_type,
+                memory_scope=memory_scope,
+                scope_id=scope_id,
+                key=key,
+                content=content,
+                value_json=value_json or {},
+                importance=importance,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(memory)
+            return self._memory_to_dict(memory)
+
     def create_run(
         self,
         *,
@@ -223,6 +431,13 @@ class RunRepository:
                 )
             )
 
+    def list_tool_calls(self, run_id: str) -> list[dict]:
+        with self.database.session() as db:
+            calls = db.scalars(
+                select(ToolCall).where(ToolCall.run_id == run_id).order_by(ToolCall.created_at, ToolCall.tool_call_id)
+            ).all()
+            return [self._tool_call_to_dict(call) for call in calls]
+
     def get_run(self, run_id: str) -> AgentRun | None:
         with self.database.session() as db:
             return db.get(AgentRun, run_id)
@@ -253,10 +468,12 @@ class RunRepository:
             return None
         events = self.list_events(run_id)
         artifacts = self.list_artifacts(run_id)
+        tool_calls = self.list_tool_calls(run_id)
         return {
             "run": self._run_to_dict(run),
             "events": events,
             "artifacts": artifacts,
+            "tool_calls": tool_calls,
             "last_event_id": events[-1]["event_id"] if events else None,
             "last_event_sequence": events[-1]["sequence"] if events else 0,
         }
@@ -342,6 +559,13 @@ class RunRepository:
             "reports_updated",
             "rollback_cleanup_updated",
             "safe_reasoning_summary",
+            "remediation_approval_requested",
+            "remediation_approval_blocked",
+            "remediation_approval_confirmed",
+            "remediation_execution_started",
+            "remediation_execution_blocked",
+            "remediation_action_executed",
+            "remediation_verified",
         }
         with self.database.session() as db:
             query = select(AgentRun).where(AgentRun.user_id == user_id)
@@ -858,6 +1082,23 @@ class RunRepository:
             "payload": event.payload,
             "created_at": event.created_at.isoformat(),
         }
+
+    @staticmethod
+    def _memory_to_dict(memory: AgentMemory) -> dict:
+        return {
+            "memory_id": memory.memory_id,
+            "user_id": memory.user_id,
+            "workflow_type": memory.workflow_type,
+            "memory_type": memory.memory_type,
+            "memory_scope": memory.memory_scope,
+            "scope_id": memory.scope_id,
+            "key": memory.key,
+            "content": memory.content,
+            "value_json": memory.value_json,
+            "importance": memory.importance,
+            "created_at": memory.created_at.isoformat(),
+            "updated_at": memory.updated_at.isoformat(),
+        }
     @staticmethod
     def _procedure_to_dict(
         procedure: Procedure,
@@ -946,6 +1187,18 @@ class RunRepository:
             "created_at": approval.created_at.isoformat(),
             "updated_at": approval.updated_at.isoformat(),
         }
+    @staticmethod
+    def _tool_call_to_dict(tool_call: ToolCall) -> dict:
+        return {
+            "tool_call_id": tool_call.tool_call_id,
+            "run_id": tool_call.run_id,
+            "tool_name": tool_call.tool_name,
+            "status": tool_call.status,
+            "request": tool_call.request_json,
+            "response": tool_call.response_json,
+            "created_at": tool_call.created_at.isoformat(),
+        }
+
     @staticmethod
     def _artifact_to_dict(artifact: Artifact) -> dict:
         return {
