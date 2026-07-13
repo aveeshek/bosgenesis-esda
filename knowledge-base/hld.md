@@ -1,6 +1,7 @@
 # High-Level Design (HLD): GPT-5 Powered Bounded Codex-like Workflow Agent
 
-**Document Version:** 1.0  
+**Document Version:** 1.1
+**Code-Verified Baseline:** 2026-07-12 (`v0.2.9`, commit `aad7ee6`)
 **Target System:** Custom Web Application / Local Agent Console  
 **Primary Goal:** Build a bounded, task-specific Codex/Kiro/Claude-like agent using GPT-5 API, MCP servers, PowerShell execution, APIs, validation, and agentic memory.  
 **Intended Usage:** Operational automation, troubleshooting, validation, controlled remediation, and workflow orchestration for a limited scope such as BOS Genesis / TAAI / Kubernetes / API validation tasks.
@@ -18,7 +19,8 @@ The agent can interact with:
 - Windows PowerShell through a restricted execution layer
 - Kubernetes and platform tools through approved adapters
 - Validation and reporting tools
-- Agentic memory and review stores: PostgreSQL, Qdrant, and optional Redis
+- PostgreSQL-backed workflow, chat, memory, review, and audit records
+- Optional Qdrant semantic retrieval and optional Redis coordination when those capabilities are enabled
 
 The system is not designed as a general-purpose chatbot. It is a **bounded autonomous workflow console** where GPT-5 reasons and plans, but the backend validates and executes actions safely.
 
@@ -80,17 +82,18 @@ V1 standardization:
 - V1 model implementation: Azure OpenAI GPT-5 deployment.
 - LLM integration: LangChain wrapper.
 - Browser never calls the model endpoint directly.
-- V1 storage: PostgreSQL + Qdrant.
+- V1 required storage: PostgreSQL. Artifact bytes use local filesystem storage before optional Git publishing.
+- Qdrant is configured but is not yet used by an implemented workflow; it remains an optional semantic-memory extension.
 - MongoDB is optional and out of scope for V1.
 - Redis is optional only for cache, locks, rate limiting, and SSE pressure.
 
-## 3.2 Current V1 Implementation Status (2026-07-08)
+## 3.2 Current V1 Implementation Status (2026-07-12)
 
-The working V1 vertical slice is now release-note generation through the BOS Genesis ESDA web application.
+The current codebase contains five integrated operator experiences: Release Notes, Bundle Generation, Bundle Execution, Activity, and Environment Chat. Release Notes remains the reference artifact workflow, while Environment Chat is the prompt-first diagnostic and approval-gated remediation workflow.
 
 Implemented behavior:
 
-- ESDA runs locally as a FastAPI web application with Bootstrap/JavaScript UI, login, run progress, approvals, L4 audit, LLM chat, release-note pages, Bundle Generation, Bundle Execution, and the Activity observability/artifact-chat page.
+- ESDA runs locally as a FastAPI web application with a server-rendered Jinja2/Bootstrap/JavaScript UI, signed-cookie login, LLM Chat, Release Notes, Bundle Generation, Bundle Execution, Environment Chat, Activity, Approvals, and L4 Audit pages.
 - Local execution uses the cluster ingress endpoints for existing BOS Genesis services; ESDA itself is not deployed to the cluster yet.
 - PostgreSQL is the active durable store for users, runs, events, tool calls, LLM review records, approvals, policies, procedures, and artifact metadata.
 - ClickHouse and SQLite are not part of the current V1 path.
@@ -105,6 +108,13 @@ Implemented behavior:
 - Bundle Generation is implemented as the second workflow page. Its internal workflow id remains `mop_generation`. It generates a complete read-only MoP bundle using k8s-inspector, helm-manager, and mop-creation-agent evidence when reachable, preserves professional MoP Creation Agent Markdown/PDF templates when available, builds `deployment-artifacts.zip` and `mop-bundle.zip`, includes raw generated ConfigMaps under `deployment-artifacts/kubernetes-manifests/raw/` when returned by the agent, and publishes the unextracted `mop-bundle.zip` to the configured artifact repository.
 - Bundle Execution is implemented as the governed runtime page. Its internal workflow id remains `mop_execution`. It consumes a selected `mop-bundle.zip`, performs ESDA preflight, delegates validation/dry-run/mutation/reporting/cleanup to `bosgenesis-mop-execution-agent`, and treats `mutation_succeeded` plus `validation_status = needs_review` with healthy Helm/Kubernetes evidence as `completed_with_review` rather than failure.
 - Activity is multi-workflow: Release Note, Bundle Generation, and Bundle Execution runs appear in the same timeline with workflow badges, detail panels, artifact downloads, and artifact-grounded chat.
+- Environment Chat is implemented at `/env-agent` with the navigation label `Environment Chat`. It has only two primary panes: 40% Live Progress and 60% Environment Chat on desktop. Namespace, mode, and scope are inferred from the prompt and prior session context rather than exposed as required form controls.
+- Each Environment Chat prompt creates an `env_agent` run inside a durable chat session. The floating history drawer lists sessions, restores messages and the latest run snapshot, and supports clear-all as a user-level hide operation.
+- Environment Chat uses a 13-node LangGraph pipeline: intake, scope, classify, plan, inspect, correlate, diagnose, propose, approve, execute, verify, report, and complete. The graph performs read-only inspection; approved mutation is executed by a separate policy/approval endpoint so model output never directly invokes a mutating adapter.
+- Environment Chat currently integrates namespace-scoped Kubernetes inspection/remediation and Helm inspection/remediation adapters. Read operations include namespace summary, pods, events, logs, deployments, services, ingress, PVCs, ConfigMap metadata, releases, status, history, values, repositories, and optional historical/observability lookups. Mutations include rollout restart, scale, patch, apply, resource delete, Helm install/upgrade/uninstall/rollback, and Helm repository add/update, all subject to tool registry, policy, explicit approval, redaction, and post-action verification.
+- Environment Chat short-term context uses a bounded PostgreSQL chat-message window plus in-process ephemeral turns. When `LANGMEM_ENABLED=true` and the package is installed, the memory facade reports LangMem as the memory-management provider; the current implementation does not yet call LangMem extraction APIs. Durable session memory is stored in PostgreSQL `agent_memories` records.
+- LangGraph currently uses in-process `MemorySaver` when `LANGGRAPH_CHECKPOINTER=memory`. The `postgres` setting is accepted but no PostgreSQL LangGraph saver is wired in the current graph implementation; durable UI rehydration comes from ESDA run/events/chat tables instead.
+- The repository contains 170 automated tests covering authentication, policy, logging, model profiles, Release Notes, Activity, Bundle Generation, Bundle Execution, Environment Chat, artifact publishing, and L4 controls.
 
 Current release-note MCP tools used:
 
@@ -128,7 +138,7 @@ Default behavior for every page:
 - The browser rehydrates from PostgreSQL on page load by reading the latest run snapshot and replayable event history.
 - SSE streams resume from the last observed event sequence or event id.
 - Users can clear/hide a transaction from their own history, but clear is a user-level archive action; audit records and artifacts remain durable.
-- This refresh-safe behavior applies to release notes, health checks, Bundle Generation, Bundle Execution, ENV Agent, Helm, Kubernetes, approvals, L4 audit, and future workflow pages.
+- This refresh-safe behavior applies according to each implemented route contract: background/SSE artifact workflows, external-agent Bundle Execution jobs, and persisted synchronous Environment Chat sessions.
 
 The UX must include a ChatGPT-style transaction sidebar:
 
@@ -262,33 +272,44 @@ Current compatibility note:
 
 ---
 
-## 3.8 Planned ENV Agent ChatOps Page
+## 3.8 Implemented Environment Chat
 
-ENV Agent is the next planned ESDA workflow page for direct environment chat operations. It will present a chatbot-first interface using the same matte-glass theme, global model selector, profile menu, shared sphere/globe animation, Autonomy Notes, copyable logs, and Agent Activity Feed patterns established by Release Notes, Bundle Generation, and Bundle Execution.
+Environment Chat is the direct, prompt-first ChatOps surface for namespace-scoped Kubernetes and Helm diagnostics and approved remediation. The route remains `/env-agent`, the internal workflow id is `env_agent`, and the navigation label is `Environment Chat`.
 
-High-level behavior:
+Implemented behavior:
 
-- Route: `/env-agent`.
-- Navigation label: `ENV Agent`.
-- Backend workflow id: `env_agent`.
-- User submits natural-language environment questions or commands, such as `tell me how many pods have issues in this namespace` or `my pod is getting restarted, can you fix it`.
-- The selected model, such as `SIGMA 5 PRO` or `TRAINIUM GEMMA`, classifies intent, plans a bounded tool chain, requests MCP tool calls, explains safe reasoning summaries, and validates observations.
-- Read-only diagnostics can execute immediately inside approved namespace/environment scope.
-- Mutating fixes are never raw shell commands. They are structured remediation proposals routed through approved MCP servers, policy checks, approval gates when required, and post-action validation.
-- Tool chains may include k8s-inspector, helm-manager, data-ingestion snapshots, observability/log query tools, safe REST GET/POST tools, and later execution-agent repair tools where appropriate.
-- The page must show a large idle sphere/globe. After user submission the sphere becomes smaller and behaves like a working/thinking indicator while live reasoning summaries, tool observations, and agent logs stream below it.
-- Every request creates a PostgreSQL run record, ordered events, tool logs, model metadata, safe reasoning summaries, policy decisions, approval decisions, and final outcome records.
-- Hidden model chain-of-thought remains unavailable and must not be stored or displayed. Only model-supported summaries, ESDA-authored working notes, tool observations, and policy explanations are shown.
+- The page contains two primary panes only: Live Progress at 40% width and Environment Chat at 60% width on desktop. It reuses the ESDA matte-glass theme and sphere animation.
+- Namespace, operation mode, and resource scope are inferred from the user prompt and recent session memory. There are no required namespace/mode/scope form selectors.
+- Each prompt creates a durable run under a durable PostgreSQL chat session. The hidden workflow drawer lists session id/title, status, namespace context, message count, run count, and last update time.
+- Selecting a session restores its messages, latest run snapshot, persisted safe summaries, tool events, and pending remediation approval card.
+- Live working notes remain browser-session-only. Safe summaries, chat messages, runs, tool calls, approvals, and final reports are persisted.
+- The selected global model profile performs structured intent classification, planning, diagnosis, remediation proposal, verification, recovery, and final Markdown report generation. Cosmetic labels map to stable profiles: `SIGMA 5 PRO`, `SIGMA 4.1`, `TRAINIUM BEHEMOTH`, `TRAINIUM GEMMA`, and `CUSTOM`.
+- Read-only tool plans can inspect namespace summaries, pods, events, logs, deployments, services, ingress, PVCs, ConfigMap metadata, Helm releases, status, history, values, repositories, and optional historical/observability sources.
+- Remediation proposals can request namespace-scoped rollout restart, scale, patch, apply, resource delete, Helm install, upgrade, uninstall, rollback, repository add, or repository update.
+- The diagnostic LangGraph never performs mutation. A separate backend execution path converts the first structured remediation action into a registered `ToolExecutionRequest`, applies policy, creates an approval record, waits for explicit approval, performs a typed MCP/HTTP adapter call, and runs a read-only verification.
+- Helm install/upgrade uses dry-run first. For public Bitnami charts it can normalize common repository typos, attempt repository add/update when needed, and use the Bitnami OCI chart reference as a bounded fallback.
+- Cluster-wide mutations, namespace deletion, CRD/ClusterRole mutations, raw shell, arbitrary PowerShell, and Secret reads remain blocked.
 
-Safety model:
+Runtime boundary:
 
-- ENV Agent is ChatOps, not an unrestricted terminal.
-- Namespace, environment, tool, resource-kind, and action allowlists are mandatory.
-- Secret reads, arbitrary deletes, unbounded scaling, arbitrary patch payloads, and cluster-wide mutations are blocked by default.
-- Restart/scale/patch actions require a structured plan, risk classification, rollback/verification plan, and approval when policy marks the action high risk.
-- The agent must verify state after any approved remediation and report whether the symptom improved, remained unchanged, or became ambiguous.
+```mermaid
+flowchart LR
+    U[User prompt] --> CHAT[Environment Chat API]
+    CHAT --> MEM[Session and PostgreSQL memory context]
+    CHAT --> GRAPH[LangGraph classify-plan-inspect-diagnose-propose]
+    GRAPH --> READ[Read-only Kubernetes and Helm adapters]
+    GRAPH --> REPORT[Formatted Markdown response]
+    GRAPH --> PROPOSAL[Typed remediation proposal]
+    PROPOSAL --> POLICY[Tool registry and policy guard]
+    POLICY --> APPROVAL[Explicit human approval]
+    APPROVAL --> MUTATE[Typed namespace-scoped MCP action]
+    MUTATE --> VERIFY[Read-only verification]
+    VERIFY --> PG[(PostgreSQL audit and session state)]
+```
 
----
+Operational caveat:
+
+- ESDA can plan and approve an operation correctly while the downstream MCP ingress/service still rejects it. For example, Helm repository or install endpoints returning HTTP 502/503 are downstream availability failures and must be surfaced as evidence; ESDA must not claim that a release was installed.
 
 ## 4. Target Users
 
@@ -315,7 +336,7 @@ The first version should support:
 - REST API caller
 - Safe PowerShell runner
 - Read-only Kubernetes inspection through MCP or approved tools
-- ENV Agent chatbot diagnostics and approved environment remediation through MCP tool chains
+- Environment Chat diagnostics and approved namespace-scoped remediation through MCP tool chains
 - Validation engine
 - Error diagnosis and retry logic
 - Memory write/read
@@ -372,9 +393,9 @@ flowchart TD
     REST --> EXTAPI[Internal / External APIs]
     K8S --> CLUSTER[Kubernetes Cluster]
 
-    MEM --> REDIS[Redis Optional Cache and Locks]
+    MEM -. future optional .-> REDIS[Redis Cache and Locks]
     MEM --> PG[PostgreSQL Episodic and Procedural Memory]
-    MEM --> QDRANT[Qdrant Semantic Memory]
+    MEM -. future optional .-> QDRANT[Qdrant Semantic Memory]
     MEM --> CH[PostgreSQL Logs and Analytics]
 
     OBS --> OTEL[OpenTelemetry Optional]
@@ -408,13 +429,13 @@ flowchart LR
 | Agent Runtime | LangGraph for workflow orchestration and checkpointing |
 | Tool Schema | Pydantic models |
 | MCP Integration | Python MCP client or OpenAI Agents SDK MCP integration |
-| Workflow State | LangGraph, custom state machine, Temporal, Prefect, or n8n |
+| Workflow State | PostgreSQL run/event tables for durable UI state; LangGraph `MemorySaver` for in-process graph checkpoints |
 | PowerShell Execution | Restricted Windows runner service |
 | Policy Guard | Custom policy engine first; OPA later |
-| Short-Term State | LangGraph checkpointing; optional Redis for cache, locks, rate limiting, and SSE pressure |
+| Short-Term State | Bounded chat window plus in-process graph/checkpoint state; PostgreSQL owns durable session/run history |
 | Episodic Memory | PostgreSQL |
 | Procedural Memory | PostgreSQL, with optional Qdrant semantic index |
-| Semantic Memory | Qdrant |
+| Semantic Memory | Qdrant optional/future; no active workflow integration in the current code |
 | Detailed Logs and Analytics | PostgreSQL |
 | Platform Observability | OpenTelemetry optional |
 
@@ -456,38 +477,23 @@ Recommended UI panels:
 
 ### 10.2 Backend Agent API
 
-The backend is the control center.
+The FastAPI process is the composition root and control plane. It owns authentication, route-level authorization, model calls, graph/service invocation, policy checks, approval creation, run/event persistence, artifacts, and frontend delivery.
 
-Responsibilities:
+Implemented API families:
 
-- Receive task requests from UI
-- Maintain run/session state
-- Call GPT-5 API
-- Register tools
-- Execute tool calls
-- Apply policy rules
-- Manage memory
-- Stream updates back to UI
-- Persist traces and execution history
+| Family | Current endpoints |
+|---|---|
+| System/model | Health, model profiles, LLM chat, smoke test |
+| Authentication | Login/logout/current principal |
+| Workflows | Diagnostic chat, classification, Release Notes, Bundle Generation, Environment Chat |
+| Runs | Run/snapshot/events SSE/stop/artifacts/bundle |
+| Transactions | List, clear one, clear by workflow |
+| Activity | Multi-workflow timeline/detail/artifact actions/chat |
+| Bundle Execution | Bundle discovery, preflight, validation, dry-run, decisions, instructions, reports, approval, mutation, cleanup, validation report |
+| Governance | Policy evaluation, approval queue/actions, procedures, L4 eligibility/stop/audit |
+| Artifacts | Authenticated artifact download |
 
-Suggested endpoints:
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/api/chat` | POST | Submit a user message/task |
-| `/api/runs` | POST | Start a new workflow run |
-| `/api/runs/{run_id}` | GET | Get run status |
-| `/api/runs/{run_id}/snapshot` | GET | Get latest durable run snapshot for page rehydration |
-| `/api/runs/{run_id}/events` | GET | Stream live run events; supports resume by last event id/sequence |
-| `/api/transactions` | GET | List current user's visible workflow transactions for the floating sidebar |
-| `/api/transactions/{run_id}/clear` | POST | Hide/archive a transaction for the current user without deleting audit data |
-| `/api/runs/{run_id}/approve` | POST | Approve a sensitive action |
-| `/api/runs/{run_id}/cancel` | POST | Cancel run |
-| `/api/tools` | GET | List available tools |
-| `/api/memory/search` | POST | Search agent memory |
-| `/api/reports/{run_id}` | GET | Download final report |
-
----
+Environment Chat runs synchronously per prompt and returns a persisted snapshot. Long-running artifact and execution workflows use background tasks plus PostgreSQL run events and SSE.
 
 ### 10.3 GPT-5 Reasoning Layer
 
@@ -581,123 +587,76 @@ Future tools with approval:
 
 ---
 
-## 11. MCP Server Integration
+## 11. MCP and Agent Integration
 
-MCP servers should expose governed tools to the agent.
+The current code integrates BOS Genesis services through typed HTTP/MCP-compatible adapters. GPT selects or proposes operations; backend adapters own exact routes, arguments, timeout, authentication, redaction, and normalization.
 
-Example MCP servers:
-
-| MCP Server | Purpose |
+| Service | Current ESDA use |
 |---|---|
-| `bosgenesis-k8s-inspector-mcp` | Kubernetes resource inspection |
-| `bosgenesis-api-test-mcp` | API testing and response validation |
-| `bosgenesis-docs-rag-mcp` | Knowledge search over docs and runbooks |
-| `bosgenesis-observability-mcp` | Query PostgreSQL logs, review records, OpenTelemetry traces, and operational metrics |
-| `bosgenesis-mop-validator-mcp` | Validate MoP documents and execution steps |
+| `bosgenesis-release-note-agent` | Repository scan, status polling, note generation, artifact metadata, and REST artifact hydration. |
+| `bosgenesis-k8s-inspector-mcp` | Health diagnostics, Bundle Generation evidence, Environment Chat reads, and approved namespace-scoped Kubernetes mutations exposed by its HTTP contract. |
+| `bosgenesis-helm-manager-mcp` | Bundle Generation Helm evidence plus Environment Chat release/repository reads and approved Helm mutations. |
+| `bosgenesis-mop-creation-agent` | Professional MoP documents, metadata, machine plan, values, and generated manifest payloads. |
+| `bosgenesis-mop-execution-agent` | Bundle registration/validation, dry-run jobs, decisions, approvals, mutation, observations, reports, rollback, cleanup, and namespace revert. |
+| Optional data-ingestion/observability endpoints | Environment Chat historical inventory, traces, error spans, and metrics when configured. |
 
-MCP call flow:
+Integration rules:
 
-```mermaid
-sequenceDiagram
-    participant UI as Web UI
-    participant API as Agent Backend
-    participant GPT as GPT-5
-    participant MCP as MCP Client
-    participant S as MCP Server
-
-    UI->>API: Submit task goal
-    API->>GPT: Ask for plan/tool choice
-    GPT-->>API: Tool call: mcp_call_tool
-    API->>API: Policy check
-    API->>MCP: Call tool with arguments
-    MCP->>S: Execute MCP tool
-    S-->>MCP: Tool result
-    MCP-->>API: Normalized result
-    API->>GPT: Return tool result for reasoning
-    GPT-->>API: Next action or final answer
-    API-->>UI: Stream update
-```
-
----
+- Local ESDA uses ingress base URLs; a future cluster deployment should use service DNS.
+- API keys remain backend settings and are injected only by adapters.
+- Responses are normalized into `ToolExecutionResult` or workflow-specific dictionaries.
+- Secret-like fields are redacted before persistence/model use.
+- Downstream 4xx/5xx responses are evidence, not success.
+- Environment Chat model output never calls an adapter directly; it becomes a typed request that passes tool registry, policy, and approval.
 
 ## 12. Safe PowerShell Execution Design
 
-PowerShell is useful for API calls, connectivity checks, Windows-specific operations, and operational validation. It must be restricted.
+The current ESDA code exposes one template-only PowerShell tool, `powershell.ps_http_get`, implemented by `PowerShellGetTemplateTool`. It accepts typed parameters and does not accept arbitrary command text.
 
-### Allowed Initial Templates
+Current boundary:
 
-| Template | Description |
-|---|---|
-| `ps_http_get` | Calls `Invoke-RestMethod` with GET |
-| `ps_http_post` | Calls `Invoke-RestMethod` with POST |
-| `ps_test_connection` | Calls `Test-NetConnection` |
-| `ps_curl_health_check` | Calls curl/Invoke-WebRequest against known endpoint |
-| `ps_kubectl_get_pods` | Read-only pod listing |
-| `ps_kubectl_logs` | Read logs from approved namespace |
-| `ps_helm_status` | Read Helm release status |
-
-### Blocked by Default
-
-```text
-Remove-Item -Recurse
-Format-Volume
-Stop-Service
-Set-ExecutionPolicy
-Invoke-Expression
-iex
-Start-Process with unknown executable
-Downloading and executing scripts
-Reading secrets or credential files
-Cluster-wide delete/patch operations
-```
-
-### PowerShell Flow
-
-```mermaid
-flowchart TD
-    GPT[GPT-5 Requests Tool Action] --> TOOL[PowerShell Tool Adapter]
-    TOOL --> POLICY[Policy Guard]
-    POLICY --> ALLOWED{Allowed Template?}
-    ALLOWED -- No --> REJECT[Reject and Explain]
-    ALLOWED -- Yes --> PARAMS[Validate Parameters]
-    PARAMS --> RUNNER[Windows PowerShell Runner]
-    RUNNER --> OUTPUT[Capture stdout/stderr/status]
-    OUTPUT --> STORE[Store Evidence]
-    STORE --> GPT2[Return Result to GPT-5]
-```
-
----
+- Raw PowerShell and raw shell are denied by policy.
+- The configured runner URL is backend-only.
+- The tool is intended for bounded HTTP GET diagnostics.
+- Kubernetes and Helm operations use dedicated MCP/agent adapters, not generated PowerShell.
+- Additional templates in the policy document are roadmap contracts until a matching adapter exists.
 
 ## 13. Agentic Memory Architecture
 
-The system should support multiple memory types.
+The architecture distinguishes implemented memory from optional future retrieval services.
 
-| Memory Type | Store | Purpose |
+| Memory type | Current implementation | Purpose |
 |---|---|---|
-| Short-term/session memory | Redis | Current conversation and run state |
-| Long-term exact memory | PostgreSQL | Known facts, endpoints, configs, previous fixes |
-| Episodic memory | PostgreSQL | Structured run episodes, tool evidence references, observations, and outcomes |
-| Semantic memory | Qdrant | Similar issue/fix search |
-| Log/review memory | PostgreSQL | Detailed logs, LLM review records, model explanations, tool events, metrics |
-| Optional cache/coordination | Redis | Cache, locks, rate limiting, and SSE pressure only |
+| Chat/session history | PostgreSQL `chat_sessions` and `chat_messages` | Restorable Environment Chat conversations and per-turn payloads. |
+| Run/episodic history | PostgreSQL runs, events, tool calls, artifacts, approvals, and review logs | Durable workflow state, evidence, and audit. |
+| Environment Chat short-term context | Bounded recent PostgreSQL messages plus in-process ephemeral turn window | Follow-up questions, pod-log requests, and latest namespace context. |
+| Environment Chat durable memory | PostgreSQL `agent_memories` | Latest safe session context and recent-turn summaries. |
+| LangGraph checkpoint | In-process `MemorySaver` when configured | Graph-local state during the process lifetime. |
+| LangMem | Optional facade capability | The package and feature flag are detected, but extraction/search APIs are not yet wired. |
+| Semantic memory | Qdrant, future/optional | No implemented workflow currently reads or writes Qdrant. |
+| Cache/coordination | Redis, future/optional | No implemented workflow currently depends on Redis. |
+| Procedural memory | PostgreSQL procedure/version/step/policy tables | Versioned approved procedure metadata and L4 eligibility inputs. |
 
-### Memory Flow
+Current memory flow:
 
 ```mermaid
 flowchart TD
-    TASK[User Task] --> RETRIEVE[Retrieve Relevant Memory]
-    RETRIEVE --> CONTEXT[Build Agent Context]
-    CONTEXT --> PLAN[GPT-5 Plan]
-    PLAN --> EXEC[Execute Tools]
-    EXEC --> TRACE[Write Raw Trace]
-    EXEC --> FACTS[Extract New Facts]
-    FACTS --> PG[Write Exact Memory to PostgreSQL]
-    TRACE --> PG[Write Episodic Memory to PostgreSQL]
-    FACTS --> QDRANT[Write/Search Semantic Memory in Qdrant]
-    EXEC --> CH[Write Logs, Review Records, and Metrics to PostgreSQL]
+    MSG[Environment Chat prompt] --> PGMSG[Load recent PostgreSQL messages]
+    PGMSG --> MEM[Load agent_memories for chat session]
+    MEM --> CTX[Build bounded prompt context]
+    CTX --> GRAPH[Run Environment Chat graph]
+    GRAPH --> ANSWER[Persist user and assistant messages]
+    GRAPH --> EVENTS[Persist safe summaries and tool events]
+    ANSWER --> UPSERT[Upsert short-term and long-term session memory]
+    EVENTS --> UPSERT
 ```
 
----
+Important limits:
+
+- Live working/reasoning notes are not stored.
+- Hidden chain-of-thought is not requested, exposed, or persisted.
+- `LANGGRAPH_CHECKPOINTER=postgres` is accepted by settings but does not yet instantiate a PostgreSQL LangGraph saver.
+- Qdrant and Redis are architectural extension points, not active V1 dependencies.
 
 ## 14. Safety, Policy, and Approval Model
 
@@ -826,67 +785,28 @@ sequenceDiagram
 
 ---
 
-## 17. Data Model: Run History
+## 17. Current Data Model
 
-### `agent_run_history`
+PostgreSQL tables are defined by SQLAlchemy in `backend/app/db/models.py`.
 
-| Column | Type | Description |
-|---|---|---|
-| `run_id` | UUID | Unique workflow run ID |
-| `user_id` | Text | User identifier |
-| `session_id` | Text | Session identifier |
-| `goal` | Text | Original user task |
-| `scope` | JSONB | Allowed scope and environment |
-| `status` | Text | running/completed/failed/cancelled |
-| `started_at` | Timestamp | Start time |
-| `completed_at` | Timestamp | End time |
-| `final_summary` | Text | Final answer/report summary |
-| `current_node` | Text | Last known graph node/state-machine step |
-| `last_event_sequence` | Integer | Highest persisted event sequence for replay/resume |
-| `worker_status` | Text | queued/running/idle/failed for background execution visibility |
-| `cleared_by_user_at` | Timestamp | User-level hidden/archive timestamp; audit data remains intact |
+| Table | Purpose |
+|---|---|
+| `users` | Local accounts, password hashes, roles, active state. |
+| `chat_sessions` / `chat_messages` | Restorable Environment Chat conversations. |
+| `agent_runs` | Workflow type, goal, namespace, status, report, timestamps. |
+| `run_events` | Ordered durable workflow/UI evidence. |
+| `artifacts` | Artifact metadata and local storage path. |
+| `agent_memories` | Workflow/session-scoped short- and long-term memory records. |
+| `user_run_views` | Per-user hidden/pinned/last-opened state. |
+| `plan_steps` / `tool_calls` | Structured plan and tool execution history. |
+| `agent_event_logs` | Graph/node operational logs. |
+| `llm_reasoning_review_logs` | Prompt/version/hash, plans, safe reasoning, tool choice, validation, human review. |
+| `tool_execution_logs` | Policy, risk, request/response summary, error, latency. |
+| `approval_requests` | Scoped approval request and decision lifecycle. |
+| `procedures`, `procedure_versions`, `procedure_steps`, `procedure_policies` | Versioned procedural records. |
+| `l4_audit_records` | Conditional-L4 eligibility and stop-condition evidence. |
 
-### `agent_run_events`
-
-| Column | Type | Description |
-|---|---|---|
-| `event_id` | UUID | Unique durable event ID |
-| `run_id` | UUID | Parent workflow run ID |
-| `sequence` | Integer | Monotonic event number per run |
-| `event_type` | Text | run_started, node_started, tool_completed, artifact_created, etc. |
-| `message` | Text | User-safe progress text |
-| `payload` | JSONB | Redacted event data used to rebuild the UI |
-| `created_at` | Timestamp | Event creation time |
-
-### `agent_tool_call_history`
-
-| Column | Type | Description |
-|---|---|---|
-| `tool_call_id` | UUID | Unique tool call ID |
-| `run_id` | UUID | Parent run ID |
-| `tool_name` | Text | Tool used |
-| `tool_type` | Text | MCP/API/PowerShell/K8s/Validator |
-| `input_payload` | JSONB | Tool arguments |
-| `output_payload` | JSONB | Tool result |
-| `status` | Text | success/failure/blocked |
-| `risk_level` | Text | low/medium/high |
-| `approval_required` | Boolean | Whether approval was required |
-| `created_at` | Timestamp | Execution time |
-
-### `agent_memory_registry`
-
-| Column | Type | Description |
-|---|---|---|
-| `memory_id` | UUID | Unique memory ID |
-| `memory_type` | Text | fact/fix/error/config/procedure |
-| `scope` | Text | Environment or project scope |
-| `content` | Text | Memory content |
-| `tags` | Text[] | Search tags |
-| `source_run_id` | UUID | Run where memory was created |
-| `created_at` | Timestamp | Creation time |
-| `updated_at` | Timestamp | Last update time |
-
----
+Artifact bytes are not stored in PostgreSQL; the `artifacts.storage_path` references local files. Optional Git publishing records publish metadata in events/artifact metadata.
 
 ## 18. Prompt and Instruction Strategy
 
@@ -922,39 +842,31 @@ The backend should also pass runtime constraints:
 
 ## 19. Deployment Architecture
 
-### Local Development
-
-```text
-Developer Laptop
-  - Web UI
-  - FastAPI Agent Backend
-  - MCP Client
-  - PowerShell Runner
-  - PostgreSQL / Qdrant using Docker/Podman or reachable internal services
-  - Azure OpenAI GPT-5 endpoint over approved network path
-```
-
-### Kubernetes Deployment
+### Current Local/Ingress Mode
 
 ```mermaid
-flowchart TD
-    INGRESS[Ingress] --> UI[agent-console-ui]
-    INGRESS --> API[agent-orchestrator-api]
-
-    API --> REDIS[Redis]
-    API --> PG[PostgreSQL]
-    API --> QDRANT[Qdrant]
-    API --> CH[PostgreSQL]    API --> OTEL[OpenTelemetry Optional]
-
-    API --> MCP1[k8s-inspector-mcp]
-    API --> MCP2[api-test-mcp]
-    API --> MCP3[docs-rag-mcp]
-
-    API --> PS[Windows PowerShell Runner]
-    API --> LLM[GPT-5-Compatible Endpoint / Azure GPT-5 in V1]
+flowchart LR
+    USER[Browser] --> ESDA[Local FastAPI]
+    ESDA --> PG[(PostgreSQL)]
+    ESDA --> AZURE[Azure OpenAI]
+    ESDA --> RN[Release Note Agent ingress]
+    ESDA --> K8S[K8s Inspector ingress]
+    ESDA --> HELM[Helm Manager ingress]
+    ESDA --> MOPC[MoP Creation Agent ingress]
+    ESDA --> MOPE[MoP Execution Agent ingress]
+    ESDA --> GIT[Artifact Git repository]
+    ESDA --> LOCAL[(Local artifacts and logs)]
 ```
 
----
+The local process is started/stopped with the project batch files or Uvicorn. PostgreSQL is mandatory. Agent/MCP services are reached through BOS Genesis ingress endpoints.
+
+### Docker Dependencies
+
+Docker Compose supplies PostgreSQL and Qdrant, with Redis optional. Current application workflows require only PostgreSQL; Qdrant and Redis are not used by runtime code.
+
+### Kubernetes Target
+
+The repository contains an environment example for in-cluster service DNS and Secrets, but it does not currently contain a deployable ESDA Helm chart. Kubernetes deployment is therefore a target architecture. When implemented, it should preserve PostgreSQL as source of truth, use service DNS for agents, and mount or externalize artifact/log storage.
 
 ## 20. Security Considerations
 
@@ -998,7 +910,7 @@ Recommended observability mapping:
 | Tool output summaries and evidence references | PostgreSQL + artifact references |
 | Run history and episodic memory | PostgreSQL |
 | Metrics and latency | PostgreSQL |
-| Similar issue retrieval | Qdrant |
+| Similar issue retrieval | Not implemented; Qdrant is optional/future |
 
 ---
 
@@ -1101,64 +1013,59 @@ Success criteria:
 
 ---
 
-## 23. Recommended Repository Structure
+## 23. Current Repository Structure
 
 ```text
-bounded-codex-agent/
-  frontend/
-    index.html
-    app.js
-    styles.css
+bosgenesis-esda/
   backend/
     app/
-      main.py
-      config.py
-      agent/
-        orchestrator.py
-        planner.py
-        prompts.py
-        policy_guard.py
-        tool_registry.py
-        memory_manager.py
+      auth/
+      chains/
+      db/
+      graphs/
+      llm/
+      logging/
+      policy/
+      static/
+      templates/
       tools/
-        mcp_client.py
-        rest_api_tool.py
-        powershell_runner.py
-        k8s_tool.py
-        validator_tool.py
-        report_tool.py
-      storage/
-        postgres_store.py
-        mongo_store.py
-        redis_store.py
-        qdrant_store.py
-        postgres_log_store.py
-      observability/
-        langfuse_client.py
-        otel.py
-      models/
-        schemas.py
-    requirements.txt
-    Dockerfile
-  powershell-runner/
-    runner_service.py
-    templates/
-      ps_http_get.ps1
-      ps_http_post.ps1
-      ps_test_connection.ps1
-      ps_kubectl_get_pods.ps1
-  mcp-servers/
-    k8s-inspector-mcp/
-    api-test-mcp/
-    docs-rag-mcp/
-  helm/
-    bounded-codex-agent/
-  docs/
-    HLD.md
-    RUNBOOK.md
+      activity.py
+      approvals.py
+      artifact_publisher.py
+      artifacts.py
+      config.py
+      dependencies.py
+      env_agent.py
+      l4.py
+      main.py
+      memory.py
+      mop_bundle.py
+      mop_execution.py
+      repo_analysis.py
+    tests/
+  knowledge-base/
+    activity/
+    env-agent/
+    mop-execution/
+    mop-generation/
+    baseline_idea.md
+    bosgenesis_esda_chatbot_lld.md
+    hld.md
+    policy_rules.yaml
+    project_architecture_specification.md
+  data/
+  logs/
+  skills/
+  var/
+  .env.example
+  .env.ingress.example
+  .env.helm.example
+  docker-compose.yml
+  pyproject.toml
+  README.md
+  start-esda.bat
+  kill-esda.bat
 ```
-
----
 
 ## 24. Example User Experience
 
