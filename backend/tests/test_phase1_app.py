@@ -305,6 +305,33 @@ def test_activity_page_renders_timeline_shell(tmp_path, monkeypatch) -> None:
         assert 'transaction-sidebar-toggle' not in response.text
 
 
+def test_digital_twins_page_is_authenticated_and_renders_browser_mock(
+    tmp_path, monkeypatch
+) -> None:
+    with build_test_client(tmp_path, monkeypatch) as client:
+        unauthenticated = client.get("/digital-twins", follow_redirects=False)
+        assert unauthenticated.status_code == 303
+        assert unauthenticated.headers["location"] == "/login"
+
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+
+        response = client.get("/digital-twins")
+        assert response.status_code == 200
+        assert 'href="/digital-twins"' in response.text
+        assert ">Digital Twins</a>" in response.text
+        assert 'class="app-nav-link is-active"' in response.text
+        assert 'id="digital-twins-frame"' in response.text
+        assert 'src="/static/digital-twin/digital-twins.html"' in response.text
+        assert 'transaction-sidebar-toggle' not in response.text
+
+        mock = client.get("/static/digital-twin/digital-twins.html")
+        assert mock.status_code == 200
+        assert "Release Safety Intelligence" in mock.text
+        assert 'id="twin-list-body"' in mock.text
+        assert 'src="fixtures/v1/twin-fixtures.js"' in mock.text
+        assert '<header class="app-header">' not in mock.text
+
 def test_activity_release_note_timeline_api_and_detail(tmp_path, monkeypatch) -> None:
     with build_test_client(tmp_path, monkeypatch) as client:
         login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})

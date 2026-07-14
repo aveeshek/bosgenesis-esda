@@ -1,0 +1,13 @@
+{
+  "contract_version": "1.0.0",
+  "fixtures": [
+    {"fixture": "list-green.json", "schema": "../schemas/twin-list.schema.json"},
+    {"fixture": "detail-amber.json", "schema": "../schemas/twin-detail.schema.json"},
+    {"fixture": "actions-amber.json", "schema": "../schemas/action-eligibility.schema.json"},
+    {"fixture": "safe-explanation.json", "schema": "../schemas/safe-explanation.schema.json"},
+    {"fixture": "overview-green.json", "schema": "../schemas/tabs/overview.schema.json"},
+    {"fixture": "mop-replay-not-run.json", "schema": "../schemas/tabs/mop-replay.schema.json"},
+    {"fixture": "audit-timeline.json", "schema": "../schemas/tabs/audit-timeline.schema.json"}
+  ]
+}
+

@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/tabs/audit-timeline.schema.json",
+  "title": "Audit Timeline Tab",
+  "x-contract-version": "1.0.0",
+  "allOf": [{"$ref": "../event-timeline.schema.json"}]
+}

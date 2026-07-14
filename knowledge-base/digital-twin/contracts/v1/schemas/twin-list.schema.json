@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/twin-list.schema.json",
+  "title": "ESDA Digital Twins List Response",
+  "x-contract-version": "1.0.0",
+  "$defs": {
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["twin_id", "display_name", "decision_version", "decision", "risk", "lifecycle_status", "visible_lifecycle", "freshness", "target", "bundle", "created_by", "created_at", "updated_at", "relationships", "actions"],
+      "properties": {
+        "twin_id": {"$ref": "common.schema.json#/$defs/identifier"},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 300},
+        "decision_version": {"type": "integer", "minimum": 0},
+        "decision": {"$ref": "common.schema.json#/$defs/decisionLevel"},
+        "risk": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["level", "score"],
+          "properties": {
+            "level": {"$ref": "common.schema.json#/$defs/riskLevel"},
+            "score": {"type": ["number", "null"], "minimum": 0, "maximum": 100}
+          }
+        },
+        "lifecycle_status": {"$ref": "common.schema.json#/$defs/lifecycleStatus"},
+        "visible_lifecycle": {"$ref": "common.schema.json#/$defs/visibleLifecycle"},
+        "freshness": {"$ref": "common.schema.json#/$defs/freshness"},
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cluster_id", "cluster_name", "namespace"],
+          "properties": {
+            "cluster_id": {"$ref": "common.schema.json#/$defs/identifier"},
+            "cluster_name": {"type": "string", "minLength": 1, "maxLength": 300},
+            "namespace": {"type": "string", "minLength": 1, "maxLength": 253}
+          }
+        },
+        "bundle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bundle_id", "bundle_hash", "release_version", "open_href"],
+          "properties": {
+            "bundle_id": {"$ref": "common.schema.json#/$defs/identifier"},
+            "bundle_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+            "release_version": {"type": ["string", "null"], "maxLength": 300},
+            "open_href": {"type": "string", "minLength": 1, "maxLength": 2000}
+          }
+        },
+        "created_by": {"$ref": "common.schema.json#/$defs/identifier"},
+        "created_by_display": {"type": ["string", "null"], "maxLength": 300},
+        "created_at": {"$ref": "common.schema.json#/$defs/timestamp"},
+        "updated_at": {"$ref": "common.schema.json#/$defs/timestamp"},
+        "relationships": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["approval_status", "approval_id", "execution_status", "execution_id", "used_for_execution"],
+          "properties": {
+            "approval_status": {"type": "string", "enum": ["not_required", "required", "pending", "approved", "rejected", "expired"]},
+            "approval_id": {"$ref": "common.schema.json#/$defs/nullableIdentifier"},
+            "execution_status": {"type": "string", "enum": ["unlinked", "linked", "running", "completed", "failed", "rolled_back", "cleaned_up"]},
+            "execution_id": {"$ref": "common.schema.json#/$defs/nullableIdentifier"},
+            "used_for_execution": {"type": "boolean"}
+          }
+        },
+        "actions": {"type": "array", "items": {"$ref": "action-eligibility.schema.json#/$defs/action"}}
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "generated_at", "items", "page", "applied_query"],
+  "properties": {
+    "schema_version": {"$ref": "common.schema.json#/$defs/schemaVersion"},
+    "generated_at": {"$ref": "common.schema.json#/$defs/timestamp"},
+    "items": {"type": "array", "items": {"$ref": "#/$defs/row"}},
+    "page": {"$ref": "common.schema.json#/$defs/page"},
+    "applied_query": {"type": "object", "additionalProperties": {"type": ["string", "integer", "null"]}}
+  }
+}
+

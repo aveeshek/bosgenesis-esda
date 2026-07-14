@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/twin-detail.schema.json",
+  "title": "ESDA Digital Twin Detail Header and Summary",
+  "x-contract-version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "twin_id", "display_name", "decision_version", "lifecycle_status", "visible_lifecycle", "decision", "decision_is_final", "risk", "autonomy_eligibility", "recommended_action", "freshness", "target", "bundle", "created_by", "created_at", "updated_at", "relationships", "top_reasons", "actions", "tab_states"],
+  "properties": {
+    "schema_version": {"$ref": "common.schema.json#/$defs/schemaVersion"},
+    "twin_id": {"$ref": "common.schema.json#/$defs/identifier"},
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 300},
+    "decision_version": {"type": "integer", "minimum": 0},
+    "lifecycle_status": {"$ref": "common.schema.json#/$defs/lifecycleStatus"},
+    "visible_lifecycle": {"$ref": "common.schema.json#/$defs/visibleLifecycle"},
+    "decision": {"$ref": "common.schema.json#/$defs/decisionLevel"},
+    "decision_is_final": {"type": "boolean"},
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "score"],
+      "properties": {"level": {"$ref": "common.schema.json#/$defs/riskLevel"}, "score": {"type": ["number", "null"], "minimum": 0, "maximum": 100}}
+    },
+    "autonomy_eligibility": {"type": "string", "enum": ["pending", "eligible", "approval_required", "blocked", "ineligible", "historical_only"]},
+    "recommended_action": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "freshness": {"$ref": "common.schema.json#/$defs/freshness"},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cluster_id", "cluster_name", "namespace"],
+      "properties": {"cluster_id": {"$ref": "common.schema.json#/$defs/identifier"}, "cluster_name": {"type": "string", "minLength": 1, "maxLength": 300}, "namespace": {"type": "string", "minLength": 1, "maxLength": 253}}
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle_id", "bundle_hash", "release_version", "open_href"],
+      "properties": {"bundle_id": {"$ref": "common.schema.json#/$defs/identifier"}, "bundle_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}, "release_version": {"type": ["string", "null"], "maxLength": 300}, "open_href": {"type": "string", "minLength": 1, "maxLength": 2000}}
+    },
+    "created_by": {"$ref": "common.schema.json#/$defs/identifier"},
+    "created_by_display": {"type": ["string", "null"], "maxLength": 300},
+    "created_at": {"$ref": "common.schema.json#/$defs/timestamp"},
+    "updated_at": {"$ref": "common.schema.json#/$defs/timestamp"},
+    "relationships": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dry_run_job_id", "approval_id", "approval_status", "execution_id", "execution_status", "used_for_execution"],
+      "properties": {
+        "dry_run_job_id": {"$ref": "common.schema.json#/$defs/nullableIdentifier"},
+        "approval_id": {"$ref": "common.schema.json#/$defs/nullableIdentifier"},
+        "approval_status": {"type": "string", "enum": ["not_required", "required", "pending", "approved", "rejected", "expired"]},
+        "execution_id": {"$ref": "common.schema.json#/$defs/nullableIdentifier"},
+        "execution_status": {"type": "string", "enum": ["unlinked", "linked", "running", "completed", "failed", "rolled_back", "cleaned_up"]},
+        "used_for_execution": {"type": "boolean"}
+      }
+    },
+    "top_reasons": {"type": "array", "minItems": 0, "maxItems": 5, "items": {"$ref": "common.schema.json#/$defs/reason"}},
+    "actions": {"type": "array", "items": {"$ref": "action-eligibility.schema.json#/$defs/action"}},
+    "tab_states": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["overview", "release-delta", "dependency-graph", "policy", "dry-run", "rollback", "drift", "mop-replay", "runtime-behavior", "release-note-validation", "audit"],
+      "properties": {
+        "overview": {"$ref": "common.schema.json#/$defs/availability"},
+        "release-delta": {"$ref": "common.schema.json#/$defs/availability"},
+        "dependency-graph": {"$ref": "common.schema.json#/$defs/availability"},
+        "policy": {"$ref": "common.schema.json#/$defs/availability"},
+        "dry-run": {"$ref": "common.schema.json#/$defs/availability"},
+        "rollback": {"$ref": "common.schema.json#/$defs/availability"},
+        "drift": {"$ref": "common.schema.json#/$defs/availability"},
+        "mop-replay": {"$ref": "common.schema.json#/$defs/availability"},
+        "runtime-behavior": {"$ref": "common.schema.json#/$defs/availability"},
+        "release-note-validation": {"$ref": "common.schema.json#/$defs/availability"},
+        "audit": {"$ref": "common.schema.json#/$defs/availability"}
+      }
+    },
+    "safe_explanation": {"anyOf": [{"$ref": "safe-explanation.schema.json"}, {"type": "null"}]}
+  }
+}
+

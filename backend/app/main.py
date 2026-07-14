@@ -54,6 +54,8 @@ from backend.app.dependencies import (
     get_current_user,
     get_current_user_or_none,
 )
+from backend.app.digital_twin_gateway import install_digital_twin_gateway
+from backend.app.digital_twin_mock import install_digital_twin_mock
 from backend.app.graphs.diagnostic import DiagnosticGraph, DiagnosticInput
 from backend.app.graphs.event_bus import RunEventBus
 from backend.app.graphs.env_agent import EnvAgentRuntimeInput, EnvAgentWorkflowGraph
@@ -475,6 +477,18 @@ def create_app() -> FastAPI:
     app.state.env_agent_workflow_graph = env_agent_workflow_graph
     app.state.workflow_classifier = workflow_classifier
     app.state.repo_analyzer = repo_analyzer
+
+    digital_twin_adapter_mode = "browser_fixture"
+    if settings.digital_twin_real_core_enabled:
+        install_digital_twin_gateway(app, settings=settings)
+        digital_twin_adapter_mode = "real_core"
+    elif settings.digital_twin_mock_effective_enabled:
+        install_digital_twin_mock(
+            app,
+            enabled=True,
+            default_delay_ms=settings.digital_twin_mock_delay_ms,
+        )
+        digital_twin_adapter_mode = "mock_server"
 
     templates = Jinja2Templates(directory="backend/app/templates")
     app.mount("/static", StaticFiles(directory="backend/app/static"), name="static")
@@ -983,6 +997,35 @@ def create_app() -> FastAPI:
                 target_namespaces=settings.mop_execution_allowed_target_namespace_list,
                 default_target_namespace=settings.mop_execution_default_target_namespace,
                 generated_name_prefix=settings.mop_execution_generated_name_prefix,
+            ),
+        )
+
+    @app.get("/digital-twins", response_class=HTMLResponse, tags=["pages"])
+    def digital_twins_page(request: Request) -> HTMLResponse:
+        principal = get_current_user_or_none(request)
+        if not principal:
+            return RedirectResponse("/login", status_code=303)
+        return templates.TemplateResponse(
+            request,
+            "digital_twins.html",
+            template_context(
+                principal,
+                digital_twin_adapter_mode=digital_twin_adapter_mode,
+            ),
+        )
+
+    @app.get("/digital-twins/{twin_id}", response_class=HTMLResponse, tags=["pages"])
+    def digital_twin_detail_page(twin_id: str, request: Request) -> HTMLResponse:
+        principal = get_current_user_or_none(request)
+        if not principal:
+            return RedirectResponse("/login", status_code=303)
+        return templates.TemplateResponse(
+            request,
+            "digital_twin_detail.html",
+            template_context(
+                principal,
+                twin_id=twin_id,
+                digital_twin_adapter_mode=digital_twin_adapter_mode,
             ),
         )
 

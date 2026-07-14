@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "twin_id": "twin_signal_scout_001",
+  "decision_version": 1,
+  "lifecycle_status": "green",
+  "freshness": {
+    "status": "fresh",
+    "captured_at": "2026-07-13T14:52:00Z",
+    "expires_at": "2026-07-13T16:52:00Z",
+    "superseded_by": null,
+    "message": "Evidence is fresh."
+  },
+  "availability": {
+    "state": "not_run",
+    "message": "MoP replay has not been run.",
+    "reason_code": "optional_add_on",
+    "retryable": false,
+    "last_attempt_at": null
+  },
+  "data": null
+}
+

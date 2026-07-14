@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/tabs/dependency-graph.schema.json",
+  "title": "Dependency Graph Twin Tab",
+  "x-contract-version": "1.0.0",
+  "allOf": [{"$ref": "../common.schema.json#/$defs/tabEnvelope"}],
+  "type": "object",
+  "required": ["data"],
+  "properties": {
+    "data": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["summary", "nodes", "edges", "missing_dependencies", "table_rows"],
+      "properties": {
+        "summary": {"type": "object", "required": ["node_count", "edge_count", "missing_count"], "properties": {"node_count": {"type": "integer", "minimum": 0}, "edge_count": {"type": "integer", "minimum": 0}, "missing_count": {"type": "integer", "minimum": 0}}, "additionalProperties": false},
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["resource_id", "identity", "kind", "namespace", "name", "risk", "state", "provenance", "finding_ids"],
+            "properties": {
+              "resource_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "identity": {"$ref": "../common.schema.json#/$defs/identifier"}, "kind": {"type": "string", "minLength": 1, "maxLength": 200}, "namespace": {"type": ["string", "null"], "maxLength": 253}, "name": {"type": "string", "minLength": 1, "maxLength": 253}, "helm_release": {"type": ["string", "null"], "maxLength": 253}, "risk": {"$ref": "../common.schema.json#/$defs/riskLevel"}, "state": {"type": "string", "enum": ["valid", "warning", "missing", "unknown"]}, "provenance": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}, "finding_ids": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/identifier"}}
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["edge_id", "from_resource_id", "to_resource_id", "edge_type", "confidence", "evidence_refs"],
+            "properties": {"edge_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "from_resource_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "to_resource_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "edge_type": {"type": "string", "enum": ["owns", "helm_manages", "selects_pods", "mounts_configmap", "references_secret_name_only", "mounts_pvc", "routes_to_service", "depends_on_phase", "validates", "rollback_of"]}, "confidence": {"type": "string", "enum": ["observed", "derived", "uncertain"]}, "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}}
+          }
+        },
+        "missing_dependencies": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/finding"}},
+        "table_rows": {"type": "array", "items": {"type": "object", "required": ["from", "relationship", "to", "status"], "properties": {"from": {"type": "string"}, "relationship": {"type": "string"}, "to": {"type": "string"}, "status": {"type": "string"}}, "additionalProperties": false}}
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}
+

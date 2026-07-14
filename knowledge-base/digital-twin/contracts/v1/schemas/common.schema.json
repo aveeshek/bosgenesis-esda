@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/common.schema.json",
+  "title": "ESDA Digital Twin Common Types",
+  "x-contract-version": "1.0.0",
+  "$defs": {
+    "schemaVersion": {"const": "1.0.0"},
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 300},
+    "nullableIdentifier": {"type": ["string", "null"], "minLength": 1, "maxLength": 300},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "nullableTimestamp": {"type": ["string", "null"], "format": "date-time"},
+    "lifecycleStatus": {
+      "type": "string",
+      "enum": [
+        "requested", "bundle_validating", "normalizing", "snapshot_collecting", "rendering",
+        "graph_building", "diffing", "policy_checking", "awaiting_dry_run",
+        "dry_run_evidence_attached", "decision_calculating", "green", "amber", "red",
+        "failed", "cancelled"
+      ]
+    },
+    "visibleLifecycle": {
+      "type": "string",
+      "enum": ["preparing", "generating", "analyzing", "awaiting_dry_run", "finalizing", "ready", "review_required", "blocked", "failed", "cancelled"]
+    },
+    "decisionLevel": {"type": "string", "enum": ["pending", "preliminary", "green", "amber", "red", "none"]},
+    "riskLevel": {"type": "string", "enum": ["low", "medium", "high", "critical", "unknown"]},
+    "severity": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "captured_at", "expires_at", "message"],
+      "properties": {
+        "status": {"type": "string", "enum": ["fresh", "approaching_expiry", "stale", "drifted", "expired", "superseded"]},
+        "captured_at": {"$ref": "#/$defs/nullableTimestamp"},
+        "expires_at": {"$ref": "#/$defs/nullableTimestamp"},
+        "superseded_by": {"$ref": "#/$defs/nullableIdentifier"},
+        "message": {"type": "string", "minLength": 1, "maxLength": 1000}
+      }
+    },
+    "availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "message", "retryable"],
+      "properties": {
+        "state": {"type": "string", "enum": ["loading", "available", "empty", "not_run", "not_available", "failed", "stale"]},
+        "message": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "reason_code": {"type": ["string", "null"], "maxLength": 120},
+        "retryable": {"type": "boolean"},
+        "last_attempt_at": {"$ref": "#/$defs/nullableTimestamp"}
+      }
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "href"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1, "maxLength": 120},
+        "href": {"type": "string", "minLength": 1, "maxLength": 2000}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "filename", "media_type", "download_href"],
+      "properties": {
+        "artifact_id": {"$ref": "#/$defs/identifier"},
+        "filename": {"type": "string", "minLength": 1, "maxLength": 500},
+        "media_type": {"type": "string", "minLength": 1, "maxLength": 200},
+        "sha256": {"type": ["string", "null"], "pattern": "^[a-fA-F0-9]{64}$"},
+        "download_href": {"type": "string", "minLength": 1, "maxLength": 2000}
+      }
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "source_type", "summary", "captured_at", "redacted"],
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/identifier"},
+        "source_type": {"type": "string", "enum": ["bundle", "live_snapshot", "helm", "kubernetes", "dry_run", "policy", "historical", "operator", "report"]},
+        "source_id": {"$ref": "#/$defs/nullableIdentifier"},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "captured_at": {"$ref": "#/$defs/nullableTimestamp"},
+        "redacted": {"const": true},
+        "href": {"type": ["string", "null"], "maxLength": 2000}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding_id", "code", "title", "severity", "status", "summary", "evidence_refs"],
+      "properties": {
+        "finding_id": {"$ref": "#/$defs/identifier"},
+        "code": {"type": "string", "minLength": 1, "maxLength": 160},
+        "title": {"type": "string", "minLength": 1, "maxLength": 300},
+        "severity": {"$ref": "#/$defs/severity"},
+        "status": {"type": "string", "enum": ["passed", "warning", "approval_required", "denied", "not_applicable", "open", "resolved", "unknown"]},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "category": {"type": ["string", "null"], "maxLength": 160},
+        "policy_version": {"type": ["string", "null"], "maxLength": 200},
+        "resource_identity": {"type": ["string", "null"], "maxLength": 1000},
+        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/evidenceRef"}}
+      }
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "summary", "severity"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1, "maxLength": 160},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "severity": {"$ref": "#/$defs/severity"},
+        "tab_slug": {"type": ["string", "null"], "maxLength": 100},
+        "finding_id": {"$ref": "#/$defs/nullableIdentifier"}
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limit", "has_more", "next_cursor"],
+      "properties": {
+        "limit": {"type": "integer", "enum": [25, 50, 100]},
+        "has_more": {"type": "boolean"},
+        "next_cursor": {"type": ["string", "null"], "maxLength": 2000},
+        "result_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "tabEnvelope": {
+      "type": "object",
+      "required": ["schema_version", "twin_id", "decision_version", "lifecycle_status", "freshness", "availability"],
+      "properties": {
+        "schema_version": {"$ref": "#/$defs/schemaVersion"},
+        "twin_id": {"$ref": "#/$defs/identifier"},
+        "decision_version": {"type": "integer", "minimum": 0},
+        "lifecycle_status": {"$ref": "#/$defs/lifecycleStatus"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "availability": {"$ref": "#/$defs/availability"},
+        "safe_explanation": {"type": ["object", "null"]}
+      }
+    }
+  }
+}
+

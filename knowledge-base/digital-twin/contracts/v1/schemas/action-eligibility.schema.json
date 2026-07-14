@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/action-eligibility.schema.json",
+  "title": "ESDA Digital Twin Action Eligibility",
+  "x-contract-version": "1.0.0",
+  "$defs": {
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "label", "enabled", "visible", "method", "href", "reason_code", "disabled_reason", "requires_confirmation"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": ["generate_twin", "regenerate_twin", "open_twin", "open_bundle", "download_report", "export_evidence", "request_approval", "open_approval", "open_execution", "start_execution", "cancel_generation", "refresh_drift", "run_replay"]
+        },
+        "label": {"type": "string", "minLength": 1, "maxLength": 120},
+        "enabled": {"type": "boolean"},
+        "visible": {"type": "boolean"},
+        "method": {"type": "string", "enum": ["GET", "POST", "NONE"]},
+        "href": {"type": ["string", "null"], "maxLength": 2000},
+        "reason_code": {
+          "type": "string",
+          "enum": ["eligible", "not_created", "running", "decision_red", "approval_required", "approval_pending", "approval_invalid", "stale", "drifted", "expired", "superseded", "used_for_execution", "archived", "failed", "unauthorized", "unsupported"]
+        },
+        "disabled_reason": {"type": ["string", "null"], "maxLength": 1000},
+        "requires_confirmation": {"type": "boolean"}
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "twin_id", "decision_version", "lifecycle_status", "freshness", "actions"],
+  "properties": {
+    "schema_version": {"$ref": "common.schema.json#/$defs/schemaVersion"},
+    "twin_id": {"$ref": "common.schema.json#/$defs/identifier"},
+    "decision_version": {"type": "integer", "minimum": 0},
+    "lifecycle_status": {"$ref": "common.schema.json#/$defs/lifecycleStatus"},
+    "freshness": {"$ref": "common.schema.json#/$defs/freshness"},
+    "actions": {"type": "array", "items": {"$ref": "#/$defs/action"}, "uniqueItems": true}
+  }
+}
+

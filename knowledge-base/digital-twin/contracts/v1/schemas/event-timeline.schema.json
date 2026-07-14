@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/event-timeline.schema.json",
+  "title": "ESDA Digital Twin Event and Audit Timeline",
+  "x-contract-version": "1.0.0",
+  "$defs": {
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "twin_id", "sequence", "event_type", "phase", "status", "actor", "safe_summary", "evidence_refs", "redacted", "created_at"],
+      "properties": {
+        "event_id": {"$ref": "common.schema.json#/$defs/identifier"},
+        "twin_id": {"$ref": "common.schema.json#/$defs/identifier"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "event_type": {"type": "string", "minLength": 1, "maxLength": 160},
+        "phase": {"type": "string", "minLength": 1, "maxLength": 160},
+        "status": {"type": "string", "enum": ["started", "running", "completed", "warning", "failed", "cancelled", "superseded"]},
+        "actor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id", "display_name"],
+          "properties": {
+            "type": {"type": "string", "enum": ["system", "operator", "approver", "esda", "execution_agent", "mcp_tool"]},
+            "id": {"$ref": "common.schema.json#/$defs/identifier"},
+            "display_name": {"type": "string", "minLength": 1, "maxLength": 300}
+          }
+        },
+        "safe_summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "evidence_refs": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/evidenceRef"}},
+        "redacted": {"const": true},
+        "created_at": {"$ref": "common.schema.json#/$defs/timestamp"}
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "twin_id", "decision_version", "lifecycle_status", "freshness", "availability", "events", "page"],
+  "properties": {
+    "schema_version": {"$ref": "common.schema.json#/$defs/schemaVersion"},
+    "twin_id": {"$ref": "common.schema.json#/$defs/identifier"},
+    "decision_version": {"type": "integer", "minimum": 0},
+    "lifecycle_status": {"$ref": "common.schema.json#/$defs/lifecycleStatus"},
+    "freshness": {"$ref": "common.schema.json#/$defs/freshness"},
+    "availability": {"$ref": "common.schema.json#/$defs/availability"},
+    "events": {"type": "array", "items": {"$ref": "#/$defs/event"}},
+    "page": {"$ref": "common.schema.json#/$defs/page"}
+  }
+}
+

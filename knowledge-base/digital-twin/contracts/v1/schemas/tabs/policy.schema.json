@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/tabs/policy.schema.json",
+  "title": "Policy Twin Tab",
+  "x-contract-version": "1.0.0",
+  "allOf": [{"$ref": "../common.schema.json#/$defs/tabEnvelope"}],
+  "type": "object",
+  "required": ["data"],
+  "properties": {
+    "data": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["verdict", "policy_version", "input_hash", "groups", "findings", "artifacts"],
+      "properties": {
+        "verdict": {"type": "string", "enum": ["pending", "allow", "allow_with_approval", "deny", "unknown"]},
+        "policy_version": {"type": "string", "minLength": 1, "maxLength": 200},
+        "input_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+        "groups": {"type": "array", "items": {"type": "string", "enum": ["namespace_boundary", "cluster_scope", "rbac", "secret_handling", "privileged_host_access", "pvc_data_safety", "resource_quotas", "image_policy", "approval_policy", "bundle_dry_run_freshness_integrity"]}, "uniqueItems": true},
+        "findings": {
+          "type": "array",
+          "items": {
+            "allOf": [{"$ref": "../common.schema.json#/$defs/finding"}],
+            "type": "object",
+            "required": ["category", "policy_version"],
+            "properties": {"category": {"type": "string"}, "policy_version": {"type": "string", "minLength": 1, "maxLength": 200}}
+          }
+        },
+        "artifacts": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/artifact"}}
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}
+

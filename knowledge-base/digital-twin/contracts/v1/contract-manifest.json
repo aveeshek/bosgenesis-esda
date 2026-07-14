@@ -1,0 +1,68 @@
+{
+  "contract_name": "esda_namespace_readiness_twin",
+  "contract_version": "1.0.0",
+  "decision_authority": "bosgenesis-mop-execution-agent",
+  "navigation": [
+    "LLM Chat",
+    "Health Check",
+    "Release Notes",
+    "Bundle Generation",
+    "Digital Twins",
+    "Bundle Execution",
+    "Environment Chat",
+    "Activity",
+    "Approvals",
+    "L4 Audit"
+  ],
+  "routes": {
+    "list": "/digital-twins",
+    "detail": "/digital-twins/{twin_id}",
+    "execution_gate": "/mop-execution?twin_id={twin_id}",
+    "approval": "/approvals?twin_id={twin_id}",
+    "activity": "/activity?workflow=namespace_twin&twin_id={twin_id}",
+    "base_path_behavior": "prefix configured APP_BASE_PATH during link generation; never persist or hard-code /esda"
+  },
+  "list_query_keys": [
+    "q",
+    "decision",
+    "lifecycle",
+    "freshness",
+    "cluster",
+    "namespace",
+    "bundle",
+    "created_by",
+    "created_from",
+    "created_to",
+    "linked_execution",
+    "sort",
+    "direction",
+    "cursor",
+    "limit"
+  ],
+  "default_sort": "created_at",
+  "default_direction": "desc",
+  "default_limit": 25,
+  "tabs": [
+    {"position": 1, "label": "Overview", "slug": "overview", "schema": "schemas/tabs/overview.schema.json"},
+    {"position": 2, "label": "Release Delta Twin", "slug": "release-delta", "schema": "schemas/tabs/release-delta.schema.json"},
+    {"position": 3, "label": "Dependency Graph Twin", "slug": "dependency-graph", "schema": "schemas/tabs/dependency-graph.schema.json"},
+    {"position": 4, "label": "Policy Twin", "slug": "policy", "schema": "schemas/tabs/policy.schema.json"},
+    {"position": 5, "label": "Dry-run / Diff Twin", "slug": "dry-run", "schema": "schemas/tabs/dry-run.schema.json"},
+    {"position": 6, "label": "Rollback Twin", "slug": "rollback", "schema": "schemas/tabs/rollback.schema.json"},
+    {"position": 7, "label": "Drift Twin", "slug": "drift", "schema": "schemas/tabs/drift.schema.json"},
+    {"position": 8, "label": "MoP Replay Twin", "slug": "mop-replay", "schema": "schemas/tabs/mop-replay.schema.json"},
+    {"position": 9, "label": "Runtime Behavior Twin", "slug": "runtime-behavior", "schema": "schemas/tabs/runtime-behavior.schema.json"},
+    {"position": 10, "label": "Release Note Validation Twin", "slug": "release-note-validation", "schema": "schemas/tabs/release-note-validation.schema.json"},
+    {"position": 11, "label": "Audit Timeline", "slug": "audit", "schema": "schemas/tabs/audit-timeline.schema.json"}
+  ],
+  "tab_availability_states": ["loading", "available", "empty", "not_run", "not_available", "failed", "stale"],
+  "schemas": {
+    "common": "schemas/common.schema.json",
+    "list": "schemas/twin-list.schema.json",
+    "detail": "schemas/twin-detail.schema.json",
+    "actions": "schemas/action-eligibility.schema.json",
+    "safe_explanation": "schemas/safe-explanation.schema.json",
+    "events": "schemas/event-timeline.schema.json"
+  }
+}
+

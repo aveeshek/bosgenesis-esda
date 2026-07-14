@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/tabs/release-note-validation.schema.json",
+  "title": "Release Note Validation Twin Tab",
+  "x-contract-version": "1.0.0",
+  "allOf": [{"$ref": "../common.schema.json#/$defs/tabEnvelope"}],
+  "type": "object",
+  "required": ["data"],
+  "properties": {
+    "data": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["status", "release_note_artifact_id", "claims", "missing_operational_notes", "suggested_corrections", "automatic_overwrite_allowed", "evidence_refs"],
+      "properties": {
+        "status": {"type": "string", "enum": ["not_run", "passed", "warning", "failed", "not_available"]},
+        "release_note_artifact_id": {"$ref": "../common.schema.json#/$defs/nullableIdentifier"},
+        "claims": {"type": "array", "items": {"type": "object", "required": ["claim_id", "category", "claim", "status", "summary", "evidence_refs"], "properties": {"claim_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "category": {"type": "string", "enum": ["image", "configuration", "migration", "pvc_storage", "rbac", "route", "rollback", "breaking_change", "known_risk", "other"]}, "claim": {"type": "string", "minLength": 1, "maxLength": 4000}, "status": {"type": "string", "enum": ["supported", "unsupported", "partial", "unknown"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}, "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}}, "additionalProperties": false}},
+        "missing_operational_notes": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+        "suggested_corrections": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 4000}},
+        "automatic_overwrite_allowed": {"const": false},
+        "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}
+

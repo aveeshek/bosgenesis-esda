@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0.0",
+  "twin_id": "twin_beacon_pilot_002",
+  "display_name": "Beacon Pilot - bosgenesis to agent-testing",
+  "decision_version": 2,
+  "lifecycle_status": "amber",
+  "visible_lifecycle": "review_required",
+  "decision": "amber",
+  "decision_is_final": true,
+  "risk": {"level": "medium", "score": 56},
+  "autonomy_eligibility": "approval_required",
+  "recommended_action": "Review PVC and rollback evidence, then request approval.",
+  "freshness": {
+    "status": "fresh",
+    "captured_at": "2026-07-13T14:00:00Z",
+    "expires_at": "2026-07-13T16:00:00Z",
+    "superseded_by": null,
+    "message": "Evidence is fresh."
+  },
+  "target": {
+    "cluster_id": "cluster_lab_01",
+    "cluster_name": "BOS Genesis Lab",
+    "namespace": "agent-testing"
+  },
+  "bundle": {
+    "bundle_id": "mop_beacon_pilot_002",
+    "bundle_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "release_version": "current",
+    "open_href": "/activity?workflow=mop_generation&run_id=mop_beacon_pilot_002"
+  },
+  "created_by": "usr_admin",
+  "created_by_display": "admin",
+  "created_at": "2026-07-13T13:55:00Z",
+  "updated_at": "2026-07-13T14:08:00Z",
+  "relationships": {
+    "dry_run_job_id": "job_dry_run_002",
+    "approval_id": null,
+    "approval_status": "required",
+    "execution_id": null,
+    "execution_status": "unlinked",
+    "used_for_execution": false
+  },
+  "top_reasons": [
+    {
+      "code": "PVC_CHANGE_REQUIRES_REVIEW",
+      "summary": "The release changes persistent storage and rollback confidence is medium.",
+      "severity": "medium",
+      "tab_slug": "rollback",
+      "finding_id": "finding_pvc_002"
+    }
+  ],
+  "actions": [
+    {
+      "code": "request_approval",
+      "label": "Request Approval",
+      "enabled": true,
+      "visible": true,
+      "method": "POST",
+      "href": "/approvals?twin_id=twin_beacon_pilot_002",
+      "reason_code": "eligible",
+      "disabled_reason": null,
+      "requires_confirmation": true
+    },
+    {
+      "code": "start_execution",
+      "label": "Start Bundle Execution",
+      "enabled": false,
+      "visible": true,
+      "method": "POST",
+      "href": null,
+      "reason_code": "approval_required",
+      "disabled_reason": "A matching, unexpired approval is required.",
+      "requires_confirmation": true
+    }
+  ],
+  "tab_states": {
+    "overview": {"state": "available", "message": "Overview is available.", "retryable": false, "reason_code": null, "last_attempt_at": "2026-07-13T14:08:00Z"},
+    "release-delta": {"state": "available", "message": "Release delta is available.", "retryable": false, "reason_code": null, "last_attempt_at": "2026-07-13T14:05:00Z"},
+    "dependency-graph": {"state": "available", "message": "Dependency graph is available.", "retryable": false, "reason_code": null, "last_attempt_at": "2026-07-13T14:05:00Z"},
+    "policy": {"state": "available", "message": "Policy evidence is available.", "retryable": false, "reason_code": null, "last_attempt_at": "2026-07-13T14:06:00Z"},
+    "dry-run": {"state": "available", "message": "Authoritative dry-run evidence is available.", "retryable": false, "reason_code": null, "last_attempt_at": "2026-07-13T14:07:00Z"},
+    "rollback": {"state": "available", "message": "Rollback analysis is available.", "retryable": false, "reason_code": null, "last_attempt_at": "2026-07-13T14:06:00Z"},
+    "drift": {"state": "available", "message": "Freshness and drift evidence is available.", "retryable": false, "reason_code": null, "last_attempt_at": "2026-07-13T14:08:00Z"},
+    "mop-replay": {"state": "not_run", "message": "MoP replay has not been run.", "retryable": false, "reason_code": "optional_add_on", "last_attempt_at": null},
+    "runtime-behavior": {"state": "available", "message": "Rules-first runtime evidence is available.", "retryable": false, "reason_code": null, "last_attempt_at": "2026-07-13T14:03:00Z"},
+    "release-note-validation": {"state": "not_run", "message": "Release note validation has not been run.", "retryable": false, "reason_code": "optional_add_on", "last_attempt_at": null},
+    "audit": {"state": "available", "message": "Audit events are available.", "retryable": false, "reason_code": null, "last_attempt_at": "2026-07-13T14:08:00Z"}
+  },
+  "safe_explanation": null
+}
+

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block body %}
+<main class="digital-twins-host" aria-label="Digital Twin detail">
+  <iframe
+    id="digital-twin-detail-frame"
+    class="digital-twins-frame"
+    src="/static/digital-twin/digital-twin-detail.html?twin_id={{ twin_id|urlencode }}{% if request.url.query %}&amp;{{ request.url.query }}{% endif %}"
+    data-adapter-mode="{{ digital_twin_adapter_mode }}"
+    data-host-path="/digital-twins/{{ twin_id|urlencode }}"
+    title="Digital Twin {{ twin_id }}"
+  ></iframe>
+</main>
+{% endblock %}

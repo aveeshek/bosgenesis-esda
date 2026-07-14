@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0.0",
+  "explanation_id": "exp_beacon_pilot_002",
+  "status": "generated",
+  "model_profile": "azure_gpt5_pro",
+  "prompt_version": "namespace_twin_explainer_v1",
+  "prompt_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "input_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "generated_at": "2026-07-13T14:08:10Z",
+  "format": "safe_markdown",
+  "content": "Eligibility is Amber. The authoritative dry-run passed, but persistent-storage changes and medium rollback confidence require human approval.",
+  "evidence_refs": [
+    {
+      "evidence_id": "evidence_dry_run_002",
+      "source_type": "dry_run",
+      "source_id": "job_dry_run_002",
+      "summary": "Authoritative dry-run passed with storage warnings.",
+      "captured_at": "2026-07-13T14:07:00Z",
+      "redacted": true,
+      "href": "/digital-twins/twin_beacon_pilot_002?tab=dry-run"
+    }
+  ],
+  "fallback_reason": null,
+  "latency_ms": 840,
+  "input_tokens": 520,
+  "output_tokens": 74,
+  "chain_of_thought_included": false
+}
+

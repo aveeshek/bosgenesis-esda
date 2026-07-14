@@ -238,7 +238,7 @@ def test_mop_generation_page_renders_phase_e_shell(tmp_path, monkeypatch) -> Non
 
         response = client.get("/mop-generation")
         assert response.status_code == 200
-        assert "MoP Generation" in response.text
+        assert "Bundle Generation" in response.text
         assert "mop_generation.js" in response.text
         assert "mop-generation-form" in response.text
         assert (

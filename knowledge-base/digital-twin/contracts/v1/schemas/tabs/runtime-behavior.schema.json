@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/tabs/runtime-behavior.schema.json",
+  "title": "Runtime Behavior Twin Tab",
+  "x-contract-version": "1.0.0",
+  "allOf": [{"$ref": "../common.schema.json#/$defs/tabEnvelope"}],
+  "type": "object",
+  "required": ["data"],
+  "properties": {
+    "data": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["method", "risk", "confidence", "current_health", "factors", "historical_context_status", "may_independently_approve", "rules_version", "evidence_refs"],
+      "properties": {
+        "method": {"type": "string", "enum": ["rules_only", "model_assisted"]},
+        "risk": {"$ref": "../common.schema.json#/$defs/riskLevel"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "current_health": {"type": "object", "required": ["status", "not_ready_pods", "restarting_pods", "event_anomalies", "resource_pressure"], "properties": {"status": {"type": "string", "enum": ["healthy", "degraded", "unhealthy", "unknown"]}, "not_ready_pods": {"type": "integer", "minimum": 0}, "restarting_pods": {"type": "integer", "minimum": 0}, "event_anomalies": {"type": "integer", "minimum": 0}, "resource_pressure": {"type": "string", "enum": ["none", "low", "medium", "high", "unknown"]}}, "additionalProperties": false},
+        "factors": {"type": "array", "items": {"type": "object", "required": ["factor_id", "title", "impact", "confidence", "summary", "evidence_refs"], "properties": {"factor_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "title": {"type": "string", "minLength": 1, "maxLength": 300}, "impact": {"type": "string", "enum": ["reduces_risk", "neutral", "increases_risk", "unknown"]}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}, "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}}, "additionalProperties": false}},
+        "historical_context_status": {"type": "string", "enum": ["available", "partial", "not_available"]},
+        "may_independently_approve": {"const": false},
+        "rules_version": {"type": "string", "minLength": 1, "maxLength": 200},
+        "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}
+

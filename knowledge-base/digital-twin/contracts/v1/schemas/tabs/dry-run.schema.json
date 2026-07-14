@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/tabs/dry-run.schema.json",
+  "title": "Dry-run and Diff Twin Tab",
+  "x-contract-version": "1.0.0",
+  "allOf": [{"$ref": "../common.schema.json#/$defs/tabEnvelope"}],
+  "type": "object",
+  "required": ["data"],
+  "properties": {
+    "data": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["dry_run_job_id", "status", "authoritative", "bundle_hash", "input_hash", "target_namespace", "snapshot", "command_fingerprint_hash", "validations", "observations", "fidelity_limitations", "artifacts"],
+      "properties": {
+        "dry_run_job_id": {"$ref": "../common.schema.json#/$defs/identifier"},
+        "status": {"type": "string", "enum": ["pending", "running", "passed", "passed_with_warnings", "failed", "stale"]},
+        "authoritative": {"const": true},
+        "bundle_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+        "input_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+        "target_namespace": {"type": "string", "minLength": 1, "maxLength": 253},
+        "snapshot": {"type": "object", "required": ["snapshot_id", "captured_at", "hash"], "properties": {"snapshot_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "captured_at": {"$ref": "../common.schema.json#/$defs/timestamp"}, "hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}}, "additionalProperties": false},
+        "command_fingerprint_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+        "validations": {"type": "array", "items": {"type": "object", "required": ["type", "status", "summary"], "properties": {"type": {"type": "string", "enum": ["bundle_schema", "helm_lint", "helm_render", "helm_dry_run", "kubernetes_server_dry_run"]}, "status": {"type": "string", "enum": ["passed", "warning", "failed", "not_available"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}}, "additionalProperties": false}},
+        "observations": {"type": "array", "items": {"type": "object", "required": ["observation_id", "phase", "step", "tool", "outcome", "summary", "resource_identity", "evidence_refs", "redacted"], "properties": {"observation_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "phase": {"type": "string"}, "step": {"type": "string"}, "tool": {"type": "string"}, "outcome": {"type": "string", "enum": ["accepted", "rejected", "warning", "skipped", "unknown"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}, "resource_identity": {"type": ["string", "null"]}, "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}, "redacted": {"const": true}}, "additionalProperties": false}},
+        "fidelity_limitations": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+        "artifacts": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/artifact"}}
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}
+

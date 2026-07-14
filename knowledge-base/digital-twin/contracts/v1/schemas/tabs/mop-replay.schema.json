@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/tabs/mop-replay.schema.json",
+  "title": "MoP Replay Twin Tab",
+  "x-contract-version": "1.0.0",
+  "allOf": [{"$ref": "../common.schema.json#/$defs/tabEnvelope"}],
+  "type": "object",
+  "required": ["data"],
+  "properties": {
+    "data": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["replay_id", "status", "isolation", "synthetic_secret_strategy", "retention_seconds", "timeline", "checks", "cleanup_status", "evidence_refs"],
+      "properties": {
+        "replay_id": {"$ref": "../common.schema.json#/$defs/nullableIdentifier"},
+        "status": {"type": "string", "enum": ["not_run", "requested", "running", "passed", "failed", "cancelled", "not_available"]},
+        "isolation": {"type": ["string", "null"], "maxLength": 2000},
+        "synthetic_secret_strategy": {"type": ["string", "null"], "maxLength": 2000},
+        "retention_seconds": {"type": ["integer", "null"], "minimum": 0},
+        "timeline": {"type": "array", "items": {"type": "object", "required": ["sequence", "phase", "status", "summary", "created_at"], "properties": {"sequence": {"type": "integer", "minimum": 1}, "phase": {"type": "string", "minLength": 1}, "status": {"type": "string", "enum": ["pending", "running", "passed", "warning", "failed", "skipped"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}, "created_at": {"$ref": "../common.schema.json#/$defs/timestamp"}}, "additionalProperties": false}},
+        "checks": {"type": "array", "items": {"type": "object", "required": ["type", "status", "summary"], "properties": {"type": {"type": "string", "enum": ["helm_hook", "readiness", "init_container", "pvc_binding", "service", "smoke_test", "log", "cleanup"]}, "status": {"type": "string", "enum": ["passed", "warning", "failed", "skipped", "not_available"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}}, "additionalProperties": false}},
+        "cleanup_status": {"type": "string", "enum": ["not_started", "running", "completed", "failed", "not_applicable"]},
+        "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}
+

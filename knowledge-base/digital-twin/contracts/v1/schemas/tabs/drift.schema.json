@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/tabs/drift.schema.json",
+  "title": "Drift Twin Tab",
+  "x-contract-version": "1.0.0",
+  "allOf": [{"$ref": "../common.schema.json#/$defs/tabEnvelope"}],
+  "type": "object",
+  "required": ["data"],
+  "properties": {
+    "data": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["status", "snapshot", "current_capture", "freshness_threshold_seconds", "changes", "helm_revision_drift", "manual_patch_indicators", "health_changes", "execution_disabled", "rules_version"],
+      "properties": {
+        "status": {"type": "string", "enum": ["pending", "none", "minor", "major", "critical", "unknown"]},
+        "snapshot": {"type": "object", "required": ["captured_at", "hash"], "properties": {"captured_at": {"$ref": "../common.schema.json#/$defs/timestamp"}, "hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}}, "additionalProperties": false},
+        "current_capture": {"type": "object", "required": ["captured_at", "hash"], "properties": {"captured_at": {"$ref": "../common.schema.json#/$defs/timestamp"}, "hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}}, "additionalProperties": false},
+        "freshness_threshold_seconds": {"type": "integer", "minimum": 1},
+        "changes": {"type": "array", "items": {"type": "object", "required": ["change_id", "resource_identity", "change_type", "classification", "summary", "evidence_refs"], "properties": {"change_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "resource_identity": {"$ref": "../common.schema.json#/$defs/identifier"}, "change_type": {"type": "string", "enum": ["created", "updated", "deleted", "status_only", "helm_revision", "manual_patch", "health"]}, "classification": {"type": "string", "enum": ["minor", "major", "critical", "unknown"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}, "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}}, "additionalProperties": false}},
+        "helm_revision_drift": {"type": "boolean"},
+        "manual_patch_indicators": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+        "health_changes": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+        "execution_disabled": {"type": "boolean"},
+        "rules_version": {"type": "string", "minLength": 1, "maxLength": 200}
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}

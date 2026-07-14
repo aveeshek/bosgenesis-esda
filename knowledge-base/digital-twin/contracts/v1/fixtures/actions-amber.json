@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0.0",
+  "twin_id": "twin_beacon_pilot_002",
+  "decision_version": 2,
+  "lifecycle_status": "amber",
+  "freshness": {
+    "status": "fresh",
+    "captured_at": "2026-07-13T14:00:00Z",
+    "expires_at": "2026-07-13T16:00:00Z",
+    "superseded_by": null,
+    "message": "Evidence is fresh."
+  },
+  "actions": [
+    {
+      "code": "request_approval",
+      "label": "Request Approval",
+      "enabled": true,
+      "visible": true,
+      "method": "POST",
+      "href": "/approvals?twin_id=twin_beacon_pilot_002",
+      "reason_code": "eligible",
+      "disabled_reason": null,
+      "requires_confirmation": true
+    },
+    {
+      "code": "start_execution",
+      "label": "Start Bundle Execution",
+      "enabled": false,
+      "visible": true,
+      "method": "POST",
+      "href": null,
+      "reason_code": "approval_required",
+      "disabled_reason": "A matching, unexpired approval is required.",
+      "requires_confirmation": true
+    }
+  ]
+}

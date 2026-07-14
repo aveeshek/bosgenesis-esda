@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Bundle Execution Twin Gate | BOS Genesis ESDA</title>
+  <link rel="stylesheet" href="prototype.css">
+  <link rel="stylesheet" href="prototype-phase2.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="app-header">
+    <a class="brand-lockup" href="digital-twins.html" aria-label="BOS Genesis ESDA home"><span class="brand-title">BOS Genesis ESDA</span><span class="brand-subtitle">Workflow Console</span></a>
+    <nav class="app-nav" data-main-nav aria-label="Primary navigation">
+      <a class="nav-link chat" href="#">LLM Chat</a><a class="nav-link" href="#">Health Check</a><a class="nav-link" href="#">Release Notes</a><a class="nav-link" href="#">Bundle Generation</a><a class="nav-link" href="digital-twins.html">Digital Twins</a><a class="nav-link is-active" href="bundle-execution-twin-gate.html" aria-current="page">Bundle Execution</a><a class="nav-link" href="#">Environment Chat</a><a class="nav-link" href="#">Activity</a><a class="nav-link" href="#">Approvals</a><a class="nav-link" href="#">L4 Audit</a>
+    </nav>
+    <div class="header-actions">
+      <button class="mobile-nav-control" type="button" data-nav-toggle aria-expanded="false" aria-label="Toggle navigation">Menu</button>
+      <button class="model-control" type="button" aria-label="Selected model: SIGMA 5 PRO"><small>Model</small><strong>SIGMA 5 PRO</strong></button>
+      <div class="profile-wrap"><button class="profile-control" type="button" data-profile-toggle aria-expanded="false" aria-controls="profile-menu" aria-label="Open profile menu"><span class="profile-avatar" aria-hidden="true">A</span></button><div class="profile-menu" id="profile-menu" data-profile-menu hidden><strong>admin</strong><p>Autonomous operations administrator</p><button class="btn" type="button">Log out</button></div></div>
+    </div>
+  </header>
+
+  <main class="page-shell" id="main-content">
+    <div class="gate-layout">
+      <section class="gate-context" aria-label="Execution context">
+        <div class="mock-state-view"><h3>Loading execution context</h3><p>Selecting the browser fixture and immutable decision version.</p></div>
+      </section>
+      <section class="twin-gate" aria-label="Digital Twin Gate">
+        <div class="mock-state-view"><h3>Loading Twin Gate</h3><p>Reading deterministic gate evidence through TwinDataAdapter.</p></div>
+      </section>
+      <aside class="gate-result" aria-label="Execution eligibility result">
+        <div class="mock-state-view"><h3>Preparing eligibility summary</h3><p>No execution or server request will occur.</p></div>
+      </aside>
+    </div>
+    <p class="compact-footer">Browser-only Twin Gate | fixture contract 1.0.0 | no server interaction</p>
+  </main>
+
+  <script src="fixtures/v1/twin-fixtures.js"></script>
+  <script src="twin-data-adapter.js"></script>
+  <script src="twin-components.js"></script>
+  <script src="prototype.js"></script>
+  <script src="twin-gate-page.js"></script>
+</body>
+</html>

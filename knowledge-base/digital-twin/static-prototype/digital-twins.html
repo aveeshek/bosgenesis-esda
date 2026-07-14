@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Digital Twins | BOS Genesis ESDA</title>
+  <link rel="stylesheet" href="prototype.css">
+  <link rel="stylesheet" href="prototype-phase2.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="app-header">
+    <a class="brand-lockup" href="digital-twins.html" aria-label="BOS Genesis ESDA home">
+      <span class="brand-title">BOS Genesis ESDA</span>
+      <span class="brand-subtitle">Workflow Console</span>
+    </a>
+    <nav class="app-nav" data-main-nav aria-label="Primary navigation">
+      <a class="nav-link chat" href="#">LLM Chat</a>
+      <a class="nav-link" href="#">Health Check</a>
+      <a class="nav-link" href="#">Release Notes</a>
+      <a class="nav-link" href="#">Bundle Generation</a>
+      <a class="nav-link is-active" href="digital-twins.html" aria-current="page">Digital Twins</a>
+      <a class="nav-link" href="bundle-execution-twin-gate.html">Bundle Execution</a>
+      <a class="nav-link" href="#">Environment Chat</a>
+      <a class="nav-link" href="#">Activity</a>
+      <a class="nav-link" href="#">Approvals</a>
+      <a class="nav-link" href="#">L4 Audit</a>
+    </nav>
+    <div class="header-actions">
+      <button class="mobile-nav-control" type="button" data-nav-toggle aria-expanded="false" aria-label="Toggle navigation">Menu</button>
+      <button class="model-control" type="button" aria-label="Selected model: SIGMA 5 PRO"><small>Model</small><strong>SIGMA 5 PRO</strong></button>
+      <div class="profile-wrap">
+        <button class="profile-control" type="button" data-profile-toggle aria-expanded="false" aria-controls="profile-menu" aria-label="Open profile menu"><span class="profile-avatar" aria-hidden="true">A</span></button>
+        <div class="profile-menu" id="profile-menu" data-profile-menu hidden><strong>admin</strong><p>Autonomous operations administrator</p><button class="btn" type="button">Log out</button></div>
+      </div>
+    </div>
+  </header>
+
+  <main class="page-shell" id="main-content">
+    <section class="page-heading" aria-labelledby="page-title">
+      <div><p class="eyebrow">Release Safety Intelligence</p><h1 id="page-title">Digital Twins</h1><p>Evidence-backed release decisions across bundles, targets, policies, dry-runs, rollback readiness, and runtime drift.</p></div>
+      <div class="heading-actions"><button class="btn" type="button" data-list-refresh>Refresh</button><button class="btn primary" id="generate-fixture" type="button">Generate Twin</button></div>
+    </section>
+
+    <section class="summary-band" aria-label="Twin summary">
+      <div class="metric"><span>Total Twins</span><strong data-metric="total">0</strong></div>
+      <div class="metric"><span>Green</span><strong data-metric="green">0</strong></div>
+      <div class="metric"><span>Amber</span><strong data-metric="amber">0</strong></div>
+      <div class="metric"><span>Red</span><strong data-metric="red">0</strong></div>
+      <div class="metric"><span>Generating</span><strong data-metric="generating">0</strong></div>
+      <div class="metric"><span>Stale</span><strong data-metric="stale">0</strong></div>
+      <div class="metric"><span>Linked Executions</span><strong data-metric="linked">0</strong></div>
+    </section>
+
+    <form class="filter-band" id="twin-filter-form" aria-label="Twin filters">
+      <div class="field"><label for="search">Search</label><input id="search" name="search" type="search" placeholder="Twin ID, bundle, target, creator"></div>
+      <div class="field"><label for="decision">Decision</label><select id="decision" name="decision"><option value="all">All decisions</option><option value="green">Green</option><option value="amber">Amber</option><option value="red">Red</option><option value="pending">Pending</option><option value="failed">Failed</option><option value="superseded">Superseded</option></select></div>
+      <div class="field"><label for="lifecycle">Lifecycle</label><select id="lifecycle" name="lifecycle"><option value="all">All lifecycle states</option><option value="completed">Completed</option><option value="generating">Generating</option><option value="requested">Requested</option><option value="awaiting_dry_run">Awaiting dry-run</option><option value="decision_calculating">Decision calculating</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option><option value="superseded">Superseded</option></select></div>
+      <div class="field"><label for="freshness">Freshness</label><select id="freshness" name="freshness"><option value="all">Any freshness</option><option value="fresh">Fresh</option><option value="stale">Stale</option><option value="drifted">Drifted</option><option value="expired">Expired</option><option value="collecting">Collecting</option></select></div>
+      <div class="field"><label for="target">Target</label><select id="target" name="target"><option value="all">All targets</option><option value="agent-testing">agent-testing</option><option value="signoz">signoz</option><option value="bosgenesis">bosgenesis</option><option value="payment-core">payment-core</option></select></div>
+      <div class="field"><label for="bundle">Bundle</label><select id="bundle" name="bundle"><option value="all">All bundles</option><option value="mop-bundle.zip">mop-bundle.zip</option></select></div>
+      <div class="field"><label for="creator">Creator</label><select id="creator" name="creator"><option value="all">All creators</option><option value="admin">admin</option><option value="release.bot">release.bot</option><option value="ops.user">ops.user</option></select></div>
+      <div class="field"><label for="date">Created date</label><input id="date" name="date" type="date"></div>
+      <div class="field"><label for="linked_execution">Execution</label><select id="linked_execution" name="linked_execution"><option value="all">Any link</option><option value="linked">Linked</option><option value="unlinked">Unlinked</option></select></div>
+      <input type="hidden" name="sort" value="created_at">
+      <input type="hidden" name="direction" value="desc">
+      <button class="btn" id="reset-filters" type="button">Reset</button>
+    </form>
+
+    <section class="mock-control-band dev-only" aria-label="Browser fixture controls">
+      <div class="field"><label for="fixture-response-mode">Response state</label><select id="fixture-response-mode"><option value="success">Success</option><option value="partial">Partial</option><option value="empty">Empty</option><option value="stale">Force stale</option><option value="failed">Failed</option></select></div>
+      <div class="field"><label for="fixture-scenario">Generation scenario</label><select id="fixture-scenario"><option value="">Loading scenarios...</option></select></div>
+      <button class="btn" id="clear-mock-history" type="button">Clear mock history</button>
+      <span class="mock-data-marker">Browser fixtures v1</span>
+    </section>
+
+    <div class="list-warning" id="twin-list-warning" hidden></div>
+
+    <section class="table-panel" aria-labelledby="twins-table-title">
+      <div class="table-heading">
+        <div><h2 id="twins-table-title">Twin Runs</h2><p class="muted" id="twin-result-summary">Loading fixture records...</p></div>
+        <span class="mock-data-marker">Adapter driven</span>
+      </div>
+      <div id="twin-list-state" hidden></div>
+      <div class="table-scroll" tabindex="0" aria-label="Scrollable Digital Twins table">
+        <table>
+          <thead><tr>
+            <th scope="col"><button class="sort-button" type="button" data-sort="created_at">Twin Run ID</button></th>
+            <th scope="col"><button class="sort-button" type="button" data-sort="decision">Decision</button></th>
+            <th scope="col"><button class="sort-button" type="button" data-sort="risk">Risk Score</button></th>
+            <th scope="col">Target Cluster</th><th scope="col">Target Namespace</th><th scope="col">MoP Bundle</th><th scope="col">Release Version</th><th scope="col">Freshness</th><th scope="col">Created By</th><th scope="col">Created At</th><th scope="col">Linked Execution</th><th scope="col">Actions</th>
+          </tr></thead>
+          <tbody id="twin-list-body"></tbody>
+        </table>
+      </div>
+      <div class="table-footer" id="twin-pagination"></div>
+    </section>
+    <p class="compact-footer">Browser-only JavaScript mock | fixture contract 1.0.0 | no server interaction</p>
+  </main>
+
+  <script src="fixtures/v1/twin-fixtures.js"></script>
+  <script src="twin-data-adapter.js"></script>
+  <script src="twin-components.js"></script>
+  <script src="prototype.js"></script>
+  <script src="digital-twins-page.js"></script>
+</body>
+</html>

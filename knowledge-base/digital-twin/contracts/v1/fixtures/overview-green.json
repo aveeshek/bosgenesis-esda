@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0.0",
+  "twin_id": "twin_signal_scout_001",
+  "decision_version": 1,
+  "lifecycle_status": "green",
+  "freshness": {
+    "status": "fresh",
+    "captured_at": "2026-07-13T14:52:00Z",
+    "expires_at": "2026-07-13T16:52:00Z",
+    "superseded_by": null,
+    "message": "Evidence is fresh."
+  },
+  "availability": {
+    "state": "available",
+    "message": "Overview is available.",
+    "reason_code": null,
+    "retryable": false,
+    "last_attempt_at": "2026-07-13T14:59:00Z"
+  },
+  "data": {
+    "decision": "green",
+    "policy_verdict": "allow",
+    "evidence_completeness": "complete",
+    "change_risk": "low",
+    "risk_score": 18,
+    "autonomy_eligibility": "eligible",
+    "dry_run_status": "passed",
+    "rollback_confidence": "high",
+    "drift_status": "none",
+    "replay_status": "not_run",
+    "runtime_risk": "low",
+    "release_note_validation_status": "not_run",
+    "top_reasons": [
+      {
+        "code": "AUTHORITATIVE_DRY_RUN_PASSED",
+        "summary": "The authoritative dry-run accepted the planned namespace-scoped resources.",
+        "severity": "info",
+        "tab_slug": "dry-run",
+        "finding_id": null
+      }
+    ],
+    "blocking_findings": [],
+    "warnings": [],
+    "missing_evidence": [],
+    "recommended_next_action": "Continue with the backend-authorized execution action."
+  }
+}
+

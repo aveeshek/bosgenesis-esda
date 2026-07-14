@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Twin Detail | BOS Genesis ESDA</title>
+  <link rel="stylesheet" href="prototype.css">
+  <link rel="stylesheet" href="prototype-phase2.css?v=phase4-real-core-1">
+</head>
+<body class="digital-twin-embedded">
+  <a class="skip-link" href="#main-content">Skip to content</a>
+<main class="page-shell detail-shell" id="main-content">
+    <section class="detail-header" aria-labelledby="twin-title">
+      <div><p class="eyebrow">Digital Twin</p><h1 id="twin-title">Loading twin run</h1><p class="muted">Reading lifecycle facts and evidence modules through the configured adapter.</p></div>
+    </section>
+    <section class="status-preview-row" aria-label="Decision status"><article class="status-preview"><span class="badge generating">Loading</span><div><strong>Resolving the selected decision version</strong><p>Preliminary values never authorize execution.</p></div></article></section>
+    <section class="sticky-summary" aria-label="Twin metadata"><div class="meta-item"><span>State</span><strong>Loading</strong></div></section>
+
+    <section class="tabs-shell" aria-label="Digital Twin evidence">
+      <div class="tabs-scroll" role="tablist" aria-label="Twin evidence tabs">
+        <button id="tab-overview" class="tab-button" role="tab" type="button" aria-selected="true" aria-controls="panel-overview" tabindex="0">Overview</button>
+        <button id="tab-release-delta" class="tab-button" role="tab" type="button" aria-selected="false" aria-controls="panel-release-delta" tabindex="-1">Release Delta Twin</button>
+        <button id="tab-dependency-graph" class="tab-button" role="tab" type="button" aria-selected="false" aria-controls="panel-dependency-graph" tabindex="-1">Dependency Graph Twin</button>
+        <button id="tab-policy" class="tab-button" role="tab" type="button" aria-selected="false" aria-controls="panel-policy" tabindex="-1">Policy Twin</button>
+        <button id="tab-dry-run" class="tab-button" role="tab" type="button" aria-selected="false" aria-controls="panel-dry-run" tabindex="-1">Dry-run / Diff Twin</button>
+        <button id="tab-rollback" class="tab-button" role="tab" type="button" aria-selected="false" aria-controls="panel-rollback" tabindex="-1">Rollback Twin</button>
+        <button id="tab-drift" class="tab-button" role="tab" type="button" aria-selected="false" aria-controls="panel-drift" tabindex="-1">Drift Twin</button>
+        <button id="tab-mop-replay" class="tab-button" role="tab" type="button" aria-selected="false" aria-controls="panel-mop-replay" tabindex="-1">MoP Replay Twin</button>
+        <button id="tab-runtime-behavior" class="tab-button" role="tab" type="button" aria-selected="false" aria-controls="panel-runtime-behavior" tabindex="-1">Runtime Behavior Twin</button>
+        <button id="tab-release-note-validation" class="tab-button" role="tab" type="button" aria-selected="false" aria-controls="panel-release-note-validation" tabindex="-1">Release Note Validation Twin</button>
+        <button id="tab-audit" class="tab-button" role="tab" type="button" aria-selected="false" aria-controls="panel-audit" tabindex="-1">Audit Timeline</button>
+      </div>
+      <section id="panel-overview" class="tab-panel" role="tabpanel" aria-labelledby="tab-overview"><div class="mock-state-view"><h3>Loading Overview</h3><p>Reading the selected evidence module.</p></div></section>
+      <section id="panel-release-delta" class="tab-panel" role="tabpanel" aria-labelledby="tab-release-delta" hidden><div class="mock-state-view"><h3>Loading Release Delta</h3><p>Reading the selected evidence module.</p></div></section>
+      <section id="panel-dependency-graph" class="tab-panel" role="tabpanel" aria-labelledby="tab-dependency-graph" hidden><div class="mock-state-view"><h3>Loading Dependency Graph</h3><p>Reading the selected evidence module.</p></div></section>
+      <section id="panel-policy" class="tab-panel" role="tabpanel" aria-labelledby="tab-policy" hidden><div class="mock-state-view"><h3>Loading Policy</h3><p>Reading the selected evidence module.</p></div></section>
+      <section id="panel-dry-run" class="tab-panel" role="tabpanel" aria-labelledby="tab-dry-run" hidden><div class="mock-state-view"><h3>Loading Dry-Run</h3><p>Reading the selected evidence module.</p></div></section>
+      <section id="panel-rollback" class="tab-panel" role="tabpanel" aria-labelledby="tab-rollback" hidden><div class="mock-state-view"><h3>Loading Rollback</h3><p>Reading the selected evidence module.</p></div></section>
+      <section id="panel-drift" class="tab-panel" role="tabpanel" aria-labelledby="tab-drift" hidden><div class="mock-state-view"><h3>Loading Drift</h3><p>Reading the selected evidence module.</p></div></section>
+      <section id="panel-mop-replay" class="tab-panel" role="tabpanel" aria-labelledby="tab-mop-replay" hidden><div class="mock-state-view"><h3>Loading MoP Replay</h3><p>Reading the selected evidence module.</p></div></section>
+      <section id="panel-runtime-behavior" class="tab-panel" role="tabpanel" aria-labelledby="tab-runtime-behavior" hidden><div class="mock-state-view"><h3>Loading Runtime Behavior</h3><p>Reading the selected evidence module.</p></div></section>
+      <section id="panel-release-note-validation" class="tab-panel" role="tabpanel" aria-labelledby="tab-release-note-validation" hidden><div class="mock-state-view"><h3>Loading Release Note Validation</h3><p>Reading the selected evidence module.</p></div></section>
+      <section id="panel-audit" class="tab-panel" role="tabpanel" aria-labelledby="tab-audit" hidden><div class="mock-state-view"><h3>Loading Audit</h3><p>Reading the selected evidence module.</p></div></section>
+    </section>
+
+    <aside class="drawer" id="twin-evidence-drawer" aria-label="Twin evidence drawer" hidden>
+      <div class="drawer-head"><div><p class="eyebrow">Selected Evidence</p><h2>Bundle Context</h2></div><button class="btn icon-only" type="button" data-drawer-close aria-label="Close evidence drawer">x</button></div>
+      <div class="content-block" data-drawer-content>Choose Open Bundle to inspect fixture metadata.</div>
+    </aside>
+    <p class="compact-footer">Lifecycle facts may be real | Every mock evidence module is labeled non-authoritative | contract 1.0.0</p>
+  </main>
+
+  <script src="fixtures/v1/twin-fixtures.js?v=phase4-real-core-1"></script>
+  <script src="twin-data-adapter.js?v=phase4-real-core-1"></script>
+  <script src="twin-http-adapter.js?v=phase4-real-core-1"></script>
+  <script src="twin-components.js?v=phase4-real-core-1"></script>
+  <script src="prototype.js?v=phase4-real-core-1"></script>
+  <script src="digital-twin-detail-page.js?v=phase4-real-core-1"></script>
+</body>
+</html>

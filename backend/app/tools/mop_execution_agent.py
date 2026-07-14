@@ -70,15 +70,23 @@ class MopExecutionAgentClient:
     validation, rollback, cleanup, and report generation remain inside the agent.
     """
 
-    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        transport: httpx.AsyncBaseTransport | None = None,
+        base_url_override: str | None = None,
+    ) -> None:
         self.settings = settings
         self.transport = transport
+        self.base_url_override = str(base_url_override or "").strip()
 
     @property
     def configured(self) -> bool:
         return bool(self._base_url())
 
     def _base_url(self) -> str:
+        if self.base_url_override:
+            return self.base_url_override.rstrip("/") + "/"
         for attribute in ("mop_execution_agent_url", "mop_execution_agent_mcp_url"):
             value = str(getattr(self.settings, attribute, "") or "").strip()
             if value:
@@ -135,6 +143,28 @@ class MopExecutionAgentClient:
 
     async def effective_config(self) -> MopExecutionAgentResponse:
         return await self._request("GET", "v1/config/effective")
+    async def create_namespace_twin(self, payload: dict[str, Any]) -> MopExecutionAgentResponse:
+        return await self._request("POST", "v1/namespace-twins", json_body=payload)
+
+    async def list_namespace_twins(
+        self, params: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request("GET", "v1/namespace-twins", params=params)
+
+    async def get_namespace_twin(self, twin_id: str) -> MopExecutionAgentResponse:
+        return await self._request("GET", f"v1/namespace-twins/{quote(twin_id, safe='')}")
+
+    async def get_namespace_twin_events(
+        self, twin_id: str, params: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/events", params=params
+        )
+
+    async def cancel_namespace_twin(self, twin_id: str) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST", f"v1/namespace-twins/{quote(twin_id, safe='')}/cancel", json_body={}
+        )
 
     async def validate_bundle(self, payload: dict[str, Any]) -> MopExecutionAgentResponse:
         bundle_id = str(payload.get("bundle_id") or "").strip()

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/tabs/rollback.schema.json",
+  "title": "Rollback Twin Tab",
+  "x-contract-version": "1.0.0",
+  "allOf": [{"$ref": "../common.schema.json#/$defs/tabEnvelope"}],
+  "type": "object",
+  "required": ["data"],
+  "properties": {
+    "data": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["confidence", "summary", "previous_helm_revision", "previous_artifacts_available", "machine_plan_steps", "pvc_data_reversibility", "non_reversible_changes", "runtime_rollback_proven", "manual_steps", "validation_checks", "evidence_refs", "artifacts"],
+      "properties": {
+        "confidence": {"type": "string", "enum": ["high", "medium", "low", "unavailable", "pending"]},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "previous_helm_revision": {"type": ["integer", "null"], "minimum": 1},
+        "previous_artifacts_available": {"type": "boolean"},
+        "machine_plan_steps": {"type": "array", "items": {"type": "object", "required": ["step_id", "summary", "reversible"], "properties": {"step_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}, "reversible": {"type": "boolean"}}, "additionalProperties": false}},
+        "pvc_data_reversibility": {"type": "string", "enum": ["reversible", "conditional", "not_reversible", "unknown", "not_applicable"]},
+        "non_reversible_changes": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/finding"}},
+        "runtime_rollback_proven": {"type": "boolean"},
+        "manual_steps": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 4000}},
+        "validation_checks": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+        "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}},
+        "artifacts": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/artifact"}}
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}
+

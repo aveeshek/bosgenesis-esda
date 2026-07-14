@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/safe-explanation.schema.json",
+  "title": "ESDA Digital Twin Safe Explanation Block",
+  "x-contract-version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "explanation_id", "status", "model_profile", "prompt_version", "prompt_hash", "input_hash", "generated_at", "format", "content", "evidence_refs", "chain_of_thought_included"],
+  "properties": {
+    "schema_version": {"$ref": "common.schema.json#/$defs/schemaVersion"},
+    "explanation_id": {"$ref": "common.schema.json#/$defs/identifier"},
+    "status": {"type": "string", "enum": ["generated", "fallback", "unavailable", "failed"]},
+    "model_profile": {"type": ["string", "null"], "maxLength": 200},
+    "prompt_version": {"type": "string", "minLength": 1, "maxLength": 200},
+    "prompt_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+    "input_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+    "generated_at": {"$ref": "common.schema.json#/$defs/timestamp"},
+    "format": {"type": "string", "enum": ["plain_text", "safe_markdown"]},
+    "content": {"type": "string", "minLength": 1, "maxLength": 12000},
+    "evidence_refs": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/evidenceRef"}},
+    "fallback_reason": {"type": ["string", "null"], "maxLength": 1000},
+    "latency_ms": {"type": ["integer", "null"], "minimum": 0},
+    "input_tokens": {"type": ["integer", "null"], "minimum": 0},
+    "output_tokens": {"type": ["integer", "null"], "minimum": 0},
+    "chain_of_thought_included": {"const": false}
+  }
+}
+

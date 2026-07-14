@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Bundle Execution Twin Gate | BOS Genesis ESDA</title>
+  <link rel="stylesheet" href="prototype.css">
+  <link rel="stylesheet" href="prototype-phase2.css?v=phase3-server-mock-1">
+</head>
+<body class="digital-twin-embedded">
+  <a class="skip-link" href="#main-content">Skip to content</a>
+<main class="page-shell" id="main-content">
+    <div class="gate-layout">
+      <section class="gate-context" aria-label="Execution context">
+        <div class="mock-state-view"><h3>Loading execution context</h3><p>Selecting the browser fixture and immutable decision version.</p></div>
+      </section>
+      <section class="twin-gate" aria-label="Digital Twin Gate">
+        <div class="mock-state-view"><h3>Loading Twin Gate</h3><p>Reading deterministic gate evidence through TwinDataAdapter.</p></div>
+      </section>
+      <aside class="gate-result" aria-label="Execution eligibility result">
+        <div class="mock-state-view"><h3>Preparing eligibility summary</h3><p>No execution or server request will occur.</p></div>
+      </aside>
+    </div>
+    <p class="compact-footer">Server-side HTTP mock Twin Gate | fixture contract 1.0.0 | no real integrations</p>
+  </main>
+
+  <script src="fixtures/v1/twin-fixtures.js?v=phase3-server-mock-1"></script>
+  <script src="twin-data-adapter.js?v=phase3-server-mock-1"></script>
+  <script src="twin-http-adapter.js?v=phase3-server-mock-1"></script>
+  <script src="twin-components.js?v=phase3-server-mock-1"></script>
+  <script src="prototype.js?v=phase3-server-mock-1"></script>
+  <script src="twin-gate-page.js?v=phase3-server-mock-1"></script>
+</body>
+</html>

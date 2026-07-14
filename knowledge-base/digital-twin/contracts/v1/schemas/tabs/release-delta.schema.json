@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/tabs/release-delta.schema.json",
+  "title": "Release Delta Twin Tab",
+  "x-contract-version": "1.0.0",
+  "allOf": [{"$ref": "../common.schema.json#/$defs/tabEnvelope"}],
+  "type": "object",
+  "required": ["data"],
+  "properties": {
+    "data": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["summary", "changes", "page", "artifacts"],
+      "properties": {
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total", "create", "update", "explicit_delete", "no_op", "unknown", "immutable_conflict", "namespace_rewrite"],
+          "properties": {
+            "total": {"type": "integer", "minimum": 0}, "create": {"type": "integer", "minimum": 0}, "update": {"type": "integer", "minimum": 0}, "explicit_delete": {"type": "integer", "minimum": 0}, "no_op": {"type": "integer", "minimum": 0}, "unknown": {"type": "integer", "minimum": 0}, "immutable_conflict": {"type": "integer", "minimum": 0}, "namespace_rewrite": {"type": "integer", "minimum": 0}
+          }
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["change_id", "resource_identity", "kind", "namespace", "name", "action", "current_summary", "planned_summary", "risk", "reason", "evidence_refs", "redacted"],
+            "properties": {
+              "change_id": {"$ref": "../common.schema.json#/$defs/identifier"},
+              "resource_identity": {"$ref": "../common.schema.json#/$defs/identifier"},
+              "api_version": {"type": ["string", "null"], "maxLength": 200},
+              "kind": {"type": "string", "minLength": 1, "maxLength": 200},
+              "namespace": {"type": ["string", "null"], "maxLength": 253},
+              "name": {"type": "string", "minLength": 1, "maxLength": 253},
+              "helm_release": {"type": ["string", "null"], "maxLength": 253},
+              "action": {"type": "string", "enum": ["create", "update", "explicit_delete", "no_op", "unknown", "immutable_conflict", "namespace_rewrite"]},
+              "current_summary": {"type": ["string", "null"], "maxLength": 4000},
+              "planned_summary": {"type": ["string", "null"], "maxLength": 4000},
+              "risk": {"$ref": "../common.schema.json#/$defs/riskLevel"},
+              "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
+              "canonical_diff": {"type": ["string", "null"], "maxLength": 50000},
+              "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}},
+              "redacted": {"const": true}
+            }
+          }
+        },
+        "page": {"$ref": "../common.schema.json#/$defs/page"},
+        "artifacts": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/artifact"}}
+      }
+    }
+  },
+  "unevaluatedProperties": false
+}
+

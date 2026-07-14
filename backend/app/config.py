@@ -119,6 +119,11 @@ class Settings(BaseSettings):
     env_agent_data_ingestion_url: str = ""
     env_agent_observability_url: str = ""
 
+    digital_twin_mock_enabled: bool = True
+    digital_twin_mock_delay_ms: int = 120
+    digital_twin_backend_mode: str = "mock_server"
+    digital_twin_execution_agent_url: str = ""
+
     mcp_k8s_inspector_url: str = ""
     mcp_k8s_inspector_api_key: str = ""
     powershell_runner_url: str = ""
@@ -147,6 +152,17 @@ class Settings(BaseSettings):
             for item in self.mop_execution_allowed_target_namespaces.split(",")
             if item.strip()
         ]
+
+    @property
+    def digital_twin_mock_effective_enabled(self) -> bool:
+        environment = self.app_env.strip().lower()
+        return self.digital_twin_mock_enabled and (
+            environment.startswith("local") or environment in {"development", "dev", "test"}
+        )
+
+    @property
+    def digital_twin_real_core_enabled(self) -> bool:
+        return self.digital_twin_backend_mode == "real_core"
 
     @property
     def azure_deployment_name(self) -> str:
@@ -194,6 +210,15 @@ class Settings(BaseSettings):
         allowed = {"auto", "mcp", "rest"}
         if normalized not in allowed:
             raise ValueError(f"MOP_EXECUTION_AGENT_TRANSPORT must be one of {sorted(allowed)}")
+        return normalized
+
+    @field_validator("digital_twin_backend_mode")
+    @classmethod
+    def validate_digital_twin_backend_mode(cls, value: str) -> str:
+        normalized = value.lower()
+        allowed = {"browser_fixture", "mock_server", "real_core"}
+        if normalized not in allowed:
+            raise ValueError(f"DIGITAL_TWIN_BACKEND_MODE must be one of {sorted(allowed)}")
         return normalized
 
     @field_validator("log_level")
