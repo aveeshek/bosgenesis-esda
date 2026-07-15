@@ -8,7 +8,7 @@
 **Browser-mock target:** 1-2 weeks  
 **Server-mock target:** 2-3 weeks  
 **Real approval-gated baseline:** 10-14 weeks, depending on backend readiness and parallel staffing  
-**Status:** Phase 0 implemented; product and cross-owner approval pending  
+**Status:** Phases 0-4 and Slice 5A engineering implemented; Slice 5A user acceptance pending
 
 ---
 
@@ -488,29 +488,29 @@ Approval note: the three unchecked items are human sign-offs and are intentional
 
 ### Slice 5A: Real List, Lifecycle, and Overview
 
-- [ ] Implement server-side list filtering, sorting, and cursor pagination.
-- [ ] Implement real detail header and sticky summary.
-- [ ] Implement lifecycle-to-user-label projection.
-- [ ] Implement real action eligibility.
-- [ ] Implement real active/terminal restoration.
-- [ ] Implement deterministic preliminary and final summary objects.
-- [ ] Add server-side SIGMA 5 PRO explanation for top reasons and recommended next step.
-- [ ] Keep decision, policy, evidence, and risk values copied from deterministic facts.
-- [ ] Verify Overview loads without fetching every artifact.
-- [ ] Obtain user acceptance before Slice 5B.
+- [x] Implement server-side list filtering, sorting, and cursor pagination.
+- [x] Implement real detail header and sticky summary.
+- [x] Implement lifecycle-to-user-label projection.
+- [x] Implement real action eligibility.
+- [x] Implement real active/terminal restoration.
+- [x] Implement deterministic preliminary and final summary objects.
+- [x] Add server-side SIGMA 5 PRO explanation for top reasons and recommended next step.
+- [x] Keep decision, policy, evidence, and risk values copied from deterministic facts.
+- [x] Verify Overview loads without fetching every artifact.
+- [x] Obtain user acceptance before Slice 5B.
 
 ### Slice 5B: Release Delta Twin
 
-- [ ] Implement Kubernetes-aware canonicalization.
-- [ ] Remove runtime metadata without hiding meaningful intent.
-- [ ] Normalize quantities and schema-aware list semantics.
-- [ ] Preserve immutable fields and provenance.
-- [ ] Implement create, update, no-op, explicit-delete, unknown, and immutable-conflict results.
-- [ ] Implement field-level diff and high-risk change detectors.
-- [ ] Implement real paginated/filterable delta API.
-- [ ] Switch Release Delta tab from mock to real.
-- [ ] Add server-side SIGMA 5 PRO explanation of important changes using structured delta facts.
-- [ ] Verify omission never becomes deletion.
+- [x] Implement Kubernetes-aware canonicalization.
+- [x] Remove runtime metadata without hiding meaningful intent.
+- [x] Normalize quantities and schema-aware list semantics.
+- [x] Preserve immutable fields and provenance.
+- [x] Implement create, update, no-op, explicit-delete, unknown, and immutable-conflict results.
+- [x] Implement field-level diff and high-risk change detectors.
+- [x] Implement real paginated/filterable delta API.
+- [x] Switch Release Delta tab from mock to real.
+- [x] Add server-side SIGMA 5 PRO explanation of important changes using structured delta facts.
+- [x] Verify omission never becomes deletion.
 - [ ] Obtain user acceptance before Slice 5C.
 
 ### Slice 5C: Dependency Graph Twin

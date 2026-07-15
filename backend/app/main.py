@@ -480,7 +480,7 @@ def create_app() -> FastAPI:
 
     digital_twin_adapter_mode = "browser_fixture"
     if settings.digital_twin_real_core_enabled:
-        install_digital_twin_gateway(app, settings=settings)
+        install_digital_twin_gateway(app, settings=settings, llm=llm, database=database)
         digital_twin_adapter_mode = "real_core"
     elif settings.digital_twin_mock_effective_enabled:
         install_digital_twin_mock(

@@ -23,6 +23,17 @@
     }
   }
 
+  function selectedModelProfile() {
+    try {
+      var parentDocument = window.parent && window.parent.document;
+      var selector = parentDocument && parentDocument.getElementById("model_profile");
+      return selector ? selector.value : "azure_gpt5_pro";
+    } catch (error) {
+      return "azure_gpt5_pro";
+    }
+  }
+
+
   function HttpTwinAdapter(options) {
     TwinDataAdapter.call(this);
     options = options || {};
@@ -128,8 +139,18 @@
   };
   HttpTwinAdapter.prototype.getTwin = function (twinId) { return this._request("GET", "/" + encodeURIComponent(twinId), { key: "twin:" + twinId }); };
   HttpTwinAdapter.prototype.getActiveTwin = function () { return this._request("GET", "/active", { key: "active" }); };
-  HttpTwinAdapter.prototype.getTab = function (twinId, slug, decisionVersion) {
-    return this._request("GET", "/" + encodeURIComponent(twinId) + "/tabs/" + encodeURIComponent(slug), { query: { decision_version: decisionVersion }, key: "tab" });
+  HttpTwinAdapter.prototype.getTab = function (twinId, slug, decisionVersion, query) {
+    query = Object.assign({}, query || {}, {
+      decision_version: decisionVersion,
+      model_profile: selectedModelProfile()
+    });
+    return this._request(
+      "GET",
+      "/" + encodeURIComponent(twinId) + "/tabs/" + encodeURIComponent(slug),
+      {
+        query: query,
+        key: "tab"
+      });
   };
   HttpTwinAdapter.prototype.getActions = function (twinId) { return this._request("GET", "/" + encodeURIComponent(twinId) + "/actions", { key: "actions:" + twinId }); };
   HttpTwinAdapter.prototype.startGeneration = function (scenarioId) { return this._request("POST", "", { body: { scenario_id: scenarioId }, key: "generate" }); };

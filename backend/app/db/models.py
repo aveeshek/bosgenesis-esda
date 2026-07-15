@@ -328,3 +328,25 @@ class L4AuditRecord(Base):
     stop_conditions_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     human_review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class DigitalTwinExplanationLog(Base):
+    """Audit-safe record of a bounded twin explanation call."""
+
+    __tablename__ = "digital_twin_explanation_logs"
+
+    explanation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    twin_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    decision_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    model_profile: Mapped[str] = mapped_column(String(128), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    latency_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    token_usage_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    safe_output_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )

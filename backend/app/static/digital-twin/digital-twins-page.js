@@ -17,7 +17,6 @@
   })();
   var realCore = adapterMode === "real_core";
   var refreshTimer = 0;
-  var refreshCount = 0;
   var searchTimer = 0;
   var lastResponse = null;
 
@@ -38,7 +37,7 @@
       sort: search.get("sort") || "created_at",
       direction: search.get("direction") || "desc",
       cursor: search.get("cursor") || null,
-      limit: 6,
+      limit: 25,
       mock_state: search.get("mock_state") || adapter.getResponseMode()
     };
   }
@@ -80,12 +79,14 @@
   }
 
   function actionsMarkup(twin) {
-    return twin.actions.filter(function (action) { return action.visible; }).map(function (action) {
+    var actions = Array.isArray(twin.actions) ? twin.actions : [];
+    return actions.filter(function (action) { return action.visible !== false; }).map(function (action) {
       return '<button class="btn" type="button" data-row-action="' + ui.escapeHtml(action.code) + '" data-twin-id="' + ui.escapeHtml(twin.twin_id) + '" title="' + ui.escapeHtml(action.enabled ? action.label : action.disabled_reason) + '" aria-label="' + ui.escapeHtml(action.enabled ? action.label : action.label + ": " + action.disabled_reason) + '"' + (action.enabled ? "" : " disabled") + ">" + actionIcon(action.code) + "</button>";
     }).join("");
   }
 
   function rowMarkup(twin) {
+    twin = Object.assign({}, twin, { lifecycle_status: twin.visible_lifecycle || twin.lifecycle_status });
     var linked = twin.relationships.execution_status === "unlinked"
       ? '<span class="cell-main">Not linked</span><span class="cell-sub">No execution selected</span>'
       : '<span class="cell-main">' + ui.escapeHtml(twin.relationships.execution_id || twin.relationships.execution_status) + '</span><span class="cell-sub">' + ui.escapeHtml(ui.label(twin.relationships.execution_status)) + "</span>";
@@ -153,14 +154,15 @@
   }
 
   function setupBoundedRefresh(items) {
-    window.clearInterval(refreshTimer);
-    refreshCount = 0;
-    var active = items.filter(function (item) { return item.twin_id.indexOf("twin_mock_") === 0 && ["requested", "generating", "awaiting_dry_run", "decision_calculating"].indexOf(item.lifecycle_status) >= 0; });
+    window.clearTimeout(refreshTimer);
+    var active = items.filter(function (item) { return ["requested", "generating", "awaiting_dry_run", "decision_calculating"].indexOf(item.lifecycle_status) >= 0; });
     if (!active.length) return;
-    refreshTimer = window.setInterval(function () {
-      refreshCount += 1;
+    refreshTimer = window.setTimeout(function () {
+      if (realCore) {
+        load({ silent: true });
+        return;
+      }
       Promise.all(active.map(function (item) { return adapter.advanceGeneration(item.twin_id); })).then(function () { return load({ silent: true }); });
-      if (refreshCount >= 5) window.clearInterval(refreshTimer);
     }, 1800);
   }
 
@@ -189,11 +191,11 @@
     if (actionButton) {
       var twinId = actionButton.getAttribute("data-twin-id");
       var code = actionButton.getAttribute("data-row-action");
+      var selectedTwin = (lastResponse.items || []).find(function (item) { return item.twin_id === twinId; });
+      var contract = selectedTwin && (selectedTwin.actions || []).find(function (item) { return item.code === code; });
+      if (!contract || !contract.enabled) return;
       if (code === "open_twin") ui.navigate(ui.detailHref(twinId, "overview"));
-      if (code === "open_execution") ui.navigate("/mop-execution?twin_id=" + encodeURIComponent(twinId));
-      if (code === "download_report") adapter.getTwin(twinId).then(function (twin) { ui.mockDownload(twinId + "-report.json", twin); });
-      if (code === "request_approval") adapter.requestApproval(twinId).then(function () { ui.showToast("Mock approval requested.", "success"); load({ silent: true }); });
-      if (code === "regenerate") adapter.regenerate(twinId).then(function (next) { ui.navigate(ui.detailHref(next.twin_id, "overview", { progress: "1" })); });
+      if (["open_bundle", "download_report", "export_evidence", "request_approval", "start_execution", "regenerate_twin"].indexOf(code) >= 0) ui.navigate(contract.href);
       if (code === "cancel_generation") adapter.cancelGeneration(twinId).then(function () { ui.showToast("Mock generation cancelled.", "info"); load({ silent: true }); });
       return;
     }

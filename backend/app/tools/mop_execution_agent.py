@@ -154,6 +154,23 @@ class MopExecutionAgentClient:
     async def get_namespace_twin(self, twin_id: str) -> MopExecutionAgentResponse:
         return await self._request("GET", f"v1/namespace-twins/{quote(twin_id, safe='')}")
 
+    async def get_namespace_twin_overview(self, twin_id: str) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/overview"
+        )
+
+    async def get_namespace_twin_release_delta(
+        self, twin_id: str, params: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/release-delta",
+            params=params,
+        )
+
+    async def get_namespace_twin_actions(self, twin_id: str) -> MopExecutionAgentResponse:
+        return await self._request("GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/actions")
+
     async def get_namespace_twin_events(
         self, twin_id: str, params: dict[str, Any] | None = None
     ) -> MopExecutionAgentResponse:

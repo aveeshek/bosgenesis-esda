@@ -266,4 +266,79 @@
 
 .digital-twin-embedded .compact-footer {
   padding-bottom: 12px;
+}.delta-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(92px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.delta-summary-card,
+.delta-explanation {
+  border: 1px solid rgba(255, 255, 255, .16);
+  background: rgba(40, 34, 84, .34);
+}
+
+.delta-summary-card {
+  min-height: 68px;
+  padding: 10px 12px;
+}
+
+.delta-summary-card span,
+.delta-filter-grid label {
+  display: grid;
+  gap: 5px;
+  color: rgba(255, 255, 255, .7);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.delta-summary-card strong {
+  font-size: 22px;
+}
+
+.delta-explanation {
+  margin-bottom: 12px;
+}
+
+.delta-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.delta-filter-grid select {
+  min-width: 0;
+}
+
+.delta-table {
+  min-width: 1180px;
+}
+
+.delta-table td:first-child small {
+  display: block;
+  max-width: 230px;
+  margin-top: 4px;
+  color: rgba(255, 255, 255, .55);
+  overflow-wrap: anywhere;
+}
+
+.delta-risk-row {
+  background: rgba(244, 109, 111, .09);
+}
+
+.empty-inline {
+  padding: 28px;
+  text-align: center;
+  color: rgba(255, 255, 255, .72);
+}
+
+@media (max-width: 980px) {
+  .delta-summary-grid { grid-template-columns: repeat(4, minmax(90px, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .delta-summary-grid,
+  .delta-filter-grid { grid-template-columns: 1fr; }
 }

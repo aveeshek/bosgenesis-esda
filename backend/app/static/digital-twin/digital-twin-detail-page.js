@@ -11,10 +11,10 @@
   var panels = Array.prototype.slice.call(document.querySelectorAll("[role='tabpanel']"));
   var twin = null;
   var progressTimer = 0;
-  var progressPolls = 0;
   var selectedTwinId = ui.params().get("twin_id");
   var selectedTab = ui.params().get("tab") || "overview";
-  var deltaPage = 0;
+  var deltaFilters = { action: "", risk: "", kind: "", limit: 25, cursor: null };
+  var deltaCursorHistory = [];
   var auditPage = 0;
 
   if (!adapter || !header || !summary || !tabs.length) return;
@@ -24,32 +24,25 @@
   }
 
   function decisionLabel(item) {
-    return item.decision === "pending" ? ui.label(item.lifecycle_status) : ui.label(item.decision);
+    return item.decision === "pending" ? ui.label(item.visible_lifecycle) : ui.label(item.decision);
   }
 
   function actionButton(action) {
-    var classes = action.code === "regenerate" || action.code === "generate" ? "btn primary" : action.code === "approve" ? "btn success" : action.code === "reject" ? "btn danger" : "btn";
-    return '<button class="' + classes + '" type="button" data-detail-action="' + ui.escapeHtml(action.code) + '"' + (action.enabled ? "" : " disabled") + ' title="' + ui.escapeHtml(action.enabled ? action.label : action.reason) + '">' + ui.escapeHtml(action.label) + "</button>";
+    var primary = ["regenerate_twin", "start_execution", "request_approval"].indexOf(action.code) >= 0;
+    var classes = primary ? "btn primary" : "btn";
+    var title = action.enabled ? action.label : action.disabled_reason || action.reason_code || "Unavailable";
+    return '<button class="' + classes + '" type="button" data-detail-action="' + ui.escapeHtml(action.code) + '"' + (action.enabled ? "" : " disabled") + ' title="' + ui.escapeHtml(title) + '">' + ui.escapeHtml(action.label) + "</button>";
   }
 
   function actionsFor(item) {
-    var active = ["requested", "generating", "awaiting_dry_run", "decision_calculating"].indexOf(item.lifecycle_status) >= 0;
-    var approved = item.relationships.approval_status === "approved";
-    return [
-      { code: active ? "cancel" : "regenerate", label: active ? "Cancel Generation" : "Generate / Regenerate", enabled: true, reason: "" },
-      { code: "open_bundle", label: "Open Bundle", enabled: true, reason: "" },
-      { code: "open_execution", label: "Open Execution", enabled: item.relationships.execution_status !== "unlinked", reason: "No Bundle Execution is linked." },
-      { code: "start_execution", label: "Start Execution", enabled: item.decision === "green" || (item.decision === "amber" && approved), reason: item.decision === "amber" ? "A valid approval is required." : "The final decision is not eligible." },
-      { code: "request_approval", label: "Request Approval", enabled: item.decision === "amber" && item.relationships.approval_status === "required", reason: "Approval is available only for a fresh Amber decision." },
-      { code: "approve", label: "Approve", enabled: item.decision === "amber" && ["required", "pending"].indexOf(item.relationships.approval_status) >= 0, reason: "No approvable relationship is available." },
-      { code: "reject", label: "Reject", enabled: item.decision === "amber" && ["required", "pending"].indexOf(item.relationships.approval_status) >= 0, reason: "No approvable relationship is available." },
-      { code: "download", label: "Download Report", enabled: item.decision_is_final, reason: "A final report is not available." },
-      { code: "export", label: "Export JSON", enabled: true, reason: "" }
-    ];
+    return Array.isArray(item.actions)
+      ? item.actions.filter(function (action) { return action.visible !== false; })
+      : [];
   }
 
   function renderHeader(item) {
-    var status = item.decision === "pending" ? item.lifecycle_status : item.decision;
+    item = Object.assign({}, item, { lifecycle_status: item.visible_lifecycle || item.lifecycle_status });
+    var status = item.decision === "pending" ? item.visible_lifecycle : item.decision;
     header.innerHTML = '<div><p class="eyebrow">Digital Twin · ' + (item.decision_is_final ? "Final Decision" : "Preliminary State") + '</p><div class="title-line"><h1 id="twin-title">' + ui.escapeHtml(item.display_name) + "</h1>" + ui.badge(status, decisionLabel(item)) + ui.badge(item.lifecycle_status) + '</div><p class="muted">Risk ' + ui.escapeHtml(item.risk.score == null ? "not calculated" : item.risk.score) + " · " + ui.escapeHtml(ui.label(item.autonomy_eligibility)) + " · " + ui.escapeHtml(item.recommended_action) + '</p></div><div class="action-row" aria-label="Twin actions">' + actionsFor(item).map(actionButton).join("") + "</div>";
 
     if (item.prior_decision && !item.decision_is_final) {
@@ -61,15 +54,18 @@
 
   function renderSummary(item) {
     var values = [
-      ["Target", item.target.cluster_name + " / " + item.target.namespace, null],
-      ["Bundle", item.bundle.bundle_name, "bundle"],
-      ["Twin ID", item.twin_id, null],
+      ["Target Cluster", item.target.cluster_name, null],
+      ["Namespace", item.target.namespace, null],
+      ["Bundle", item.bundle.bundle_name + " / " + item.bundle.bundle_id, "bundle"],
+      ["Bundle Hash", item.bundle.bundle_hash, "bundle"],
+      ["Twin", item.twin_id + " / v" + item.decision_version, null],
       ["Release", item.bundle.release_version, null],
       ["Created By", item.created_by_display, null],
-      ["Created", ui.formatDate(item.created_at), null],
-      ["Freshness", ui.label(item.freshness.status), "drift"],
-      ["Execution", ui.label(item.relationships.execution_status), "execution"],
-      ["Approval", ui.label(item.relationships.approval_status), "approval"]
+      ["Created / Updated", ui.formatDate(item.created_at) + " / " + ui.formatDate(item.updated_at), null],
+      ["Freshness / Expiry", ui.label(item.freshness.status) + " / " + ui.formatDate(item.freshness.expires_at), "drift"],
+      ["Dry-run", item.relationships.dry_run_job_id || "Not linked", null],
+      ["Approval", ui.label(item.relationships.approval_status), "approval"],
+      ["Execution", ui.label(item.relationships.execution_status), "execution"]
     ];
     summary.innerHTML = values.map(function (entry) {
       var content = entry[2] ? '<button class="summary-link" type="button" data-summary-target="' + entry[2] + '">' + ui.escapeHtml(entry[1]) + "</button>" : "<strong>" + ui.escapeHtml(entry[1]) + "</strong>";
@@ -88,15 +84,74 @@
 
   function renderOverview(tab) {
     var reasons = tab.reasons.map(function (reason) { return '<li><button class="evidence-link" type="button" data-jump-tab="' + ui.escapeHtml(reason.tab) + '"' + (reason.finding ? ' data-jump-finding="' + ui.escapeHtml(reason.finding) + '"' : "") + '><strong>' + ui.escapeHtml(reason.title) + '</strong><span>' + ui.escapeHtml(reason.detail) + "</span></button></li>"; }).join("");
-    return metricCards(tab.metrics) + '<div class="content-grid tab-followup"><article class="content-block span-7"><h3>Top Decision Reasons</h3><ol class="reason-list">' + reasons + '</ol></article><article class="content-block span-5"><h3>Recommended Action</h3><div class="notice amber">' + ui.escapeHtml(twin.recommended_action) + '</div><button class="btn" type="button" data-jump-tab="policy">Review policy evidence</button></article></div>';
+    var explanation = tab.safe_explanation ? '<article class="content-block span-12"><p class="eyebrow">SIGMA 5 PRO / Bounded Explanation</p><p>' + ui.escapeHtml(tab.safe_explanation.content) + '</p><p class="muted">Deterministic decisions, risk, freshness, and action eligibility remain unchanged.</p></article>' : "";
+    return metricCards(tab.metrics) + '<div class="content-grid tab-followup">' + explanation + '<article class="content-block span-7"><h3>Top Decision Reasons</h3><ol class="reason-list">' + reasons + '</ol></article><article class="content-block span-5"><h3>Recommended Action</h3><div class="notice amber">' + ui.escapeHtml(tab.recommended_action) + '</div><button class="btn" type="button" data-jump-tab="policy">Review policy evidence</button></article></div>';
   }
 
   function renderDelta(tab) {
-    var pageSize = 25;
-    var start = deltaPage * pageSize;
-    var visible = tab.rows.slice(start, start + pageSize);
-    var rows = visible.map(function (row) { return '<tr><td><button class="table-link" type="button" data-delta-row="' + ui.escapeHtml(row.id) + '">' + ui.escapeHtml(row.resource) + '</button></td><td>' + ui.escapeHtml(row.kind) + '</td><td>' + ui.badge(row.change === "created" ? "green" : row.change === "modified" ? "amber" : "info", row.change) + '</td><td>' + ui.escapeHtml(row.before) + '</td><td>' + ui.escapeHtml(row.after) + '</td><td>' + ui.escapeHtml(row.impact) + "</td></tr>"; }).join("");
-    return '<div class="tab-toolbar"><span>' + tab.total_rows + ' resource deltas</span><div><button class="btn" type="button" data-copy-tab>Copy rows</button><button class="btn" type="button" data-open-diff>Side-by-side diff</button></div></div><div class="table-scroll"><table><thead><tr><th>Resource</th><th>Kind</th><th>Change</th><th>Before</th><th>After</th><th>Impact</th></tr></thead><tbody>' + rows + '</tbody></table></div><div class="table-footer"><span>Rows ' + (start + 1) + '–' + Math.min(start + pageSize, tab.total_rows) + ' of ' + tab.total_rows + '</span><div class="pagination"><button class="btn" type="button" data-delta-page="previous"' + (deltaPage === 0 ? " disabled" : "") + '>Previous</button><button class="btn" type="button" data-delta-page="next"' + (start + pageSize >= tab.total_rows ? " disabled" : "") + ">Next</button></div></div>";
+    var tabData = tab.data || {};
+    var changes = Array.isArray(tabData.changes) ? tabData.changes : [];
+    if (!changes.length && Array.isArray(tab.rows)) {
+      changes = tab.rows.map(function (row) {
+        var parts = String(row.resource || "Unknown/unknown").split("/");
+        var action = row.change === "modified" ? "update" : row.change === "created" ? "create" : row.change === "unchanged" ? "no_op" : "unknown";
+        return {
+          change_id: row.id,
+          resource_identity: "fixture:" + String(row.resource || row.id),
+          kind: row.kind || parts[0],
+          namespace: twin && twin.target ? twin.target.namespace : "fixture",
+          name: parts.slice(1).join("/") || row.id,
+          action: action,
+          current_summary: row.before,
+          planned_summary: row.after,
+          risk: row.impact === "operator review" ? "high" : "low",
+          reason: "Browser fixture projection: " + String(row.impact || "bounded") + ".",
+          canonical_diff: JSON.stringify({ current: row.before, planned: row.after, field_changes: [] })
+        };
+      });
+    }
+    var counts = tabData.summary || changes.reduce(function (result, row) {
+      result.total += 1;
+      result[row.action] = (result[row.action] || 0) + 1;
+      return result;
+    }, { total: 0, create: 0, update: 0, explicit_delete: 0, no_op: 0, unknown: 0, immutable_conflict: 0 });
+    var page = tabData.page || { limit: changes.length || 25, has_more: false, next_cursor: null, result_count: Number(tab.total_rows || changes.length) };
+    var actionOptions = ["", "create", "update", "explicit_delete", "no_op", "unknown", "immutable_conflict", "namespace_rewrite"];
+    var riskOptions = ["", "low", "medium", "high", "critical", "unknown"];
+    var kindOptions = ["", "ConfigMap", "Deployment", "StatefulSet", "Service", "Ingress", "PersistentVolumeClaim", "Secret", "Role", "RoleBinding", "ServiceAccount"];
+    function option(value, selected) {
+      var label = value ? ui.label(value) : "All";
+      return '<option value="' + ui.escapeHtml(value) + '"' + (value === selected ? " selected" : "") + ">" + ui.escapeHtml(label) + "</option>";
+    }
+    function actionClass(value) {
+      if (value === "immutable_conflict" || value === "explicit_delete") return "red";
+      if (value === "update" || value === "unknown") return "amber";
+      if (value === "no_op") return "info";
+      return "green";
+    }
+    function riskClass(value) {
+      if (value === "critical" || value === "high") return "red";
+      if (value === "medium" || value === "unknown") return "amber";
+      return "green";
+    }
+    var summaryKeys = ["total", "create", "update", "explicit_delete", "no_op", "unknown", "immutable_conflict"];
+    var summaryCards = summaryKeys.map(function (key) {
+      return '<article class="delta-summary-card"><span>' + ui.escapeHtml(ui.label(key)) + '</span><strong>' + ui.escapeHtml(counts[key] || 0) + "</strong></article>";
+    }).join("");
+    var rows = changes.map(function (row) {
+      var riskRow = row.risk === "critical" || row.risk === "high" ? ' class="delta-risk-row"' : "";
+      return "<tr" + riskRow + '><td><button class="table-link" type="button" data-delta-row="' + ui.escapeHtml(row.change_id) + '">' + ui.escapeHtml(row.name) + '</button><small>' + ui.escapeHtml(row.resource_identity) + '</small></td><td>' + ui.escapeHtml(row.kind) + '</td><td>' + ui.escapeHtml(row.namespace || "cluster-scoped") + '</td><td>' + ui.badge(actionClass(row.action), ui.label(row.action)) + '</td><td>' + ui.escapeHtml(row.current_summary || "Absent / unavailable") + '</td><td>' + ui.escapeHtml(row.planned_summary || "Explicit deletion") + '</td><td>' + ui.badge(riskClass(row.risk), ui.label(row.risk)) + '</td><td>' + ui.escapeHtml(row.reason) + "</td></tr>";
+    }).join("");
+    if (!rows) rows = '<tr><td colspan="8"><div class="empty-inline">No Release Delta rows match the selected filters.</div></td></tr>';
+    var explanation = tab.safe_explanation
+      ? '<article class="content-block delta-explanation"><p class="eyebrow">SIGMA 5 PRO / Bounded Delta Explanation</p><p>' + ui.escapeHtml(tab.safe_explanation.content) + '</p><p class="muted">Generated only from structured, redacted delta facts. Hidden reasoning is not retained.</p></article>'
+      : "";
+    var start = page.result_count ? deltaCursorHistory.length * Number(page.limit || 25) + 1 : 0;
+    var end = page.result_count ? start + changes.length - 1 : 0;
+    return '<div class="delta-summary-grid">' + summaryCards + '</div>' + explanation
+      + '<div class="tab-toolbar delta-toolbar"><div class="delta-filter-grid"><label>Action<select data-delta-filter="action">' + actionOptions.map(function (value) { return option(value, deltaFilters.action); }).join("") + '</select></label><label>Risk<select data-delta-filter="risk">' + riskOptions.map(function (value) { return option(value, deltaFilters.risk); }).join("") + '</select></label><label>Kind<select data-delta-filter="kind">' + kindOptions.map(function (value) { return option(value, deltaFilters.kind); }).join("") + '</select></label></div><button class="btn" type="button" data-copy-tab>Copy facts</button></div>'
+      + '<div class="table-scroll"><table class="delta-table"><thead><tr><th>Resource</th><th>Kind</th><th>Namespace</th><th>Action</th><th>Current</th><th>Planned</th><th>Risk</th><th>Reason</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+      + '<div class="table-footer"><span>Rows ' + start + "-" + end + " of " + Number(page.result_count || 0) + '</span><div class="pagination"><button class="btn" type="button" data-delta-page="previous"' + (deltaCursorHistory.length ? "" : " disabled") + '>Previous</button><button class="btn" type="button" data-delta-page="next"' + (page.has_more ? "" : " disabled") + ">Next</button></div></div>";
   }
 
   function renderGraph(tab) {
@@ -164,12 +219,12 @@
       tab.tabIndex = selected ? 0 : -1;
     });
     panels.forEach(function (panel) { panel.hidden = panel.id !== "panel-" + slug; });
-    deltaPage = slug === "release-delta" ? deltaPage : 0;
     auditPage = slug === "audit" ? auditPage : 0;
     ui.updateUrl({ tab: slug, twin_id: twin.twin_id }, replace);
     var panel = document.getElementById("panel-" + slug);
     panel.innerHTML = ui.stateView("loading", "Loading " + ui.label(slug), "Reading this evidence module through the configured data adapter.", false);
-    adapter.getTab(twin.twin_id, slug, twin.decision_version).then(function (tabData) {
+    var tabQuery = slug === "release-delta" ? Object.assign({}, deltaFilters) : {};
+    adapter.getTab(twin.twin_id, slug, twin.decision_version, tabQuery).then(function (tabData) {
       if (slug === "audit" && ui.params().get("event")) {
         var eventIndex = tabData.events.findIndex(function (item) { return item.event_id === ui.params().get("event"); });
         if (eventIndex >= 0) auditPage = Math.floor(eventIndex / 20);
@@ -206,23 +261,26 @@
   }
 
   function noSelection() {
-    header.innerHTML = '<div><p class="eyebrow">Digital Twin</p><h1>Select a twin run</h1><p class="muted">Terminal evidence is restored only when a run is explicitly selected. Active browser-only runs restore automatically.</p></div><a class="btn primary" href="digital-twins.html">Open Digital Twins</a>';
+    header.innerHTML = '<div><p class="eyebrow">Digital Twin</p><h1>Select a twin run</h1><p class="muted">Terminal evidence is restored only when a run is explicitly selected. Active runs restore automatically.</p></div><a class="btn primary" href="digital-twins.html">Open Digital Twins</a>';
     summary.hidden = true;
     preview.hidden = true;
     panels.forEach(function (panel, index) {
       panel.hidden = index !== 0;
-      if (index === 0) panel.innerHTML = ui.stateView("empty", "No twin selected", "Choose a twin from the list or start a browser-only mock generation.", false);
+      if (index === 0) panel.innerHTML = ui.stateView("empty", "No twin selected", "Choose a twin from the list or start a new generation.", false);
     });
   }
 
   function setupProgress(item) {
-    window.clearInterval(progressTimer);
-    progressPolls = 0;
-    if (item.twin_id.indexOf("twin_mock_") !== 0 || ["requested", "generating", "awaiting_dry_run", "decision_calculating"].indexOf(item.lifecycle_status) < 0) return;
-    progressTimer = window.setInterval(function () {
-      progressPolls += 1;
-      adapter.advanceGeneration(item.twin_id).then(renderTwin);
-      if (progressPolls >= 5) window.clearInterval(progressTimer);
+    window.clearTimeout(progressTimer);
+    var active = ["requested", "generating", "awaiting_dry_run", "decision_calculating"].indexOf(item.lifecycle_status) >= 0;
+    if (!active) return;
+    progressTimer = window.setTimeout(function () {
+      var refresh = item.twin_id.indexOf("twin_mock_") === 0
+        ? adapter.advanceGeneration(item.twin_id)
+        : adapter.getTwin(item.twin_id);
+      refresh.then(renderTwin).catch(function () {
+        progressTimer = window.setTimeout(function () { setupProgress(item); }, 2500);
+      });
     }, 1800);
   }
 
@@ -234,19 +292,18 @@
     var action = event.target.closest("[data-detail-action]");
     if (action && twin) {
       var code = action.getAttribute("data-detail-action");
-      if (code === "regenerate") adapter.regenerate(twin.twin_id).then(function (next) { selectedTab = "overview"; renderTwin(next); ui.showToast("New mock decision version started.", "success"); });
-      if (code === "cancel") adapter.cancelGeneration(twin.twin_id).then(renderTwin);
+      var contract = actionsFor(twin).find(function (item) { return item.code === code; });
+      if (!contract || !contract.enabled) return;
+      if (code === "regenerate_twin") ui.navigate(contract.href);
+      if (code === "cancel_generation") adapter.cancelGeneration(twin.twin_id).then(renderTwin);
       if (code === "open_bundle") {
         var drawer = document.getElementById("twin-evidence-drawer");
         drawer.querySelector("[data-drawer-content]").innerHTML = '<div class="log-view">' + ui.escapeHtml(JSON.stringify({ bundle_id: twin.bundle.bundle_id, sha256: twin.bundle.bundle_hash, release_version: twin.bundle.release_version, target: twin.target }, null, 2)) + "</div>";
         drawer.hidden = false;
       }
-      if (code === "open_execution" || code === "start_execution") ui.navigate("/mop-execution?twin_id=" + encodeURIComponent(twin.twin_id));
-      if (code === "request_approval") adapter.requestApproval(twin.twin_id).then(function (updated) { renderTwin(updated); ui.showToast("Mock approval requested.", "success"); });
-      if (code === "approve") adapter.approveTwin(twin.twin_id).then(function (updated) { renderTwin(updated); ui.showToast("Mock approval accepted.", "success"); });
-      if (code === "reject") adapter.rejectTwin(twin.twin_id).then(function (updated) { renderTwin(updated); ui.showToast("Mock approval rejected.", "info"); });
-      if (code === "download") ui.mockDownload(twin.twin_id + "-decision-report.json", twin);
-      if (code === "export") ui.mockDownload(twin.twin_id + ".json", twin);
+      if (code === "start_execution" || code === "request_approval") ui.navigate(contract.href);
+      if (code === "download_report") ui.navigate(contract.href);
+      if (code === "export_evidence") ui.navigate(contract.href);
       return;
     }
     var jump = event.target.closest("[data-jump-tab]");
@@ -262,10 +319,19 @@
       else if (target === "approval") activateTab("overview", false);
       else activateTab(target, false);
     }
-    var diff = event.target.closest("[data-open-diff]");
-    if (diff) {
-      var data = document.getElementById("panel-release-delta")._tabData.diff;
-      ui.showModal({ eyebrow: "Release Delta", title: data.resource, body: '<div class="diff-grid"><pre class="diff-pane">CURRENT\n' + ui.escapeHtml(data.before) + '</pre><pre class="diff-pane">PROPOSED\n' + ui.escapeHtml(data.after) + "</pre></div>" });
+    var deltaRow = event.target.closest("[data-delta-row]");
+    if (deltaRow) {
+      var deltaTab = document.getElementById("panel-release-delta")._tabData;
+      var change = (deltaTab.data.changes || []).find(function (item) { return item.change_id === deltaRow.getAttribute("data-delta-row"); });
+      if (change) {
+        var canonical = {};
+        try { canonical = JSON.parse(change.canonical_diff || "{}"); } catch (error) { canonical = { parse_error: error.message }; }
+        ui.showModal({
+          eyebrow: ui.label(change.action) + " / " + ui.label(change.risk) + " risk",
+          title: change.resource_identity,
+          body: '<p>' + ui.escapeHtml(change.reason) + '</p><div class="diff-grid"><pre class="diff-pane">CURRENT (CANONICAL)\n' + ui.escapeHtml(JSON.stringify(canonical.current, null, 2)) + '</pre><pre class="diff-pane">PLANNED (CANONICAL)\n' + ui.escapeHtml(JSON.stringify(canonical.planned, null, 2)) + '</pre></div><pre class="log-view">' + ui.escapeHtml(JSON.stringify(canonical.field_changes || [], null, 2)) + '</pre>'
+        });
+      }
     }
     var evidence = event.target.closest("[data-evidence-modal]");
     if (evidence) ui.showModal({ eyebrow: "Policy Evidence", title: evidence.getAttribute("data-evidence-modal"), body: '<div class="log-view">Evidence hash: 5eb1c90a...\nPolicy pack: esda-release-safety@2.4.1\nDecision authority: deterministic-twin-engine\nHidden reasoning stored: false</div>' });
@@ -281,9 +347,15 @@
     }
     var deltaPager = event.target.closest("[data-delta-page]");
     if (deltaPager) {
-      deltaPage = Math.max(0, deltaPage + (deltaPager.getAttribute("data-delta-page") === "next" ? 1 : -1));
       var deltaPanel = document.getElementById("panel-release-delta");
-      deltaPanel.querySelector("[data-tab-content]").innerHTML = renderDelta(deltaPanel._tabData);
+      var deltaPageData = (deltaPanel._tabData.data || {}).page || {};
+      if (deltaPager.getAttribute("data-delta-page") === "next" && deltaPageData.next_cursor) {
+        deltaCursorHistory.push(deltaFilters.cursor);
+        deltaFilters.cursor = deltaPageData.next_cursor;
+      } else if (deltaPager.getAttribute("data-delta-page") === "previous" && deltaCursorHistory.length) {
+        deltaFilters.cursor = deltaCursorHistory.pop() || null;
+      }
+      activateTab("release-delta", true);
     }
     var auditPager = event.target.closest("[data-audit-page]");
     if (auditPager) {
@@ -300,6 +372,14 @@
     if (retry && twin) activateTab(selectedTab, true);
   });
 
+  document.addEventListener("change", function (event) {
+    var filter = event.target.closest("[data-delta-filter]");
+    if (!filter || !twin) return;
+    deltaFilters[filter.getAttribute("data-delta-filter")] = filter.value;
+    deltaFilters.cursor = null;
+    deltaCursorHistory = [];
+    activateTab("release-delta", true);
+  });
   window.addEventListener("popstate", function () {
     var requestedTwinId = ui.params().get("twin_id");
     if (!requestedTwinId) {
