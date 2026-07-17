@@ -13,6 +13,7 @@
       "properties": {
         "verdict": {"type": "string", "enum": ["pending", "allow", "allow_with_approval", "deny", "unknown"]},
         "policy_version": {"type": "string", "minLength": 1, "maxLength": 200},
+        "policy_bundle_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
         "input_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
         "groups": {"type": "array", "items": {"type": "string", "enum": ["namespace_boundary", "cluster_scope", "rbac", "secret_handling", "privileged_host_access", "pvc_data_safety", "resource_quotas", "image_policy", "approval_policy", "bundle_dry_run_freshness_integrity"]}, "uniqueItems": true},
         "findings": {
@@ -24,6 +25,14 @@
             "properties": {"category": {"type": "string"}, "policy_version": {"type": "string", "minLength": 1, "maxLength": 200}}
           }
         },
+        "passed_groups": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "evidence_axis": {"type": "object"},
+        "risk_axis": {"type": "object"},
+        "decision_projection": {"type": "object"},
+        "rule_contributions": {"type": "array", "items": {"type": "object"}},
+        "command_fingerprint_hash": {"type": ["string", "null"]},
+        "dry_run_job_id": {"type": ["string", "null"]},
+        "model_authority": {"const": false},
         "artifacts": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/artifact"}}
       }
     }

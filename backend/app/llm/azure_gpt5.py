@@ -364,9 +364,15 @@ class AzureGpt5Service:
             )
             content = str(response.content)
             try:
-                parsed = json.loads(content)
-            except json.JSONDecodeError:
-                parsed = fallback | {"reasoning_summary": content[:2000]}
+                parsed = self._parse_json_object(content)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                parsed = fallback | {
+                    "reasoning_summary": content[:2000],
+                    "llm_fallback": {
+                        "used": True,
+                        "error": "Model response was not a bounded JSON object.",
+                    },
+                }
             parsed.setdefault("prompt_version", fallback.get("prompt_version", "planner_v1"))
             parsed.setdefault(
                 "prompt_hash", hashlib.sha256((system + user).encode("utf-8")).hexdigest()
@@ -386,6 +392,18 @@ class AzureGpt5Service:
                 },
             }
 
+    @staticmethod
+    def _parse_json_object(content: str) -> dict:
+        """Parse a bare or fenced JSON object without accepting arbitrary prose."""
+        candidate = content.strip()
+        if candidate.startswith("```") and candidate.endswith("```"):
+            candidate = candidate[3:-3].strip()
+            if candidate.lower().startswith("json"):
+                candidate = candidate[4:].lstrip("\r\n ")
+        parsed = json.loads(candidate)
+        if not isinstance(parsed, dict):
+            raise ValueError("Structured model output must be a JSON object.")
+        return parsed
     async def structured_response(
         self,
         *,

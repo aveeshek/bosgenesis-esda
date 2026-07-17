@@ -14,6 +14,7 @@ from backend.app.tools.mop_agents import redact_sensitive
 
 logger = logging.getLogger("bosgenesis_esda.mop_execution_agent")
 
+
 def _debug_json(value: Any, *, max_chars: int = 20_000) -> str:
     try:
         rendered = json.dumps(redact_sensitive(redact(value)), default=str, sort_keys=True)
@@ -38,7 +39,9 @@ class MopExecutionAgentError(Exception):
     @staticmethod
     def _message(payload: Any) -> str:
         if isinstance(payload, dict):
-            return str(payload.get("message") or payload.get("detail") or payload.get("error") or "")
+            return str(
+                payload.get("message") or payload.get("detail") or payload.get("error") or ""
+            )
         if isinstance(payload, str):
             return payload[:500]
         return ""
@@ -97,15 +100,22 @@ class MopExecutionAgentClient:
         headers = {"accept": "application/json"}
         api_key = str(getattr(self.settings, "mop_execution_agent_api_key", "") or "").strip()
         if api_key:
-            header_name = str(getattr(self.settings, "mop_execution_agent_auth_header", "x-api-key") or "x-api-key")
+            header_name = str(
+                getattr(self.settings, "mop_execution_agent_auth_header", "x-api-key")
+                or "x-api-key"
+            )
             if header_name.lower() == "authorization":
-                headers[header_name] = api_key if api_key.lower().startswith("bearer ") else f"Bearer {api_key}"
+                headers[header_name] = (
+                    api_key if api_key.lower().startswith("bearer ") else f"Bearer {api_key}"
+                )
             else:
                 headers[header_name] = api_key
         return headers
 
     def _timeout(self) -> httpx.Timeout:
-        return httpx.Timeout(float(getattr(self.settings, "mop_execution_agent_timeout_seconds", 300)))
+        return httpx.Timeout(
+            float(getattr(self.settings, "mop_execution_agent_timeout_seconds", 300))
+        )
 
     def report_download_url(self, *, job_id: str, report_id: str, artifact: str = "pdf") -> str:
         query = urlencode({"artifact": artifact})
@@ -114,23 +124,41 @@ class MopExecutionAgentClient:
             f"v1/execution-jobs/{quote(job_id, safe='')}/reports/{quote(report_id, safe='')}/download?{query}",
         )
 
-    async def download_report(self, *, job_id: str, report_id: str, artifact: str = "pdf") -> tuple[bytes, str, str]:
+    async def download_report(
+        self, *, job_id: str, report_id: str, artifact: str = "pdf"
+    ) -> tuple[bytes, str, str]:
         url = self.report_download_url(job_id=job_id, report_id=report_id, artifact=artifact)
         if not url:
-            raise MopExecutionAgentError(method="GET", url="report-download", status_code=None, payload="MoP Execution Agent URL is not configured")
+            raise MopExecutionAgentError(
+                method="GET",
+                url="report-download",
+                status_code=None,
+                payload="MoP Execution Agent URL is not configured",
+            )
         headers = self._headers()
         headers["accept"] = "*/*"
         try:
-            async with httpx.AsyncClient(timeout=self._timeout(), transport=self.transport) as client:
+            async with httpx.AsyncClient(
+                timeout=self._timeout(), transport=self.transport
+            ) as client:
                 response = await client.get(url, headers=headers)
             if response.status_code >= 400:
-                raise MopExecutionAgentError(method="GET", url=str(response.url), status_code=response.status_code, payload=self._response_payload(response))
+                raise MopExecutionAgentError(
+                    method="GET",
+                    url=str(response.url),
+                    status_code=response.status_code,
+                    payload=self._response_payload(response),
+                )
             content_type = response.headers.get("content-type") or "application/octet-stream"
-            extension = {"markdown": "md", "pdf": "pdf", "html": "html"}.get(artifact, artifact or "bin")
+            extension = {"markdown": "md", "pdf": "pdf", "html": "html"}.get(
+                artifact, artifact or "bin"
+            )
             filename = f"{report_id}.{extension}"
             return response.content, content_type, filename
         except httpx.HTTPError as exc:
-            raise MopExecutionAgentError(method="GET", url=url, status_code=None, payload=str(exc)) from exc
+            raise MopExecutionAgentError(
+                method="GET", url=url, status_code=None, payload=str(exc)
+            ) from exc
 
     async def health(self) -> MopExecutionAgentResponse:
         return await self._request("GET", "healthz")
@@ -143,6 +171,7 @@ class MopExecutionAgentClient:
 
     async def effective_config(self) -> MopExecutionAgentResponse:
         return await self._request("GET", "v1/config/effective")
+
     async def create_namespace_twin(self, payload: dict[str, Any]) -> MopExecutionAgentResponse:
         return await self._request("POST", "v1/namespace-twins", json_body=payload)
 
@@ -155,9 +184,7 @@ class MopExecutionAgentClient:
         return await self._request("GET", f"v1/namespace-twins/{quote(twin_id, safe='')}")
 
     async def get_namespace_twin_overview(self, twin_id: str) -> MopExecutionAgentResponse:
-        return await self._request(
-            "GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/overview"
-        )
+        return await self._request("GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/overview")
 
     async def get_namespace_twin_release_delta(
         self, twin_id: str, params: dict[str, Any] | None = None
@@ -165,6 +192,24 @@ class MopExecutionAgentClient:
         return await self._request(
             "GET",
             f"v1/namespace-twins/{quote(twin_id, safe='')}/release-delta",
+            params=params,
+        )
+
+    async def get_namespace_twin_dependency_graph(
+        self, twin_id: str, params: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/dependency-graph",
+            params=params,
+        )
+
+    async def get_namespace_twin_policy(
+        self, twin_id: str, params: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/policy",
             params=params,
         )
 
@@ -194,7 +239,9 @@ class MopExecutionAgentClient:
             )
         body = dict(payload)
         body.pop("bundle_id", None)
-        return await self._request("POST", f"v1/artifact-bundles/{quote(bundle_id, safe='')}/validate", json_body=body)
+        return await self._request(
+            "POST", f"v1/artifact-bundles/{quote(bundle_id, safe='')}/validate", json_body=body
+        )
 
     async def register_bundle(self, payload: dict[str, Any]) -> MopExecutionAgentResponse:
         return await self._request("POST", "v1/artifact-bundles", json_body=payload)
@@ -208,42 +255,84 @@ class MopExecutionAgentClient:
     async def get_job(self, job_id: str) -> MopExecutionAgentResponse:
         return await self._request("GET", f"v1/execution-jobs/{quote(job_id, safe='')}")
 
-    async def start_job(self, job_id: str, payload: dict[str, Any] | None = None) -> MopExecutionAgentResponse:
-        return await self._request("POST", f"v1/execution-jobs/{quote(job_id, safe='')}/start", json_body=payload or {})
+    async def start_job(
+        self, job_id: str, payload: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST", f"v1/execution-jobs/{quote(job_id, safe='')}/start", json_body=payload or {}
+        )
 
-    async def pause_job(self, job_id: str, payload: dict[str, Any] | None = None) -> MopExecutionAgentResponse:
-        return await self._request("POST", f"v1/execution-jobs/{quote(job_id, safe='')}/pause", json_body=payload or {})
+    async def pause_job(
+        self, job_id: str, payload: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST", f"v1/execution-jobs/{quote(job_id, safe='')}/pause", json_body=payload or {}
+        )
 
-    async def resume_job(self, job_id: str, payload: dict[str, Any] | None = None) -> MopExecutionAgentResponse:
-        return await self._request("POST", f"v1/execution-jobs/{quote(job_id, safe='')}/resume", json_body=payload or {})
+    async def resume_job(
+        self, job_id: str, payload: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST", f"v1/execution-jobs/{quote(job_id, safe='')}/resume", json_body=payload or {}
+        )
 
-    async def cancel_job(self, job_id: str, payload: dict[str, Any] | None = None) -> MopExecutionAgentResponse:
-        return await self._request("POST", f"v1/execution-jobs/{quote(job_id, safe='')}/cancel", json_body=payload or {})
+    async def cancel_job(
+        self, job_id: str, payload: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST", f"v1/execution-jobs/{quote(job_id, safe='')}/cancel", json_body=payload or {}
+        )
 
     async def get_plan(self, job_id: str) -> MopExecutionAgentResponse:
         return await self._request("GET", f"v1/execution-jobs/{quote(job_id, safe='')}/plan")
 
-    async def get_observations(self, job_id: str, params: dict[str, Any] | None = None) -> MopExecutionAgentResponse:
-        return await self._request("GET", f"v1/execution-jobs/{quote(job_id, safe='')}/observations", params=params)
+    async def get_observations(
+        self, job_id: str, params: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET", f"v1/execution-jobs/{quote(job_id, safe='')}/observations", params=params
+        )
 
-    async def get_events(self, job_id: str, params: dict[str, Any] | None = None) -> MopExecutionAgentResponse:
-        return await self._request("GET", f"v1/execution-jobs/{quote(job_id, safe='')}/events", params=params)
+    async def get_events(
+        self, job_id: str, params: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET", f"v1/execution-jobs/{quote(job_id, safe='')}/events", params=params
+        )
 
-    async def get_audit_events(self, job_id: str, params: dict[str, Any] | None = None) -> MopExecutionAgentResponse:
-        return await self._request("GET", f"v1/execution-jobs/{quote(job_id, safe='')}/audit-events", params=params)
+    async def get_audit_events(
+        self, job_id: str, params: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET", f"v1/execution-jobs/{quote(job_id, safe='')}/audit-events", params=params
+        )
 
-    async def get_memory_context(self, job_id: str, params: dict[str, Any] | None = None) -> MopExecutionAgentResponse:
-        return await self._request("GET", f"v1/execution-jobs/{quote(job_id, safe='')}/memory-context", params=params)
+    async def get_memory_context(
+        self, job_id: str, params: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET", f"v1/execution-jobs/{quote(job_id, safe='')}/memory-context", params=params
+        )
 
     async def get_decision_required_context(self, job_id: str) -> MopExecutionAgentResponse:
-        return await self._request("GET", f"v1/execution-jobs/{quote(job_id, safe='')}/decision-required")
+        return await self._request(
+            "GET", f"v1/execution-jobs/{quote(job_id, safe='')}/decision-required"
+        )
 
-    async def submit_instruction(self, job_id: str, payload: dict[str, Any]) -> MopExecutionAgentResponse:
-        return await self._request("POST", f"v1/execution-jobs/{quote(job_id, safe='')}/instructions", json_body=payload)
+    async def submit_instruction(
+        self, job_id: str, payload: dict[str, Any]
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST", f"v1/execution-jobs/{quote(job_id, safe='')}/instructions", json_body=payload
+        )
 
-    async def submit_approval(self, job_id: str, payload: dict[str, Any]) -> MopExecutionAgentResponse:
+    async def submit_approval(
+        self, job_id: str, payload: dict[str, Any]
+    ) -> MopExecutionAgentResponse:
         try:
-            return await self._request("POST", f"v1/execution-jobs/{quote(job_id, safe='')}/approvals", json_body=payload)
+            return await self._request(
+                "POST", f"v1/execution-jobs/{quote(job_id, safe='')}/approvals", json_body=payload
+            )
         except MopExecutionAgentError as rest_exc:
             if not rest_exc.status_code or rest_exc.status_code < 500:
                 raise
@@ -289,14 +378,19 @@ class MopExecutionAgentClient:
             "change": "change-summary",
             "change_report": "change-summary",
             "change-summary": "change-summary",
-        }.get(str(report_type or "").strip().lower(), str(report_type or "execution-summary").strip().replace("_", "-"))
+        }.get(
+            str(report_type or "").strip().lower(),
+            str(report_type or "execution-summary").strip().replace("_", "-"),
+        )
         return await self._request(
             "POST",
             f"v1/execution-jobs/{quote(job_id, safe='')}/reports/{quote(endpoint, safe='')}",
             json_body={},
         )
 
-    async def generate_release_notes(self, job_id: str, payload: dict[str, Any] | None = None) -> MopExecutionAgentResponse:
+    async def generate_release_notes(
+        self, job_id: str, payload: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
         return await self._request(
             "POST",
             f"v1/execution-jobs/{quote(job_id, safe='')}/reports/release-notes",
@@ -304,19 +398,37 @@ class MopExecutionAgentClient:
         )
 
     async def run_validation(self, job_id: str) -> MopExecutionAgentResponse:
-        return await self._request("POST", f"v1/execution-jobs/{quote(job_id, safe='')}/validate", json_body={})
+        return await self._request(
+            "POST", f"v1/execution-jobs/{quote(job_id, safe='')}/validate", json_body={}
+        )
 
-    async def request_rollback(self, job_id: str, payload: dict[str, Any]) -> MopExecutionAgentResponse:
-        return await self._request("POST", f"v1/execution-jobs/{quote(job_id, safe='')}/rollback", json_body=payload)
+    async def request_rollback(
+        self, job_id: str, payload: dict[str, Any]
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST", f"v1/execution-jobs/{quote(job_id, safe='')}/rollback", json_body=payload
+        )
 
-    async def execute_rollback(self, job_id: str, payload: dict[str, Any]) -> MopExecutionAgentResponse:
-        return await self._request("POST", f"v1/execution-jobs/{quote(job_id, safe='')}/rollback/execute", json_body=payload)
+    async def execute_rollback(
+        self, job_id: str, payload: dict[str, Any]
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST",
+            f"v1/execution-jobs/{quote(job_id, safe='')}/rollback/execute",
+            json_body=payload,
+        )
 
-    async def request_cleanup(self, job_id: str, payload: dict[str, Any]) -> MopExecutionAgentResponse:
+    async def request_cleanup(
+        self, job_id: str, payload: dict[str, Any]
+    ) -> MopExecutionAgentResponse:
         namespace = str(payload.get("target_namespace") or payload.get("namespace") or "").strip()
         if namespace:
             return await self.revert_namespace({"target_namespace": namespace, **payload})
-        return await self._request("POST", f"v1/execution-jobs/{quote(job_id, safe='')}/rollback", json_body={"cleanup_requested": True, **payload})
+        return await self._request(
+            "POST",
+            f"v1/execution-jobs/{quote(job_id, safe='')}/rollback",
+            json_body={"cleanup_requested": True, **payload},
+        )
 
     async def revert_namespace(self, payload: dict[str, Any]) -> MopExecutionAgentResponse:
         namespace = str(payload.get("target_namespace") or payload.get("namespace") or "").strip()
@@ -327,7 +439,9 @@ class MopExecutionAgentClient:
                 status_code=None,
                 payload="target_namespace is required before namespace revert",
             )
-        return await self._request("POST", f"v1/namespaces/{quote(namespace, safe='')}/revert", json_body=payload)
+        return await self._request(
+            "POST", f"v1/namespaces/{quote(namespace, safe='')}/revert", json_body=payload
+        )
 
     async def _request(
         self,
@@ -339,7 +453,12 @@ class MopExecutionAgentClient:
     ) -> MopExecutionAgentResponse:
         base_url = self._base_url()
         if not base_url:
-            raise MopExecutionAgentError(method=method, url=path, status_code=None, payload="MoP Execution Agent URL is not configured")
+            raise MopExecutionAgentError(
+                method=method,
+                url=path,
+                status_code=None,
+                payload="MoP Execution Agent URL is not configured",
+            )
         url = urljoin(base_url, path.lstrip("/"))
         redacted_request = self._redacted_payload({"json": json_body or {}, "params": params or {}})
         logger.debug(
@@ -349,8 +468,12 @@ class MopExecutionAgentClient:
             _debug_json(redacted_request),
         )
         try:
-            async with httpx.AsyncClient(timeout=self._timeout(), transport=self.transport) as client:
-                response = await client.request(method, url, json=json_body, params=params, headers=self._headers())
+            async with httpx.AsyncClient(
+                timeout=self._timeout(), transport=self.transport
+            ) as client:
+                response = await client.request(
+                    method, url, json=json_body, params=params, headers=self._headers()
+                )
             payload = self._response_payload(response)
             redacted_response = self._redacted_payload(payload)
             logger.debug(
@@ -368,7 +491,12 @@ class MopExecutionAgentClient:
                     response.status_code,
                     _debug_json(redacted_response),
                 )
-                raise MopExecutionAgentError(method=method, url=str(response.url), status_code=response.status_code, payload=payload)
+                raise MopExecutionAgentError(
+                    method=method,
+                    url=str(response.url),
+                    status_code=response.status_code,
+                    payload=payload,
+                )
             return MopExecutionAgentResponse(
                 method=method,
                 url=str(response.url),
@@ -379,12 +507,21 @@ class MopExecutionAgentClient:
             )
         except httpx.HTTPError as exc:
             logger.exception("mop_execution_agent_http_error method=%s url=%s", method, url)
-            raise MopExecutionAgentError(method=method, url=url, status_code=None, payload=str(exc)) from exc
+            raise MopExecutionAgentError(
+                method=method, url=url, status_code=None, payload=str(exc)
+            ) from exc
 
-    async def _mcp_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> MopExecutionAgentResponse:
+    async def _mcp_tool_call(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> MopExecutionAgentResponse:
         base_url = self._base_url()
         if not base_url:
-            raise MopExecutionAgentError(method="MCP", url="mcp", status_code=None, payload="MoP Execution Agent URL is not configured")
+            raise MopExecutionAgentError(
+                method="MCP",
+                url="mcp",
+                status_code=None,
+                payload="MoP Execution Agent URL is not configured",
+            )
         url = urljoin(base_url, "mcp")
         body = {
             "jsonrpc": "2.0",
@@ -400,7 +537,9 @@ class MopExecutionAgentClient:
             _debug_json(redacted_request),
         )
         try:
-            async with httpx.AsyncClient(timeout=self._timeout(), transport=self.transport) as client:
+            async with httpx.AsyncClient(
+                timeout=self._timeout(), transport=self.transport
+            ) as client:
                 response = await client.post(url, json=body, headers=self._headers())
             payload = self._response_payload(response)
             logger.debug(
@@ -418,7 +557,12 @@ class MopExecutionAgentClient:
                     response.status_code,
                     _debug_json(payload),
                 )
-                raise MopExecutionAgentError(method="MCP", url=str(response.url), status_code=response.status_code, payload=payload)
+                raise MopExecutionAgentError(
+                    method="MCP",
+                    url=str(response.url),
+                    status_code=response.status_code,
+                    payload=payload,
+                )
             if isinstance(payload, dict) and payload.get("error"):
                 logger.error(
                     "mop_execution_agent_mcp_tool_error tool=%s url=%s payload=%s",
@@ -426,7 +570,12 @@ class MopExecutionAgentClient:
                     str(response.url),
                     _debug_json(payload["error"]),
                 )
-                raise MopExecutionAgentError(method="MCP", url=str(response.url), status_code=response.status_code, payload=payload["error"])
+                raise MopExecutionAgentError(
+                    method="MCP",
+                    url=str(response.url),
+                    status_code=response.status_code,
+                    payload=payload["error"],
+                )
             result_payload = self._coerce_mcp_result(payload)
             redacted_response = self._redacted_payload(result_payload)
             return MopExecutionAgentResponse(
@@ -439,7 +588,10 @@ class MopExecutionAgentClient:
             )
         except httpx.HTTPError as exc:
             logger.exception("mop_execution_agent_mcp_http_error tool=%s url=%s", tool_name, url)
-            raise MopExecutionAgentError(method="MCP", url=url, status_code=None, payload=str(exc)) from exc
+            raise MopExecutionAgentError(
+                method="MCP", url=url, status_code=None, payload=str(exc)
+            ) from exc
+
     @staticmethod
     def _redacted_payload(value: Any) -> Any:
         return redact_sensitive(redact(value))

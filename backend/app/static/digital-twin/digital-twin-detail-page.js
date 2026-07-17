@@ -15,7 +15,26 @@
   var selectedTab = ui.params().get("tab") || "overview";
   var deltaFilters = { action: "", risk: "", kind: "", limit: 25, cursor: null };
   var deltaCursorHistory = [];
+  var graphFilters = {
+    kind: "",
+    risk: "",
+    status: "",
+    namespace: "",
+    relationship: "",
+    confidence: "",
+    edge_status: "",
+    search: "",
+    missing_only: "",
+    resource: ui.params().get("resource") || "",
+    node_cursor: null,
+    edge_cursor: null,
+    limit: 50
+  };
+  var graphNodeCursorHistory = [];
+  var graphEdgeCursorHistory = [];
+  var graphDisplayMode = "canvas";
   var auditPage = 0;
+  var policyFilter = "all";
 
   if (!adapter || !header || !summary || !tabs.length) return;
 
@@ -155,22 +174,171 @@
   }
 
   function renderGraph(tab) {
-    var graph = tab.graph;
-    var visible = graph.nodes.slice(0, 48);
-    var nodes = visible.map(function (node, index) {
-      var left = 5 + (index % 8) * 12;
-      var top = 8 + Math.floor(index / 8) * 15;
-      return '<button class="mock-graph-node ' + (node.impact === "review" ? "review" : "") + '" style="left:' + left + "%;top:" + top + '%" type="button" data-graph-node="' + ui.escapeHtml(node.id) + '"><strong>' + ui.escapeHtml(node.kind) + '</strong><span>' + ui.escapeHtml(node.name) + "</span></button>";
+    var data = tab.data || {};
+    if (!tab.data && tab.graph) {
+      var mockNodes = Array.isArray(tab.graph.nodes) ? tab.graph.nodes : [];
+      var mockEdges = Array.isArray(tab.graph.edges) ? tab.graph.edges : [];
+      var mockNodeLabels = {};
+      mockNodes.forEach(function (node) { mockNodeLabels[node.id] = node.kind + "/" + node.name; });
+      data = {
+        summary: {
+          nodes: mockNodes.length,
+          edges: mockEdges.length,
+          missing_nodes: 0,
+          uncertain_nodes: mockNodes.filter(function (node) { return node.impact === "review"; }).length,
+          high_risk_nodes: 0,
+          cycles: 0
+        },
+        nodes: mockNodes.map(function (node) {
+          return {
+            node_id: node.id,
+            resource_identity: "mock:" + node.kind + ":" + node.name,
+            kind: node.kind,
+            namespace: "mock-browser",
+            name: node.name,
+            status: node.impact === "review" ? "uncertain" : "present",
+            risk: node.impact === "review" ? "medium" : "low",
+            confidence: "mock",
+            evidence_refs: []
+          };
+        }),
+        edges: mockEdges.map(function (edge, index) {
+          return {
+            edge_id: "mock-edge-" + index,
+            source: edge.source,
+            target: edge.target,
+            relationship: edge.relationship,
+            status: "valid",
+            confidence: "mock",
+            evidence_refs: []
+          };
+        }),
+        table_rows: mockEdges.map(function (edge, index) {
+          return {
+            edge_id: "mock-edge-" + index,
+            source_label: mockNodeLabels[edge.source] || edge.source,
+            target_label: mockNodeLabels[edge.target] || edge.target,
+            relationship: edge.relationship,
+            status: "valid",
+            confidence: "mock",
+            evidence_refs: []
+          };
+        }),
+        node_page: { result_count: mockNodes.length, has_more: false, next_cursor: null },
+        edge_page: { result_count: mockEdges.length, has_more: false, next_cursor: null },
+        selected_context: { found: false }
+      };
+    }
+    var nodes = Array.isArray(data.nodes) ? data.nodes : [];
+    var edges = Array.isArray(data.edges) ? data.edges : [];
+    var rows = Array.isArray(data.table_rows) ? data.table_rows : [];
+    var counts = data.summary || {};
+    var nodePage = data.node_page || {};
+    var edgePage = data.edge_page || {};
+    var selected = data.selected_context || { found: false };
+    var columns = Math.min(6, Math.max(1, Math.ceil(Math.sqrt(nodes.length * 1.4))));
+    var rowCount = Math.max(1, Math.ceil(nodes.length / columns));
+    var canvasHeight = Math.max(360, rowCount * 118);
+    var positions = {};
+    nodes.forEach(function (node, index) {
+      var column = index % columns;
+      var row = Math.floor(index / columns);
+      positions[node.node_id] = {
+        x: columns === 1 ? 500 : 80 + column * (840 / (columns - 1)),
+        y: 62 + row * 108
+      };
+    });
+    function option(value, selectedValue) {
+      return '<option value="' + ui.escapeHtml(value) + '"' + (value === selectedValue ? " selected" : "") + ">" + ui.escapeHtml(value ? ui.label(value) : "All") + "</option>";
+    }
+    function stateClass(value) {
+      if (value === "missing" || value === "critical" || value === "high") return "red";
+      if (value === "uncertain" || value === "medium" || value === "unknown") return "amber";
+      return "green";
+    }
+    var kindOptions = ["", "ConfigMap", "Secret", "PersistentVolumeClaim", "ServiceAccount", "Service", "Ingress", "Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Role", "RoleBinding", "ClusterRole", "CustomResourceDefinition", "HelmRelease", "PlanPhase", "ManifestArtifact"];
+    var relationshipOptions = ["", "owner_reference", "selector_matches", "route_backend", "configmap_ref", "secret_name_ref", "pvc_ref", "service_account_ref", "helm_owns_resource", "rbac_role_ref", "rbac_subject", "crd_owns_custom_resource", "plan_applies", "plan_depends_on"];
+    var summaryCards = [
+      ["Nodes", counts.nodes || 0],
+      ["Edges", counts.edges || 0],
+      ["Missing", counts.missing_nodes || counts.missing || 0],
+      ["Uncertain", counts.uncertain_nodes || counts.uncertain || 0],
+      ["High Risk", counts.high_risk_nodes || 0],
+      ["Cycles", counts.cycles || 0]
+    ].map(function (item) {
+      return '<article class="graph-summary-card"><span>' + ui.escapeHtml(item[0]) + '</span><strong>' + ui.escapeHtml(item[1]) + "</strong></article>";
     }).join("");
-    var tableRows = graph.edges.slice(0, 30).map(function (edge) { return "<tr><td>" + ui.escapeHtml(edge.source) + "</td><td>" + ui.escapeHtml(edge.relationship) + "</td><td>" + ui.escapeHtml(edge.target) + "</td></tr>"; }).join("");
-    return '<div class="tab-toolbar"><span>' + graph.nodes.length + " nodes · " + graph.edges.length + ' edges</span><div><button class="btn" type="button" data-graph-mode="canvas">Canvas</button><button class="btn" type="button" data-graph-mode="table">Table</button></div></div><div data-graph-canvas class="mock-graph-canvas">' + nodes + '<div class="graph-density-note">Showing 48 of ' + graph.nodes.length + ' nodes</div></div><div data-graph-table hidden class="table-scroll"><table><thead><tr><th>Source</th><th>Relationship</th><th>Target</th></tr></thead><tbody>' + tableRows + "</tbody></table></div>";
+    var svgEdges = edges.map(function (edge) {
+      var source = positions[edge.source];
+      var target = positions[edge.target];
+      if (!source || !target) return "";
+      return '<line class="graph-edge ' + stateClass(edge.status) + '" x1="' + source.x + '" y1="' + source.y + '" x2="' + target.x + '" y2="' + target.y + '"><title>' + ui.escapeHtml(ui.label(edge.relationship) + " / " + edge.confidence) + "</title></line>";
+    }).join("");
+    var nodeButtons = nodes.map(function (node) {
+      var point = positions[node.node_id];
+      var selectedClass = graphFilters.resource === node.node_id ? " selected" : "";
+      return '<button class="mock-graph-node ' + stateClass(node.status) + selectedClass + '" style="left:' + (point.x / 10) + "%;top:" + point.y + 'px" type="button" data-graph-node="' + ui.escapeHtml(node.node_id) + '" title="' + ui.escapeHtml(node.resource_identity) + '"><strong>' + ui.escapeHtml(node.kind) + '</strong><span>' + ui.escapeHtml(node.name) + '</span><small>' + ui.escapeHtml(ui.label(node.status)) + "</small></button>";
+    }).join("");
+    var tableRows = rows.map(function (edge) {
+      return '<tr class="' + stateClass(edge.status) + '"><td>' + ui.escapeHtml(edge.source_label) + '</td><td>' + ui.escapeHtml(ui.label(edge.relationship)) + '</td><td>' + ui.escapeHtml(edge.target_label) + '</td><td>' + ui.badge(stateClass(edge.status), ui.label(edge.status)) + '</td><td>' + ui.escapeHtml(ui.label(edge.confidence)) + '</td><td>' + ui.escapeHtml((edge.evidence_refs || []).length) + "</td></tr>";
+    }).join("");
+    if (!tableRows) tableRows = '<tr><td colspan="6"><div class="empty-inline">No dependency edges match the selected filters.</div></td></tr>';
+    var explanation = tab.safe_explanation
+      ? '<article class="content-block graph-explanation"><p class="eyebrow">SIGMA 5 PRO / Bounded Impact Explanation</p><p>' + ui.escapeHtml(tab.safe_explanation.content) + '</p><p class="muted">Generated only from server-returned graph facts and impact paths. The browser infers no relationships.</p></article>'
+      : "";
+    var selectedPanel = "";
+    if (selected.found) {
+      var selectedNode = selected.node || {};
+      var paths = (selected.impact_paths || []).map(function (path) {
+        return '<li><strong>' + ui.escapeHtml((path.nodes || []).join(" -> ")) + '</strong><span>' + ui.escapeHtml((path.relationships || []).map(ui.label).join(" -> ")) + ' / ' + ui.escapeHtml(ui.label(path.status)) + ' / ' + ui.escapeHtml(ui.label(path.confidence)) + "</span></li>";
+      }).join("");
+      selectedPanel = '<article class="content-block graph-selected-context"><div class="tab-toolbar"><div><p class="eyebrow">Selected Resource</p><h3>' + ui.escapeHtml(selectedNode.kind + "/" + selectedNode.name) + '</h3></div><button class="btn" type="button" data-graph-clear-selection>Clear selection</button></div><p>' + ui.escapeHtml(selectedNode.resource_identity) + '</p><div class="graph-context-metrics"><span>' + (selected.inbound_edges || []).length + ' inbound</span><span>' + (selected.outbound_edges || []).length + ' outbound</span><span>' + (selected.impact_paths || []).length + ' impact paths</span></div><ol class="reason-list">' + (paths || "<li>No bounded downstream impact path was returned.</li>") + "</ol></article>";
+    }
+    var filters = '<div class="graph-filter-grid"><label>Search<input type="search" data-graph-filter="search" value="' + ui.escapeHtml(graphFilters.search) + '" placeholder="Kind, name, namespace"></label><label>Kind<select data-graph-filter="kind">' + kindOptions.map(function (value) { return option(value, graphFilters.kind); }).join("") + '</select></label><label>Risk<select data-graph-filter="risk">' + ["", "low", "medium", "high", "critical", "unknown"].map(function (value) { return option(value, graphFilters.risk); }).join("") + '</select></label><label>Node status<select data-graph-filter="status">' + ["", "present", "missing", "uncertain"].map(function (value) { return option(value, graphFilters.status); }).join("") + '</select></label><label>Relationship<select data-graph-filter="relationship">' + relationshipOptions.map(function (value) { return option(value, graphFilters.relationship); }).join("") + '</select></label><label>Edge status<select data-graph-filter="edge_status">' + ["", "valid", "missing", "uncertain"].map(function (value) { return option(value, graphFilters.edge_status); }).join("") + '</select></label><label>Confidence<select data-graph-filter="confidence">' + ["", "deterministic", "high", "medium", "uncertain"].map(function (value) { return option(value, graphFilters.confidence); }).join("") + '</select></label><label class="graph-check"><input type="checkbox" data-graph-filter="missing_only" value="true"' + (graphFilters.missing_only ? " checked" : "") + "> Missing or uncertain only</label></div>";
+    return '<div class="graph-summary-grid">' + summaryCards + "</div>" + explanation + selectedPanel
+      + '<div class="tab-toolbar graph-toolbar">' + filters + '<div class="inline-actions"><button class="btn" type="button" data-graph-mode="canvas">Graph</button><button class="btn" type="button" data-graph-mode="table">Table</button><button class="btn" type="button" data-copy-tab>Copy facts</button></div></div>'
+      + '<div data-graph-canvas class="mock-graph-canvas" style="min-height:' + canvasHeight + 'px"' + (graphDisplayMode === "canvas" ? "" : " hidden") + '><svg class="dependency-edge-layer" viewBox="0 0 1000 ' + canvasHeight + '" preserveAspectRatio="none" aria-label="Server supplied dependency edges">' + svgEdges + "</svg>" + nodeButtons + '<div class="graph-density-note">Rendering ' + nodes.length + " server-supplied nodes and " + edges.length + " server-supplied edges</div></div>"
+      + '<div data-graph-table class="table-scroll"' + (graphDisplayMode === "table" ? "" : " hidden") + '><table class="dependency-table"><thead><tr><th>Source</th><th>Relationship</th><th>Target</th><th>Status</th><th>Confidence</th><th>Evidence</th></tr></thead><tbody>' + tableRows + "</tbody></table></div>"
+      + '<div class="table-footer graph-page-footer"><span>Nodes ' + nodes.length + " of " + Number(nodePage.result_count || 0) + " / Edges " + rows.length + " of " + Number(edgePage.result_count || 0) + '</span><div class="pagination"><button class="btn" type="button" data-graph-page="nodes-previous"' + (graphNodeCursorHistory.length ? "" : " disabled") + '>Previous nodes</button><button class="btn" type="button" data-graph-page="nodes-next"' + (nodePage.has_more ? "" : " disabled") + '>Next nodes</button><button class="btn" type="button" data-graph-page="edges-previous"' + (graphEdgeCursorHistory.length ? "" : " disabled") + '>Previous edges</button><button class="btn" type="button" data-graph-page="edges-next"' + (edgePage.has_more ? "" : " disabled") + ">Next edges</button></div></div>";
   }
-
   function renderFindings(tab) {
-    var findings = tab.findings.map(function (finding) { return '<li id="' + ui.escapeHtml(finding.id) + '" data-finding><div>' + ui.badge(finding.severity === "block" ? "red" : "amber", finding.severity) + '<strong>' + ui.escapeHtml(finding.code + " · " + finding.title) + '</strong></div><p>' + ui.escapeHtml(finding.detail) + '</p><button class="btn" type="button" data-evidence-modal="' + ui.escapeHtml(finding.id) + '">Evidence</button></li>'; }).join("");
-    return '<div class="content-grid"><article class="content-block span-8"><div class="tab-toolbar"><h3>Policy Findings</h3><div><button class="btn" type="button" data-policy-filter="all">All</button><button class="btn" type="button" data-policy-filter="review">Review</button><button class="btn" type="button" data-policy-filter="block">Blocking</button></div></div><ul class="finding-list policy-findings">' + findings + '</ul></article><article class="content-block span-4"><h3>Passed Groups</h3><ul class="list-clean">' + tab.passed_groups.map(function (group) { return "<li>✓ " + ui.escapeHtml(group) + "</li>"; }).join("") + '</ul><div class="notice green">All proposed mutations remain inside the selected namespace unless a blocking finding states otherwise.</div></article></div>';
+    var data = tab.data || {};
+    var findings = Array.isArray(tab.findings) ? tab.findings : (data.findings || []);
+    var passedGroups = Array.isArray(tab.passed_groups) ? tab.passed_groups : (data.passed_groups || []);
+    var evidenceAxis = data.evidence_axis || {};
+    var riskAxis = data.risk_axis || {};
+    var projection = data.decision_projection || {};
+    var explanation = tab.safe_explanation
+      ? '<article class="content-block span-12 policy-explanation"><p class="eyebrow">SIGMA 5 PRO / Bounded Explanation</p><p>' + ui.escapeHtml(tab.safe_explanation.content) + '</p><p class="muted">The explanation cannot change any axis, contribution, precedence rule, or decision.</p></article>'
+      : "";
+    var axes = [
+      { label: "Policy", value: data.verdict || "not_available", tone: data.verdict === "deny" ? "red" : data.verdict === "allow_with_approval" ? "amber" : "green", note: data.policy_version || "Unversioned" },
+      { label: "Evidence", value: (evidenceAxis.completeness || "unknown") + " / " + (evidenceAxis.freshness || "unknown"), tone: evidenceAxis.classification === "complete" ? "green" : "amber", note: String(evidenceAxis.present_count || 0) + " of " + String(evidenceAxis.required_count || 0) + " checks present" },
+      { label: "Change Risk", value: (riskAxis.level || "unknown") + " / " + String(riskAxis.score == null ? "n/a" : riskAxis.score), tone: riskAxis.level === "critical" || riskAxis.level === "high" ? "red" : riskAxis.level === "medium" ? "amber" : "green", note: riskAxis.rules_version || "Unversioned" },
+      { label: "Decision Projection", value: projection.label || "Unknown", tone: projection.level || "amber", note: (projection.preliminary ? "Preliminary / " : "Final / ") + (projection.precedence_rule || "no precedence") }
+    ].map(function (axis) {
+      return '<article class="policy-axis ' + ui.escapeHtml(axis.tone) + '"><span class="fact-label">' + ui.escapeHtml(axis.label) + '</span><strong>' + ui.escapeHtml(ui.label(axis.value)) + '</strong><small>' + ui.escapeHtml(axis.note) + '</small></article>';
+    }).join("");
+    var findingRows = findings.map(function (finding) {
+      var findingId = finding.finding_id || finding.id;
+      var severity = finding.severity === "critical" || finding.severity === "high" || finding.effect === "deny" ? "red" : "amber";
+      return '<li id="' + ui.escapeHtml(findingId) + '" data-finding><div>' + ui.badge(severity, finding.effect || finding.severity) + '<strong>' + ui.escapeHtml((finding.code || "POLICY_FINDING") + " / " + (finding.title || "Policy finding")) + '</strong></div><p>' + ui.escapeHtml(finding.summary || finding.detail || finding.message || "No safe summary supplied.") + '</p><button class="btn" type="button" data-evidence-modal="' + ui.escapeHtml(findingId) + '">Evidence</button></li>';
+    }).join("");
+    if (!findingRows) findingRows = '<li class="empty-inline">No findings match this filter. Deterministic axes remain unchanged.</li>';
+    var filters = ["all", "review", "block"].map(function (filter) {
+      return '<button class="btn' + (policyFilter === filter ? " active" : "") + '" type="button" data-policy-filter="' + filter + '" aria-pressed="' + String(policyFilter === filter) + '">' + ui.escapeHtml(ui.label(filter === "block" ? "blocking" : filter)) + '</button>';
+    }).join("");
+    var contributions = (data.rule_contributions || []).map(function (item) {
+      return '<tr data-rule-contribution class="' + (item.matched ? "matched" : "") + '"><td>' + ui.escapeHtml(ui.label(item.axis)) + '</td><td><strong>' + ui.escapeHtml(ui.label(item.rule)) + '</strong></td><td>' + ui.badge(item.matched ? (item.effect === "deny" || item.effect === "red" ? "red" : "amber") : "green", item.matched ? "matched" : "clear") + '</td><td>' + ui.escapeHtml(ui.label(item.effect || "none")) + '</td><td>' + ui.escapeHtml(item.contribution == null ? 0 : item.contribution) + '</td><td>' + ui.escapeHtml(item.reason || "Deterministic rule evaluated.") + '</td></tr>';
+    }).join("");
+    var passed = passedGroups.length
+      ? passedGroups.map(function (group) { return '<li><span class="policy-pass-mark">OK</span>' + ui.escapeHtml(ui.label(group)) + '</li>'; }).join("")
+      : '<li>No passed groups were returned for this filter.</li>';
+    return '<div class="notice policy-authority">Server-authoritative deterministic axes. The browser renders supplied facts and never infers policy, evidence, risk, or a decision.</div>'
+      + '<div class="policy-axis-grid">' + axes + '</div>'
+      + explanation
+      + '<div class="content-grid"><article class="content-block span-8"><div class="tab-toolbar"><h3>Policy Findings</h3><div class="inline-actions">' + filters + '</div></div><ul class="finding-list policy-findings">' + findingRows + '</ul></article><article class="content-block span-4"><h3>Passed Groups</h3><ul class="list-clean policy-passed-groups">' + passed + '</ul><div class="notice green">Passing a group does not bypass approval, evidence, risk, or dry-run requirements.</div></article><article class="content-block span-12"><div class="tab-toolbar"><h3>Full Rule Contribution Breakdown</h3><button class="btn" type="button" data-copy-tab>Copy facts</button></div><div class="table-scroll"><table class="policy-rule-table"><thead><tr><th>Axis</th><th>Rule</th><th>Match</th><th>Effect</th><th>Score</th><th>Deterministic reason</th></tr></thead><tbody>' + contributions + '</tbody></table></div></article></div>';
   }
-
   function renderDryRun(tab) {
     return metricCards(tab.metrics) + '<div class="content-grid tab-followup"><article class="content-block span-8"><h3>Observations</h3><div class="log-view">' + tab.observations.map(function (line, index) { return "[" + String(index + 1).padStart(2, "0") + "] " + ui.escapeHtml(line); }).join("\n") + '</div></article><article class="content-block span-4"><h3>Fidelity Limits</h3><div class="notice amber">Runtime readiness, external DNS, storage attach latency, and application behavior remain outside server-side dry-run evidence.</div></article></div>';
   }
@@ -222,8 +390,12 @@
     auditPage = slug === "audit" ? auditPage : 0;
     ui.updateUrl({ tab: slug, twin_id: twin.twin_id }, replace);
     var panel = document.getElementById("panel-" + slug);
+    panel.dataset.loading = "true";
     panel.innerHTML = ui.stateView("loading", "Loading " + ui.label(slug), "Reading this evidence module through the configured data adapter.", false);
-    var tabQuery = slug === "release-delta" ? Object.assign({}, deltaFilters) : {};
+    var tabQuery = {};
+    if (slug === "release-delta") tabQuery = Object.assign({}, deltaFilters);
+    if (slug === "dependency-graph") tabQuery = Object.assign({}, graphFilters);
+    if (slug === "policy" && policyFilter !== "all") tabQuery = { effect: policyFilter === "block" ? "deny" : "approval_required" };
     adapter.getTab(twin.twin_id, slug, twin.decision_version, tabQuery).then(function (tabData) {
       if (slug === "audit" && ui.params().get("event")) {
         var eventIndex = tabData.events.findIndex(function (item) { return item.event_id === ui.params().get("event"); });
@@ -231,8 +403,10 @@
       }
       panel.innerHTML = '<div class="tab-intro"><div><p class="eyebrow">' + (tabData.non_authoritative ? "Mock / Non-authoritative Module" : "Real Evidence") + ' · ' + ui.escapeHtml(ui.label(tabData.state)) + '</p><h2>' + ui.escapeHtml(tabData.title) + '</h2><p>' + ui.escapeHtml(tabData.summary) + '</p></div>' + ui.badge(tabData.state) + '</div><div data-tab-content>' + renderTab(tabData) + '</div>';
       panel._tabData = tabData;
+      delete panel.dataset.loading;
       applyDeepLink(panel);
     }).catch(function (error) {
+      delete panel.dataset.loading;
       panel.innerHTML = ui.stateView("failed", "Evidence unavailable", error.message, error.retryable);
     });
   }
@@ -249,6 +423,7 @@
   }
 
   function renderTwin(item) {
+    var previousDecisionVersion = twin && twin.decision_version;
     twin = item;
     summary.hidden = false;
     preview.hidden = false;
@@ -256,7 +431,12 @@
     document.title = item.display_name + " | Digital Twins";
     renderHeader(item);
     renderSummary(item);
-    activateTab(selectedTab, true);
+    var activePanel = document.getElementById("panel-" + selectedTab);
+    var decisionVersionChanged = previousDecisionVersion != null
+      && previousDecisionVersion !== item.decision_version;
+    if (decisionVersionChanged || (!activePanel._tabData && activePanel.dataset.loading !== "true")) {
+      activateTab(selectedTab, true);
+    }
     setupProgress(item);
   }
 
@@ -333,17 +513,43 @@
         });
       }
     }
+    var policyButton = event.target.closest("[data-policy-filter]");
+    if (policyButton && twin) {
+      policyFilter = policyButton.getAttribute("data-policy-filter") || "all";
+      activateTab("policy", true);
+      return;
+    }
     var evidence = event.target.closest("[data-evidence-modal]");
-    if (evidence) ui.showModal({ eyebrow: "Policy Evidence", title: evidence.getAttribute("data-evidence-modal"), body: '<div class="log-view">Evidence hash: 5eb1c90a...\nPolicy pack: esda-release-safety@2.4.1\nDecision authority: deterministic-twin-engine\nHidden reasoning stored: false</div>' });
-    var graphNode = event.target.closest("[data-graph-node]");
-    if (graphNode) ui.showModal({ eyebrow: "Dependency Node", title: graphNode.textContent.trim(), body: '<div class="notice amber">Node detail is read from the selected graph fixture. Relationship evidence is namespace-scoped and redacted.</div>' });
+    if (evidence) {
+      var policyPanel = document.getElementById("panel-policy");
+      var policyData = (policyPanel._tabData || {}).data || {};
+      var findingId = evidence.getAttribute("data-evidence-modal");
+      var selectedFinding = (policyData.findings || []).find(function (item) { return (item.finding_id || item.id) === findingId; });
+      ui.showModal({
+        eyebrow: "Policy Evidence / Server supplied",
+        title: findingId,
+        body: '<pre class="log-view">' + ui.escapeHtml(JSON.stringify(selectedFinding || { finding_id: findingId, evidence_refs: [] }, null, 2)) + '</pre>'
+      });
+    }    var graphNode = event.target.closest("[data-graph-node]");
+    if (graphNode && twin) {
+      graphFilters.resource = graphNode.getAttribute("data-graph-node");
+      ui.updateUrl({ resource: graphFilters.resource }, true);
+      activateTab("dependency-graph", true);
+    }
+    var clearGraphSelection = event.target.closest("[data-graph-clear-selection]");
+    if (clearGraphSelection && twin) {
+      graphFilters.resource = "";
+      ui.updateUrl({ resource: null }, true);
+      activateTab("dependency-graph", true);
+    }
     var auditModal = event.target.closest("[data-audit-modal]");
     if (auditModal) ui.showModal({ eyebrow: "Audit Event", title: auditModal.getAttribute("data-audit-modal"), body: '<div class="log-view">Safe event summary only.\nActor and correlation metadata are preserved.\nHidden model reasoning is not stored.</div>' });
     var graphMode = event.target.closest("[data-graph-mode]");
     if (graphMode) {
       var panel = document.getElementById("panel-dependency-graph");
-      panel.querySelector("[data-graph-canvas]").hidden = graphMode.getAttribute("data-graph-mode") !== "canvas";
-      panel.querySelector("[data-graph-table]").hidden = graphMode.getAttribute("data-graph-mode") !== "table";
+      graphDisplayMode = graphMode.getAttribute("data-graph-mode");
+      panel.querySelector("[data-graph-canvas]").hidden = graphDisplayMode !== "canvas";
+      panel.querySelector("[data-graph-table]").hidden = graphDisplayMode !== "table";
     }
     var deltaPager = event.target.closest("[data-delta-page]");
     if (deltaPager) {
@@ -356,6 +562,24 @@
         deltaFilters.cursor = deltaCursorHistory.pop() || null;
       }
       activateTab("release-delta", true);
+    }
+    var graphPager = event.target.closest("[data-graph-page]");
+    if (graphPager && twin) {
+      var graphPanel = document.getElementById("panel-dependency-graph");
+      var graphData = graphPanel._tabData.data || {};
+      var graphDirection = graphPager.getAttribute("data-graph-page");
+      if (graphDirection === "nodes-next" && graphData.node_page.next_cursor) {
+        graphNodeCursorHistory.push(graphFilters.node_cursor);
+        graphFilters.node_cursor = graphData.node_page.next_cursor;
+      } else if (graphDirection === "nodes-previous" && graphNodeCursorHistory.length) {
+        graphFilters.node_cursor = graphNodeCursorHistory.pop() || null;
+      } else if (graphDirection === "edges-next" && graphData.edge_page.next_cursor) {
+        graphEdgeCursorHistory.push(graphFilters.edge_cursor);
+        graphFilters.edge_cursor = graphData.edge_page.next_cursor;
+      } else if (graphDirection === "edges-previous" && graphEdgeCursorHistory.length) {
+        graphFilters.edge_cursor = graphEdgeCursorHistory.pop() || null;
+      }
+      activateTab("dependency-graph", true);
     }
     var auditPager = event.target.closest("[data-audit-page]");
     if (auditPager) {
@@ -373,12 +597,28 @@
   });
 
   document.addEventListener("change", function (event) {
-    var filter = event.target.closest("[data-delta-filter]");
-    if (!filter || !twin) return;
-    deltaFilters[filter.getAttribute("data-delta-filter")] = filter.value;
-    deltaFilters.cursor = null;
-    deltaCursorHistory = [];
-    activateTab("release-delta", true);
+    var deltaFilter = event.target.closest("[data-delta-filter]");
+    if (deltaFilter && twin) {
+      deltaFilters[deltaFilter.getAttribute("data-delta-filter")] = deltaFilter.value;
+      deltaFilters.cursor = null;
+      deltaCursorHistory = [];
+      activateTab("release-delta", true);
+      return;
+    }
+    var graphFilter = event.target.closest("[data-graph-filter]");
+    if (graphFilter && twin) {
+      var filterName = graphFilter.getAttribute("data-graph-filter");
+      graphFilters[filterName] = graphFilter.type === "checkbox"
+        ? (graphFilter.checked ? "true" : "")
+        : graphFilter.value;
+      graphFilters.resource = "";
+      graphFilters.node_cursor = null;
+      graphFilters.edge_cursor = null;
+      graphNodeCursorHistory = [];
+      graphEdgeCursorHistory = [];
+      ui.updateUrl({ resource: null }, true);
+      activateTab("dependency-graph", true);
+    }
   });
   window.addEventListener("popstate", function () {
     var requestedTwinId = ui.params().get("twin_id");
@@ -392,6 +632,7 @@
       return;
     }
     var slug = ui.params().get("tab") || "overview";
+    graphFilters.resource = ui.params().get("resource") || "";
     activateTab(slug, true);
   });
 

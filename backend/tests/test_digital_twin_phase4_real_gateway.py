@@ -43,7 +43,7 @@ CORE_TWIN = {
     ],
     "facts": {
         "provisional": True,
-        "module_modes": {"policy": "mock_non_authoritative"},
+        "module_modes": {"policy": "real_core"},
     },
 }
 
@@ -113,6 +113,8 @@ class FakeNamespaceTwinClient:
     def __init__(self, *args, **kwargs) -> None:
         self.twin = deepcopy(CORE_TWIN)
         self.release_delta_params: dict = {}
+        self.dependency_graph_params: dict = {}
+        self.policy_params: dict = {}
 
     async def create_namespace_twin(self, payload: dict) -> MopExecutionAgentResponse:
         created = deepcopy(self.twin)
@@ -211,7 +213,7 @@ class FakeNamespaceTwinClient:
                             "planned_summary": "kind=ConfigMap",
                             "risk": "low",
                             "reason": "Canonical intent differs at data.mode.",
-                            "canonical_diff": "{\"current\":{},\"planned\":{},\"field_changes\":[]}",
+                            "canonical_diff": '{"current":{},"planned":{},"field_changes":[]}',
                             "evidence_refs": [
                                 {
                                     "evidence_id": "evidence_bundle",
@@ -235,6 +237,274 @@ class FakeNamespaceTwinClient:
             },
         )
 
+    async def get_namespace_twin_dependency_graph(
+        self, twin_id: str, params: dict | None = None
+    ) -> MopExecutionAgentResponse:
+        assert twin_id == self.twin["twin_id"]
+        self.dependency_graph_params = deepcopy(params or {})
+        plan_node = {
+            "node_id": "node_plan_apply",
+            "resource_identity": "plan:apply",
+            "api_version": "esda.bosgenesis/v1",
+            "kind": "PlanPhase",
+            "namespace": "sample-target",
+            "name": "apply",
+            "status": "present",
+            "risk": "low",
+            "confidence": "deterministic",
+            "evidence_refs": ["evidence_plan"],
+        }
+        config_node = {
+            "node_id": "node_config_sample",
+            "resource_identity": "v1:ConfigMap:sample-target:sample-app",
+            "api_version": "v1",
+            "kind": "ConfigMap",
+            "namespace": "sample-target",
+            "name": "sample-app",
+            "status": "present",
+            "risk": "low",
+            "confidence": "deterministic",
+            "evidence_refs": ["evidence_bundle"],
+        }
+        secret_node = {
+            "node_id": "node_secret_missing",
+            "resource_identity": "v1:Secret:sample-target:sample-secret",
+            "api_version": "v1",
+            "kind": "Secret",
+            "namespace": "sample-target",
+            "name": "sample-secret",
+            "status": "missing",
+            "risk": "high",
+            "confidence": "high",
+            "evidence_refs": ["evidence_bundle"],
+        }
+        edges = [
+            {
+                "edge_id": "edge_plan_config",
+                "source": plan_node["node_id"],
+                "target": config_node["node_id"],
+                "source_label": "PlanPhase/apply",
+                "target_label": "ConfigMap/sample-app",
+                "relationship": "plan_applies",
+                "status": "valid",
+                "confidence": "deterministic",
+                "risk": "low",
+                "evidence_refs": ["evidence_plan"],
+            },
+            {
+                "edge_id": "edge_config_secret",
+                "source": config_node["node_id"],
+                "target": secret_node["node_id"],
+                "source_label": "ConfigMap/sample-app",
+                "target_label": "Secret/sample-secret",
+                "relationship": "secret_name_ref",
+                "status": "missing",
+                "confidence": "high",
+                "risk": "high",
+                "evidence_refs": ["evidence_bundle"],
+            },
+        ]
+        selected_id = (params or {}).get("resource")
+        selected_node = next(
+            (
+                node
+                for node in (plan_node, config_node, secret_node)
+                if node["node_id"] == selected_id
+            ),
+            None,
+        )
+        selected_context = {"found": False}
+        if selected_node:
+            selected_context = {
+                "found": True,
+                "node": selected_node,
+                "inbound_edges": [edge for edge in edges if edge["target"] == selected_id],
+                "outbound_edges": [edge for edge in edges if edge["source"] == selected_id],
+                "impact_paths": [
+                    {
+                        "nodes": [config_node["node_id"], secret_node["node_id"]],
+                        "relationships": ["secret_name_ref"],
+                        "status": "missing",
+                        "confidence": "high",
+                    }
+                ]
+                if selected_id == config_node["node_id"]
+                else [],
+            }
+        return _response(
+            "GET",
+            f"v1/namespace-twins/{twin_id}/dependency-graph",
+            {
+                "schema_version": "1.0.0",
+                "twin_id": twin_id,
+                "decision_version": self.twin["decision_version"],
+                "lifecycle_status": self.twin["lifecycle_status"],
+                "freshness": self.twin["freshness"],
+                "availability": {
+                    "state": "available",
+                    "message": "Authoritative dependency graph facts are available.",
+                },
+                "data": {
+                    "summary": {
+                        "nodes": 3,
+                        "edges": 2,
+                        "missing_nodes": 1,
+                        "uncertain_nodes": 0,
+                        "high_risk_nodes": 1,
+                        "cycles": 0,
+                    },
+                    "nodes": [plan_node, config_node, secret_node],
+                    "edges": edges,
+                    "table_rows": edges,
+                    "node_page": {
+                        "limit": int((params or {}).get("limit") or 50),
+                        "has_more": False,
+                        "next_cursor": None,
+                        "result_count": 3,
+                    },
+                    "edge_page": {
+                        "limit": int((params or {}).get("limit") or 50),
+                        "has_more": False,
+                        "next_cursor": None,
+                        "result_count": 2,
+                    },
+                    "selected_context": selected_context,
+                    "findings": [
+                        {
+                            "code": "MISSING_DEPENDENCY",
+                            "severity": "high",
+                            "summary": "Secret/sample-secret is missing.",
+                        }
+                    ],
+                },
+            },
+        )
+
+    async def get_namespace_twin_policy(
+        self, twin_id: str, params: dict | None = None
+    ) -> MopExecutionAgentResponse:
+        assert twin_id == self.twin["twin_id"]
+        self.policy_params = deepcopy(params or {})
+        finding = {
+            "id": "policyfinding_human_approval",
+            "finding_id": "policyfinding_human_approval",
+            "code": "HUMAN_APPROVAL_REQUIRED",
+            "category": "approval_policy",
+            "severity": "review",
+            "effect": "approval_required",
+            "status": "approval_required",
+            "title": "Human Approval Required",
+            "summary": "The machine plan requires human approval before mutation.",
+            "detail": "The machine plan requires human approval before mutation.",
+            "message": "The machine plan requires human approval before mutation.",
+            "policy_version": "namespace-twin-policy-2026.07.1",
+            "evidence_refs": [
+                {
+                    "evidence_id": "evidence_machine_plan",
+                    "source_type": "bundle",
+                    "summary": "machine_execution_plan.yaml#executor_contract",
+                    "captured_at": self.twin["updated_at"],
+                    "redacted": True,
+                }
+            ],
+        }
+        findings = [finding]
+        effect = (params or {}).get("effect")
+        if effect and effect != finding["effect"]:
+            findings = []
+        return _response(
+            "GET",
+            f"v1/namespace-twins/{twin_id}/policy",
+            {
+                "schema_version": "1.0.0",
+                "twin_id": twin_id,
+                "decision_version": self.twin["decision_version"],
+                "lifecycle_status": self.twin["lifecycle_status"],
+                "freshness": self.twin["freshness"],
+                "availability": {
+                    "state": "available",
+                    "message": "Authoritative deterministic Policy Twin facts are available.",
+                },
+                "data": {
+                    "verdict": "allow_with_approval",
+                    "policy_version": "namespace-twin-policy-2026.07.1",
+                    "policy_bundle_hash": "b" * 64,
+                    "input_hash": "a" * 64,
+                    "groups": ["namespace_boundary", "approval_policy"],
+                    "findings": findings,
+                    "passed_groups": ["namespace_boundary"],
+                    "evidence_axis": {
+                        "classification": "partial",
+                        "completeness": "partial",
+                        "freshness": "fresh",
+                        "required_count": 5,
+                        "present_count": 4,
+                        "missing": ["authoritative_dry_run"],
+                        "stale": [],
+                        "checks": [],
+                    },
+                    "risk_axis": {
+                        "level": "medium",
+                        "score": 55,
+                        "raw_score": 55,
+                        "rules_version": "namespace-twin-risk-1.0.0",
+                        "thresholds": {
+                            "green_max": 29,
+                            "amber_min": 30,
+                            "amber_max": 69,
+                            "red_min": 70,
+                        },
+                    },
+                    "decision_projection": {
+                        "level": "amber",
+                        "label": "Amber",
+                        "preliminary": True,
+                        "decision_is_final": False,
+                        "precedence_rule": "approval_required",
+                        "summary": "Amber because human approval is required.",
+                        "hard_blocks": [],
+                        "approval_required": True,
+                        "model_authority": False,
+                        "axes_hash": "c" * 64,
+                    },
+                    "rule_contributions": [
+                        {
+                            "axis": "policy",
+                            "rule": "approval_policy",
+                            "matched": True,
+                            "effect": "approval_required",
+                            "contribution": 0,
+                            "reason": "Human approval is required.",
+                            "evidence_refs": ["machine_execution_plan.yaml"],
+                        },
+                        {
+                            "axis": "risk",
+                            "rule": "statefulset_change",
+                            "matched": True,
+                            "effect": "increase",
+                            "contribution": 25,
+                            "weight": 25,
+                            "reason": "A StatefulSet changes.",
+                            "evidence_refs": ["apps/v1:StatefulSet:sample-target:sample"],
+                        },
+                        {
+                            "axis": "decision",
+                            "rule": "approval_required",
+                            "matched": True,
+                            "effect": "amber",
+                            "selected": True,
+                            "contribution": 0,
+                            "reason": "Approval-required precedence selected Amber.",
+                            "evidence_refs": [],
+                        },
+                    ],
+                    "command_fingerprint_hash": None,
+                    "dry_run_job_id": None,
+                    "model_authority": False,
+                    "artifacts": [],
+                },
+            },
+        )
     async def get_namespace_twin(self, twin_id: str) -> MopExecutionAgentResponse:
         assert twin_id == self.twin["twin_id"]
         return _response("GET", f"v1/namespace-twins/{twin_id}", self.twin)
@@ -334,11 +604,11 @@ def test_real_gateway_requires_auth_and_projects_execution_agent_core(
     assert config.status_code == 200
     assert config.headers["x-esda-data-mode"] == "real_core"
     assert config.json()["label"] == (
-        "Real Lifecycle + Overview + Release Delta + Mock Remaining Modules"
+        "Real Lifecycle + Overview + Release Delta + Dependency Graph + Policy Twin + Mock Remaining Modules"
     )
     assert listed.json()["items"][0]["data_mode"] == "real_core"
     assert listed.json()["warning"].startswith(
-        "Lifecycle, Overview, Release Delta, summaries"
+        "Lifecycle, Overview, Release Delta, Dependency Graph, summaries"
     )
     assert detail.json()["lifecycle_status"] == "awaiting_dry_run"
     assert detail.json()["decision_is_final"] is False
@@ -380,10 +650,11 @@ def test_real_create_events_cancel_and_invalid_browser_scenario_are_typed(
     assert cancelled.json()["lifecycle_status"] == "cancelled"
 
 
-def test_mock_modules_are_labeled_and_cannot_supply_real_actions(tmp_path, monkeypatch) -> None:
+def test_remaining_mock_modules_are_labeled_and_cannot_supply_real_actions(
+    tmp_path, monkeypatch
+) -> None:
     with build_client(tmp_path, monkeypatch) as client:
         login(client)
-        tab = client.get(f"/api/digital-twins/{CORE_TWIN['twin_id']}/tabs/policy")
         actions = client.get(f"/api/digital-twins/{CORE_TWIN['twin_id']}/actions")
         list_page = client.get("/digital-twins")
         static_page = client.get("/static/digital-twin/digital-twins.html")
@@ -391,10 +662,6 @@ def test_mock_modules_are_labeled_and_cannot_supply_real_actions(tmp_path, monke
         detail_script = client.get("/static/digital-twin/digital-twin-detail-page.js")
         adapter = client.get("/static/digital-twin/twin-http-adapter.js")
 
-    assert tab.status_code == 200
-    assert tab.json()["data_mode"] == "mock_module"
-    assert tab.json()["non_authoritative"] is True
-    assert tab.json()["summary"].startswith("Mock / non-authoritative module preview")
     assert {action["code"] for action in actions.json()} == {
         "open_twin",
         "cancel_generation",
@@ -402,7 +669,6 @@ def test_mock_modules_are_labeled_and_cannot_supply_real_actions(tmp_path, monke
     assert 'data-adapter-mode="real_core"' in list_page.text
     assert "Real Core + Mock Modules" in static_page.text or "data-mode-marker" in static_page.text
     assert '["mock_server", "real_core"]' in adapter.text
-
     assert "return Array.isArray(item.actions)" in detail_script.text
     assert "adapter.getTwin(item.twin_id)" in detail_script.text
     assert "tab.safe_explanation.content" in detail_script.text
@@ -411,7 +677,6 @@ def test_mock_modules_are_labeled_and_cannot_supply_real_actions(tmp_path, monke
     assert "load({ silent: true })" in list_script.text
     assert "adapter.advanceGeneration(item.twin_id)" in list_script.text
 
-
 def test_real_audit_history_cannot_be_cleared(tmp_path, monkeypatch) -> None:
     with build_client(tmp_path, monkeypatch) as client:
         login(client)
@@ -419,9 +684,9 @@ def test_real_audit_history_cannot_be_cleared(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 405
     assert response.json()["error"]["code"] == "durable_history_not_clearable"
-def test_release_delta_is_authoritative_filterable_and_audit_logged(
-    tmp_path, monkeypatch
-) -> None:
+
+
+def test_release_delta_is_authoritative_filterable_and_audit_logged(tmp_path, monkeypatch) -> None:
     with build_client(tmp_path, monkeypatch) as client:
         login(client)
         response = client.get(
@@ -463,3 +728,132 @@ def test_release_delta_is_authoritative_filterable_and_audit_logged(
     assert "tabData.changes" in detail_script
     assert "data-delta-filter" in detail_script
     assert "query = Object.assign" in adapter_script
+
+
+def test_dependency_graph_is_authoritative_filterable_and_audit_logged(
+    tmp_path, monkeypatch
+) -> None:
+    with build_client(tmp_path, monkeypatch) as client:
+        login(client)
+        response = client.get(
+            f"/api/digital-twins/{CORE_TWIN['twin_id']}/tabs/dependency-graph",
+            params={
+                "kind": "ConfigMap",
+                "risk": "high",
+                "status": "missing",
+                "relationship": "secret_name_ref",
+                "confidence": "high",
+                "edge_status": "missing",
+                "search": "sample",
+                "missing_only": "true",
+                "resource": "node_config_sample",
+                "limit": 50,
+                "model_profile": "azure_gpt5_pro",
+            },
+        )
+        forwarded = client.app.state.digital_twin_gateway.client.dependency_graph_params
+        with client.app.state.database.session() as session:
+            explanation_logs = list(session.scalars(select(DigitalTwinExplanationLog)))
+        detail_script = client.get("/static/digital-twin/digital-twin-detail-page.js").text
+        adapter_script = client.get("/static/digital-twin/twin-http-adapter.js").text
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state"] == "available"
+    assert payload["kind"] == "graph"
+    assert payload["data_mode"] == "real_core"
+    assert payload["module_mode"] == "authoritative"
+    assert payload["non_authoritative"] is False
+    assert payload["data"]["summary"]["nodes"] == 3
+    assert payload["data"]["summary"]["missing_nodes"] == 1
+    assert payload["data"]["selected_context"]["found"] is True
+    assert payload["data"]["selected_context"]["impact_paths"][0]["relationships"] == [
+        "secret_name_ref"
+    ]
+    assert payload["safe_explanation"]["chain_of_thought_included"] is False
+    assert payload["safe_explanation"]["prompt_version"] == (
+        "namespace_twin_dependency_graph_explanation_v1"
+    )
+    assert forwarded == {
+        "kind": "ConfigMap",
+        "risk": "high",
+        "status": "missing",
+        "relationship": "secret_name_ref",
+        "confidence": "high",
+        "edge_status": "missing",
+        "search": "sample",
+        "missing_only": "true",
+        "resource": "node_config_sample",
+        "limit": "50",
+    }
+    assert explanation_logs[0].prompt_version == ("namespace_twin_dependency_graph_explanation_v1")
+    assert "data.nodes" in detail_script
+    assert "data.edges" in detail_script
+    assert "data-graph-filter" in detail_script
+    assert "data-graph-node" in detail_script
+    assert "The browser infers no relationships" in detail_script
+    assert "query = Object.assign" in adapter_script
+
+def test_policy_twin_is_authoritative_filterable_and_model_cannot_override(
+    tmp_path, monkeypatch
+) -> None:
+    with build_client(tmp_path, monkeypatch) as client:
+        login(client)
+        response = client.get(
+            f"/api/digital-twins/{CORE_TWIN['twin_id']}/tabs/policy",
+            params={"effect": "approval_required", "model_profile": "azure_gpt5_pro"},
+        )
+        forwarded = deepcopy(client.app.state.digital_twin_gateway.client.policy_params)
+        gate = client.get(f"/api/digital-twins/{CORE_TWIN['twin_id']}/gate")
+        detail = client.get(f"/api/digital-twins/{CORE_TWIN['twin_id']}")
+        with client.app.state.database.session() as session:
+            explanation_logs = list(session.scalars(select(DigitalTwinExplanationLog)))
+        detail_script = client.get("/static/digital-twin/digital-twin-detail-page.js").text
+
+    assert response.status_code == 200
+    payload = response.json()
+    data = payload["data"]
+    assert payload["state"] == "available"
+    assert payload["kind"] == "findings"
+    assert payload["data_mode"] == "real_core"
+    assert payload["module_mode"] == "authoritative"
+    assert payload["non_authoritative"] is False
+    assert forwarded == {"effect": "approval_required"}
+    assert data["verdict"] == "allow_with_approval"
+    assert data["policy_version"] == "namespace-twin-policy-2026.07.1"
+    assert len(data["policy_bundle_hash"]) == 64
+    assert data["evidence_axis"]["completeness"] == "partial"
+    assert data["evidence_axis"]["freshness"] == "fresh"
+    assert data["risk_axis"]["level"] == "medium"
+    assert data["risk_axis"]["score"] == 55
+    assert data["risk_axis"]["rules_version"] == "namespace-twin-risk-1.0.0"
+    assert data["decision_projection"]["label"] == "Amber"
+    assert data["decision_projection"]["precedence_rule"] == "approval_required"
+    assert data["decision_projection"]["decision_is_final"] is False
+    assert data["model_authority"] is False
+    assert {item["axis"] for item in data["rule_contributions"]} == {
+        "policy",
+        "risk",
+        "decision",
+    }
+    explanation = payload["safe_explanation"]
+    assert explanation["content"].startswith("SIGMA explains")
+    assert explanation["prompt_version"] == "namespace_twin_policy_explanation_v1"
+    assert explanation["chain_of_thought_included"] is False
+    assert explanation["model_authority"] is False
+    assert "decision" not in explanation
+    assert "actions" not in explanation
+    assert detail.json()["decision"] == "pending"
+    assert detail.json()["decision_is_final"] is False
+    assert gate.json()["decision"] == "pending"
+    assert gate.json()["policy"] == "allow_with_approval"
+    assert gate.json()["risk"]["score"] == 55
+    assert gate.json()["decision_projection"]["label"] == "Amber"
+    assert gate.json()["model_authority"] is False
+    assert explanation_logs[0].prompt_version == "namespace_twin_policy_explanation_v1"
+    assert explanation_logs[0].safe_output_json == explanation
+    assert "data-policy-filter" in detail_script
+    assert "data-rule-contribution" in detail_script
+    assert 'panel.dataset.loading = "true"' in detail_script
+    assert 'activePanel.dataset.loading !== "true"' in detail_script
+    assert "Server-authoritative deterministic axes" in detail_script

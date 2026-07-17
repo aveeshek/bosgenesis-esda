@@ -511,33 +511,33 @@ Approval note: the three unchecked items are human sign-offs and are intentional
 - [x] Switch Release Delta tab from mock to real.
 - [x] Add server-side SIGMA 5 PRO explanation of important changes using structured delta facts.
 - [x] Verify omission never becomes deletion.
-- [ ] Obtain user acceptance before Slice 5C.
+- [x] Obtain user acceptance before Slice 5C.
 
 ### Slice 5C: Dependency Graph Twin
 
-- [ ] Build stable resource nodes.
-- [ ] Build owner, selector, route, ConfigMap, Secret-name, PVC, Helm, and plan-phase edges.
-- [ ] Attach confidence and evidence reference to every edge.
-- [ ] Detect missing and uncertain dependencies.
-- [ ] Implement real graph summary, node, edge, filter, and table-alternative API.
-- [ ] Switch Dependency Graph tab from mock to real.
-- [ ] Add server-side SIGMA 5 PRO impact-path explanation grounded in selected graph facts.
-- [ ] Verify the browser renders but never infers dependencies.
+- [x] Build stable resource nodes.
+- [x] Build owner, selector, route, ConfigMap, Secret-name, PVC, Helm, and plan-phase edges.
+- [x] Attach confidence and evidence reference to every edge.
+- [x] Detect missing and uncertain dependencies.
+- [x] Implement real graph summary, node, edge, filter, and table-alternative API.
+- [x] Switch Dependency Graph tab from mock to real.
+- [x] Add server-side SIGMA 5 PRO impact-path explanation grounded in selected graph facts.
+- [x] Verify the browser renders but never infers dependencies.
 - [ ] Obtain user acceptance before Slice 5D.
 
 ### Slice 5D: Policy Twin and Deterministic Decision Axes
 
-- [ ] Reuse the existing execution-agent policy engine.
-- [ ] Version the effective policy bundle.
-- [ ] Implement hard-block and approval-required findings.
-- [ ] Implement evidence completeness and freshness independently.
-- [ ] Implement versioned deterministic change-risk rules independently.
-- [ ] Produce full rule contribution breakdown.
-- [ ] Implement Green, Amber, and Red precedence.
-- [ ] Implement real policy/findings API.
-- [ ] Switch Policy tab from mock to real.
-- [ ] Add server-side SIGMA 5 PRO plain-language policy explanation.
-- [ ] Prove model output cannot upgrade or downgrade policy, evidence, risk, or decision.
+- [x] Reuse the existing execution-agent policy engine.
+- [x] Version the effective policy bundle.
+- [x] Implement hard-block and approval-required findings.
+- [x] Implement evidence completeness and freshness independently.
+- [x] Implement versioned deterministic change-risk rules independently.
+- [x] Produce full rule contribution breakdown.
+- [x] Implement Green, Amber, and Red precedence.
+- [x] Implement real policy/findings API.
+- [x] Switch Policy tab from mock to real.
+- [x] Add server-side SIGMA 5 PRO plain-language policy explanation.
+- [x] Prove model output cannot upgrade or downgrade policy, evidence, risk, or decision.
 - [ ] Obtain user acceptance before Slice 5E.
 
 ---

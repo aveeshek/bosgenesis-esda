@@ -1,3 +1,5 @@
+import pytest
+
 from backend.app.config import Settings
 from backend.app.llm.azure_gpt5 import AzureGpt5Service
 
@@ -136,3 +138,20 @@ def test_ollama_profile_uses_openai_compatible_path(monkeypatch) -> None:
 
     assert service._model("ollama_llama70b") is not None
     assert called["ollama"] is True
+
+def test_structured_response_parser_accepts_bare_and_fenced_json_objects() -> None:
+    service = AzureGpt5Service(Settings())
+
+    assert service._parse_json_object('{"summary":"bare"}') == {"summary": "bare"}
+    assert service._parse_json_object('```json\n{"summary":"fenced"}\n```') == {
+        "summary": "fenced"
+    }
+
+
+def test_structured_response_parser_rejects_prose_and_non_object_json() -> None:
+    service = AzureGpt5Service(Settings())
+
+    with pytest.raises(ValueError):
+        service._parse_json_object('["not", "an", "object"]')
+    with pytest.raises(ValueError):
+        service._parse_json_object('Here is JSON: {"summary":"unsafe wrapper"}')

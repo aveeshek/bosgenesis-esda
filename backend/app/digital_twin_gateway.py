@@ -274,8 +274,6 @@ class DigitalTwinGatewayService:
             "optional_states": {
                 slug: MODULE_MODE
                 for slug in (
-                    "release-delta",
-                    "dependency-graph",
                     "policy",
                     "dry-run",
                     "rollback",
@@ -333,8 +331,9 @@ class DigitalTwinGatewayService:
             "applied_query": deepcopy(core.get("applied_query") or query),
             "partial": False,
             "warning": (
-                "Lifecycle, Overview, Release Delta, summaries, freshness, and actions are "
-                "authoritative. Remaining evidence modules are mock and non-authoritative."
+                "Lifecycle, Overview, Release Delta, Dependency Graph, summaries, freshness, "
+                "Policy Twin, and actions are authoritative. Remaining evidence modules are mock and "
+                "non-authoritative."
             ),
         }
 
@@ -385,6 +384,79 @@ class DigitalTwinGatewayService:
                 twin, release_delta, model_profile=model_profile
             )
             return release_delta
+        if slug == "dependency-graph":
+            query = query or {}
+            params = {
+                key: query.get(key)
+                for key in (
+                    "kind",
+                    "risk",
+                    "status",
+                    "namespace",
+                    "relationship",
+                    "confidence",
+                    "edge_status",
+                    "search",
+                    "missing_only",
+                    "resource",
+                    "node_cursor",
+                    "edge_cursor",
+                    "limit",
+                )
+                if query.get(key) not in (None, "")
+            }
+            dependency_graph = self._unwrap(
+                await self.client.get_namespace_twin_dependency_graph(twin["twin_id"], params)
+            )
+            availability = dependency_graph.get("availability") or {}
+            dependency_graph.update(
+                {
+                    "state": availability.get("state") or "not_available",
+                    "kind": "graph",
+                    "title": "Dependency Graph Twin",
+                    "summary": availability.get("message")
+                    or "Authoritative dependency graph facts are unavailable.",
+                    "data_mode": DATA_MODE,
+                    "module_mode": "authoritative",
+                    "non_authoritative": False,
+                    "applied_query": params,
+                }
+            )
+            dependency_graph["safe_explanation"] = await self.dependency_graph_explanation(
+                twin, dependency_graph, model_profile=model_profile
+            )
+            return dependency_graph
+        if slug == "policy":
+            query = query or {}
+            params = {
+                key: query.get(key)
+                for key in ("severity", "category", "effect")
+                if query.get(key) not in (None, "", "all")
+            }
+            policy = self._unwrap(
+                await self.client.get_namespace_twin_policy(twin["twin_id"], params)
+            )
+            availability = policy.get("availability") or {}
+            data = policy.get("data") or {}
+            policy.update(
+                {
+                    "state": availability.get("state") or "not_available",
+                    "kind": "findings",
+                    "title": "Policy Twin",
+                    "summary": availability.get("message")
+                    or "Authoritative policy facts are unavailable.",
+                    "data_mode": DATA_MODE,
+                    "module_mode": "authoritative",
+                    "non_authoritative": False,
+                    "applied_query": params,
+                    "findings": list(data.get("findings") or []),
+                    "passed_groups": list(data.get("passed_groups") or []),
+                }
+            )
+            policy["safe_explanation"] = await self.policy_explanation(
+                twin, policy, model_profile=model_profile
+            )
+            return policy
         return await self._tab_phase4(twin, slug)
 
     async def safe_explanation(
@@ -477,6 +549,7 @@ class DigitalTwinGatewayService:
             error_message=(generated.get("llm_fallback") or {}).get("error"),
         )
         return safe_output
+
     async def release_delta_explanation(
         self,
         twin: dict[str, Any],
@@ -564,9 +637,7 @@ class DigitalTwinGatewayService:
             "schema_version": "1.0.0",
             "explanation_id": f"twinexp_{uuid4().hex}",
             "status": "fallback" if fallback_used else "generated",
-            "model_profile": generated.get("model_profile")
-            or model_profile
-            or "azure_gpt5_pro",
+            "model_profile": generated.get("model_profile") or model_profile or "azure_gpt5_pro",
             "prompt_version": prompt_version,
             "prompt_hash": prompt_hash,
             "input_hash": input_hash,
@@ -592,6 +663,312 @@ class DigitalTwinGatewayService:
         )
         return safe_output
 
+    async def dependency_graph_explanation(
+        self,
+        twin: dict[str, Any],
+        dependency_graph: dict[str, Any],
+        *,
+        model_profile: str | None = None,
+    ) -> dict[str, Any]:
+        prompt_version = "namespace_twin_dependency_graph_explanation_v1"
+        data = dependency_graph.get("data") or {}
+        summary = data.get("summary") or {}
+        selected = data.get("selected_context") or {}
+
+        def node_fact(node: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "node_id": node.get("node_id"),
+                "resource_identity": node.get("resource_identity"),
+                "kind": node.get("kind"),
+                "name": node.get("name"),
+                "namespace": node.get("namespace"),
+                "status": node.get("status"),
+                "risk": node.get("risk"),
+            }
+
+        def edge_fact(edge: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "edge_id": edge.get("edge_id"),
+                "source": edge.get("source_label"),
+                "target": edge.get("target_label"),
+                "relationship": edge.get("relationship"),
+                "status": edge.get("status"),
+                "risk": edge.get("risk"),
+                "confidence": edge.get("confidence"),
+            }
+
+        important_nodes = [
+            node_fact(node)
+            for node in data.get("nodes") or []
+            if node.get("status") in {"missing", "uncertain"}
+            or node.get("risk") in {"high", "critical"}
+        ][:16]
+        important_edges = [
+            edge_fact(edge)
+            for edge in data.get("table_rows") or []
+            if edge.get("status") in {"missing", "uncertain"}
+            or edge.get("risk") in {"high", "critical"}
+        ][:20]
+        selected_fact: dict[str, Any] = {"found": False}
+        if isinstance(selected, dict) and selected.get("found"):
+            selected_fact = {
+                "found": True,
+                "node": node_fact(selected.get("node") or {}),
+                "inbound_edges": [
+                    edge_fact(edge) for edge in (selected.get("inbound_edges") or [])[:20]
+                ],
+                "outbound_edges": [
+                    edge_fact(edge) for edge in (selected.get("outbound_edges") or [])[:20]
+                ],
+                "impact_paths": [
+                    {
+                        "nodes": path.get("nodes"),
+                        "relationships": path.get("relationships"),
+                        "status": path.get("status"),
+                        "risk": path.get("risk"),
+                        "confidence": path.get("confidence"),
+                    }
+                    for path in (selected.get("impact_paths") or [])[:12]
+                ],
+            }
+        fact_envelope = {
+            "twin_id": twin["twin_id"],
+            "decision_version": twin["decision_version"],
+            "lifecycle_status": twin["lifecycle_status"],
+            "target": twin["target"],
+            "graph_summary": summary,
+            "important_nodes": important_nodes,
+            "important_edges": important_edges,
+            "selected_context": selected_fact,
+            "applied_query": dependency_graph.get("applied_query") or {},
+        }
+        canonical = json.dumps(fact_envelope, sort_keys=True, separators=(",", ":"), default=str)
+        input_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        system = (
+            "Explain authoritative Kubernetes dependency graph facts for an operator. "
+            "Return JSON with only a concise summary string. When selected_context.found "
+            "is true, explain only the supplied inbound, outbound, and impact paths. "
+            "Mention missing or uncertain dependencies and confidence exactly as supplied. "
+            "Do not infer new nodes, edges, ordering, blast radius, live state, or mutation "
+            "advice. Never reveal hidden chain-of-thought."
+        )
+        prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        selected_node = selected_fact.get("node") or {}
+        if selected_fact.get("found"):
+            deterministic_summary = (
+                f"Selected {selected_node.get('kind')}/{selected_node.get('name')} has "
+                f"{len(selected_fact.get('inbound_edges') or [])} inbound edge(s), "
+                f"{len(selected_fact.get('outbound_edges') or [])} outbound edge(s), and "
+                f"{len(selected_fact.get('impact_paths') or [])} bounded impact path(s)."
+            )
+        else:
+            deterministic_summary = (
+                f"Dependency Graph contains {int(summary.get('nodes') or 0)} node(s) and "
+                f"{int(summary.get('edges') or 0)} edge(s), including "
+                f"{int(summary.get('missing_nodes') or summary.get('missing') or 0)} "
+                "missing node(s), "
+                f"{int(summary.get('uncertain_nodes') or summary.get('uncertain') or 0)} "
+                "uncertain node(s), and "
+                f"{int(summary.get('cycles') or 0)} detected cycle(s)."
+            )
+        fallback = {
+            "summary": deterministic_summary,
+            "reasoning_summary": deterministic_summary,
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "model_profile": model_profile or "azure_gpt5_pro",
+            "llm_fallback": {"used": True, "error": None},
+        }
+        started = time.perf_counter()
+        if self.llm is None:
+            generated = fallback
+        else:
+            generated = await self.llm.structured_response(
+                system=system,
+                user_payload=fact_envelope,
+                fallback=fallback,
+                model_profile=model_profile or "azure_gpt5_pro",
+            )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        model_summary = generated.get("summary")
+        if not isinstance(model_summary, str) or not model_summary.strip():
+            model_summary = deterministic_summary
+        token_usage = generated.get("token_usage") or {}
+        fallback_used = bool((generated.get("llm_fallback") or {}).get("used"))
+        evidence_refs = sorted(
+            {
+                str(ref.get("evidence_id") if isinstance(ref, dict) else ref)
+                for collection in (
+                    data.get("nodes") or [],
+                    data.get("table_rows") or [],
+                )
+                for item in collection
+                for ref in (item.get("evidence_refs") or [])
+                if (isinstance(ref, dict) and ref.get("evidence_id"))
+                or (isinstance(ref, str) and ref.strip())
+            }
+        )
+        safe_output = {
+            "schema_version": "1.0.0",
+            "explanation_id": f"twinexp_{uuid4().hex}",
+            "status": "fallback" if fallback_used else "generated",
+            "model_profile": generated.get("model_profile") or model_profile or "azure_gpt5_pro",
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "input_hash": input_hash,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "format": "plain_text",
+            "content": model_summary.strip()[:12000],
+            "evidence_refs": evidence_refs,
+            "fallback_reason": (
+                str((generated.get("llm_fallback") or {}).get("error"))[:1000]
+                if (generated.get("llm_fallback") or {}).get("error")
+                else None
+            ),
+            "latency_ms": latency_ms,
+            "input_tokens": token_usage.get("input_tokens"),
+            "output_tokens": token_usage.get("output_tokens"),
+            "chain_of_thought_included": False,
+        }
+        self._log_explanation(
+            twin=twin,
+            safe_output=safe_output,
+            token_usage=token_usage,
+            error_message=(generated.get("llm_fallback") or {}).get("error"),
+        )
+        return safe_output
+
+    async def policy_explanation(
+        self,
+        twin: dict[str, Any],
+        policy: dict[str, Any],
+        *,
+        model_profile: str | None = None,
+    ) -> dict[str, Any]:
+        """Explain immutable policy axes without granting the model decision authority."""
+        prompt_version = "namespace_twin_policy_explanation_v1"
+        data = policy.get("data") or {}
+        fact_envelope = {
+            "twin_id": twin["twin_id"],
+            "decision_version": twin["decision_version"],
+            "lifecycle_status": twin["lifecycle_status"],
+            "policy_verdict": data.get("verdict"),
+            "policy_version": data.get("policy_version"),
+            "policy_bundle_hash": data.get("policy_bundle_hash"),
+            "evidence_axis": data.get("evidence_axis") or {},
+            "risk_axis": data.get("risk_axis") or {},
+            "decision_projection": data.get("decision_projection") or {},
+            "findings": [
+                {
+                    "code": item.get("code"),
+                    "severity": item.get("severity"),
+                    "status": item.get("status"),
+                    "category": item.get("category"),
+                    "summary": item.get("summary"),
+                }
+                for item in (data.get("findings") or [])[:50]
+            ],
+            "rule_contributions": [
+                {
+                    "axis": item.get("axis"),
+                    "rule": item.get("rule"),
+                    "matched": item.get("matched"),
+                    "effect": item.get("effect"),
+                    "contribution": item.get("contribution"),
+                    "selected": item.get("selected"),
+                    "reason": item.get("reason"),
+                }
+                for item in [
+                    contribution
+                    for contribution in (data.get("rule_contributions") or [])
+                    if contribution.get("matched") or contribution.get("selected")
+                ][:40]
+            ],
+            "model_authority": False,
+        }
+        canonical = json.dumps(fact_envelope, sort_keys=True, separators=(",", ":"), default=str)
+        input_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        system = (
+            "Explain deterministic Namespace Digital Twin policy facts for an operator. "
+            "Return JSON with only a concise summary string. State the policy verdict, "
+            "evidence completeness/freshness, risk score/level, and preliminary decision "
+            "exactly as supplied. Explain the selected precedence rule and important matched "
+            "contributions. Never change, rank, override, upgrade, or downgrade any axis, "
+            "score, finding, or decision. Never recommend bypassing policy or reveal hidden "
+            "chain-of-thought."
+        )
+        prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        evidence_axis = fact_envelope["evidence_axis"]
+        risk_axis = fact_envelope["risk_axis"]
+        projection = fact_envelope["decision_projection"]
+        deterministic_summary = (
+            f"Policy verdict is {fact_envelope['policy_verdict']}; evidence is "
+            f"{evidence_axis.get('completeness', 'unknown')} and "
+            f"{evidence_axis.get('freshness', 'unknown')}; deterministic change risk is "
+            f"{risk_axis.get('level', 'unknown')} ({risk_axis.get('score', 'n/a')}); "
+            f"the preliminary projection is {projection.get('label', 'Unknown')} under "
+            f"precedence rule {projection.get('precedence_rule', 'not_available')}."
+        )
+        fallback = {
+            "summary": deterministic_summary,
+            "model_profile": model_profile or "azure_gpt5_pro",
+            "llm_fallback": {"used": True, "error": None},
+        }
+        started = time.perf_counter()
+        generated = (
+            fallback
+            if self.llm is None
+            else await self.llm.structured_response(
+                system=system,
+                user_payload=fact_envelope,
+                fallback=fallback,
+                model_profile=model_profile or "azure_gpt5_pro",
+            )
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        model_summary = generated.get("summary")
+        if not isinstance(model_summary, str) or not model_summary.strip():
+            model_summary = deterministic_summary
+        token_usage = generated.get("token_usage") or {}
+        fallback_used = bool((generated.get("llm_fallback") or {}).get("used"))
+        evidence_refs = sorted(
+            {
+                str(reference.get("evidence_id"))
+                for finding in (data.get("findings") or [])
+                for reference in (finding.get("evidence_refs") or [])
+                if isinstance(reference, dict) and reference.get("evidence_id")
+            }
+        )
+        safe_output = {
+            "schema_version": "1.0.0",
+            "explanation_id": f"twinexp_{uuid4().hex}",
+            "status": "fallback" if fallback_used else "generated",
+            "model_profile": generated.get("model_profile") or model_profile or "azure_gpt5_pro",
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "input_hash": input_hash,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "format": "plain_text",
+            "content": model_summary.strip()[:12000],
+            "evidence_refs": evidence_refs,
+            "fallback_reason": (
+                str((generated.get("llm_fallback") or {}).get("error"))[:1000]
+                if (generated.get("llm_fallback") or {}).get("error")
+                else None
+            ),
+            "latency_ms": latency_ms,
+            "input_tokens": token_usage.get("input_tokens"),
+            "output_tokens": token_usage.get("output_tokens"),
+            "chain_of_thought_included": False,
+            "model_authority": False,
+        }
+        self._log_explanation(
+            twin=twin,
+            safe_output=safe_output,
+            token_usage=token_usage,
+            error_message=(generated.get("llm_fallback") or {}).get("error"),
+        )
+        return safe_output
 
     def _log_explanation(
         self,
@@ -663,7 +1040,10 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
             "module_mode": "mixed_authoritative_overview",
             "enabled": True,
             "non_production": False,
-            "label": "Real Lifecycle + Overview + Release Delta + Mock Remaining Modules",
+            "label": (
+                "Real Lifecycle + Overview + Release Delta + Dependency Graph + Policy Twin + "
+                "Mock Remaining Modules"
+            ),
         }
 
     @router.get("/scenarios")
@@ -759,21 +1139,29 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
     async def gate(twin_id: str, response: Response) -> dict[str, Any]:
         _response_headers(response)
         twin = await service.get(twin_id)
+        policy = service._unwrap(await service.client.get_namespace_twin_policy(twin_id, None))
+        policy_data = policy.get("data") or {}
         return {
             "schema_version": "1.0.0",
             "data_mode": DATA_MODE,
-            "module_mode": MODULE_MODE,
+            "module_mode": "mixed_authoritative_policy",
             "twin": twin,
             "decision": twin["decision"],
-            "risk": twin["risk"],
-            "policy": "not_available",
-            "evidence": "collecting",
+            "risk": policy_data.get("risk_axis") or twin["risk"],
+            "policy": policy_data.get("verdict") or "not_available",
+            "evidence": policy_data.get("evidence_axis") or {"classification": "unavailable"},
+            "decision_projection": policy_data.get("decision_projection"),
             "freshness": twin["freshness"],
             "dry_run": "awaiting_authoritative_dry_run",
             "rollback": "not_available",
             "drift": "not_available",
             "reasons": twin["top_reasons"],
-            "approval": "not_available",
+            "approval": (
+                "required"
+                if policy_data.get("verdict") == "allow_with_approval"
+                else "not_required"
+            ),
+            "model_authority": False,
         }
 
     for endpoint, slug in TAB_ENDPOINTS.items():
