@@ -213,6 +213,27 @@ class MopExecutionAgentClient:
             params=params,
         )
 
+    async def attach_namespace_twin_dry_run_evidence(
+        self,
+        twin_id: str,
+        payload: dict[str, Any],
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/dry-run-evidence",
+            json_body=payload,
+        )
+
+    async def get_namespace_twin_dry_run(
+        self,
+        twin_id: str,
+        params: dict[str, Any] | None = None,
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/dry-run",
+            params=params,
+        )
     async def get_namespace_twin_actions(self, twin_id: str) -> MopExecutionAgentResponse:
         return await self._request("GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/actions")
 

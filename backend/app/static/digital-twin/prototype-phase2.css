@@ -567,3 +567,112 @@
 @media (max-width: 640px) {
   .policy-axis-grid { grid-template-columns: 1fr; }
 }
+
+/* Slice 5E: authoritative Dry-run / Diff Twin */
+.dry-run-authority {
+  margin-bottom: 12px;
+  border-color: rgba(126, 221, 255, .42);
+  background: rgba(43, 89, 128, .24);
+}
+
+.dry-run-identity-grid {
+  display: grid;
+  grid-template-columns: 1.35fr .8fr .8fr 1fr;
+  gap: 9px;
+  margin: 12px 0;
+}
+
+.dry-run-identity-grid article {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 255, 255, .17);
+  border-radius: 6px;
+  background: rgba(39, 31, 84, .44);
+}
+
+.dry-run-identity-grid span,
+.dry-run-filter-grid label {
+  color: rgba(255, 255, 255, .7);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.dry-run-identity-grid strong,
+.dry-run-identity-grid small {
+  overflow-wrap: anywhere;
+}
+
+.dry-run-identity-grid small { color: rgba(255, 255, 255, .62); }
+.dry-run-filter-block,
+.dry-run-explanation { margin-bottom: 12px; }
+
+.dry-run-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(125px, 1fr));
+  gap: 8px;
+}
+
+.dry-run-filter-grid label {
+  display: grid;
+  gap: 5px;
+}
+
+.dry-run-filter-grid input,
+.dry-run-filter-grid select {
+  width: 100%;
+  min-width: 0;
+  min-height: 35px;
+  padding: 6px 9px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 5px;
+  color: #fff;
+  background: rgba(39, 32, 89, .68);
+}
+
+.dry-run-observation-table { min-width: 980px; }
+.dry-run-diff-table { min-width: 1240px; }
+
+.dry-run-observation-table td small,
+.artifact-list small {
+  display: block;
+  margin-top: 4px;
+  color: rgba(255, 255, 255, .62);
+}
+
+.dry-run-outcome-rejected td { background: rgba(155, 40, 70, .12); }
+.dry-run-outcome-warning td { background: rgba(179, 119, 53, .1); }
+
+.fingerprint-list,
+.artifact-list,
+.dry-run-fidelity {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 18px;
+  padding-left: 22px;
+}
+
+.fingerprint-list code {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: #ffe1dc;
+}
+
+.artifact-list li { padding: 5px 0; }
+.dry-run-explanation {
+  border-color: rgba(255, 194, 184, .34);
+  background: rgba(116, 63, 112, .25);
+}
+
+@media (max-width: 980px) {
+  .dry-run-identity-grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+  .dry-run-filter-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .dry-run-identity-grid,
+  .dry-run-filter-grid { grid-template-columns: 1fr; }
+}

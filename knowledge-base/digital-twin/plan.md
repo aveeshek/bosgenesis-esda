@@ -543,16 +543,16 @@ Approval note: the three unchecked items are human sign-offs and are intentional
 ---
 ### Slice 5E: Authoritative Dry-run / Diff Twin
 
-- [ ] Create or restore the existing execution-agent dry-run job.
-- [ ] Poll the existing dry-run state.
-- [ ] Verify bundle, target namespace, input hash, and command fingerprints.
-- [ ] Reject stale, failed, partial, superseded, or mismatched evidence according to policy.
-- [ ] Store references to authoritative observations and reports.
-- [ ] Implement real dry-run/diff API.
-- [ ] Switch Dry-run / Diff tab from mock to real.
-- [ ] Display Kubernetes/Helm results, rejections, logs, fingerprints, and fidelity limits.
-- [ ] Add server-side SIGMA 5 PRO explanation of failures and safe next steps.
-- [ ] Do not allow GPT to auto-submit instructions or retry mutation.
+- [x] Create or restore the existing execution-agent dry-run job.
+- [x] Poll the existing dry-run state.
+- [x] Verify bundle, target namespace, input hash, and command fingerprints.
+- [x] Reject stale, failed, partial, superseded, or mismatched evidence according to policy.
+- [x] Store references to authoritative observations and reports.
+- [x] Implement real dry-run/diff API.
+- [x] Switch Dry-run / Diff tab from mock to real.
+- [x] Display Kubernetes/Helm results, rejections, logs, fingerprints, and fidelity limits.
+- [x] Add server-side SIGMA 5 PRO explanation of failures and safe next steps.
+- [x] Do not allow GPT to auto-submit instructions or retry mutation.
 - [ ] Obtain user acceptance before Slice 5F.
 
 ### Slice 5F: Rollback Twin

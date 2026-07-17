@@ -6,6 +6,7 @@
     {"fixture": "actions-amber.json", "schema": "../schemas/action-eligibility.schema.json"},
     {"fixture": "safe-explanation.json", "schema": "../schemas/safe-explanation.schema.json"},
     {"fixture": "overview-green.json", "schema": "../schemas/tabs/overview.schema.json"},
+    {"fixture": "dry-run-authoritative.json", "schema": "../schemas/tabs/dry-run.schema.json"},
     {"fixture": "mop-replay-not-run.json", "schema": "../schemas/tabs/mop-replay.schema.json"},
     {"fixture": "audit-timeline.json", "schema": "../schemas/tabs/audit-timeline.schema.json"}
   ]

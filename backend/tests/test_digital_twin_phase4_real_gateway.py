@@ -115,6 +115,7 @@ class FakeNamespaceTwinClient:
         self.release_delta_params: dict = {}
         self.dependency_graph_params: dict = {}
         self.policy_params: dict = {}
+        self.dry_run_params: dict = {}
 
     async def create_namespace_twin(self, payload: dict) -> MopExecutionAgentResponse:
         created = deepcopy(self.twin)
@@ -505,6 +506,181 @@ class FakeNamespaceTwinClient:
                 },
             },
         )
+    def _dry_run_response_data(self, params: dict | None = None) -> dict:
+        self.dry_run_params = deepcopy(params or {})
+        observation = {
+            "observation_id": "obs_phase5e_k8s",
+            "phase": "phase-apply",
+            "step": "step-k8s-apply",
+            "tool": "k8s_apply_manifest",
+            "outcome": "accepted",
+            "summary": "Kubernetes server-side dry-run accepted the manifest.",
+            "resource_identity": "sample-target/ConfigMap/sample-app",
+            "evidence_refs": [
+                {
+                    "evidence_id": "obs_phase5e_k8s",
+                    "source_type": "dry_run",
+                    "source_id": "obs_phase5e_k8s",
+                    "summary": "Kubernetes server-side dry-run accepted the manifest.",
+                    "captured_at": self.twin["updated_at"],
+                    "redacted": True,
+                    "href": None,
+                }
+            ],
+            "redacted": True,
+        }
+        observations = [observation]
+        for key, value in (params or {}).items():
+            if key in {"phase", "step", "tool", "outcome"} and value:
+                observations = [
+                    item
+                    for item in observations
+                    if str(value).lower() in str(item.get(key) or "").lower()
+                ]
+            if key == "resource" and value:
+                observations = [
+                    item
+                    for item in observations
+                    if str(value).lower()
+                    in str(item.get("resource_identity") or "").lower()
+                ]
+        return {
+            "schema_version": "1.0.0",
+            "twin_id": self.twin["twin_id"],
+            "decision_version": self.twin["decision_version"],
+            "lifecycle_status": "succeeded",
+            "freshness": self.twin["freshness"],
+            "availability": {
+                "state": "available",
+                "message": "Authoritative dry-run and structured diff evidence is available.",
+            },
+            "data": {
+                "dry_run_job_id": "job-phase5e-real",
+                "status": "passed",
+                "qualification_status": "passed",
+                "authoritative": True,
+                "bundle_hash": "b" * 64,
+                "input_hash": "a" * 64,
+                "target_namespace": "sample-target",
+                "snapshot": {
+                    "snapshot_id": "snapshot_phase5e",
+                    "captured_at": self.twin["updated_at"],
+                    "hash": "d" * 64,
+                },
+                "command_fingerprint_hash": "e" * 64,
+                "command_fingerprints": ["sha256:phase5e-command"],
+                "validations": [
+                    {
+                        "type": "bundle_schema",
+                        "status": "passed",
+                        "summary": "The bundle schema is valid.",
+                    },
+                    {
+                        "type": "helm_dry_run",
+                        "status": "passed",
+                        "summary": "Helm dry-run accepted the release.",
+                    },
+                    {
+                        "type": "kubernetes_server_dry_run",
+                        "status": "passed",
+                        "summary": "Kubernetes server-side dry-run accepted the manifest.",
+                    },
+                ],
+                "observations": observations,
+                "observation_counts": {
+                    "accepted": len(observations),
+                    "rejected": 0,
+                    "warning": 0,
+                    "skipped": 0,
+                    "unknown": 0,
+                },
+                "structured_diff": {
+                    "rows": [
+                        {
+                            "change_id": "delta_real_1",
+                            "resource_identity": "v1:ConfigMap:sample-target:sample-app",
+                            "api_version": "v1",
+                            "kind": "ConfigMap",
+                            "namespace": "sample-target",
+                            "name": "sample-app",
+                            "helm_release": None,
+                            "action": "update",
+                            "current_summary": "kind=ConfigMap",
+                            "planned_summary": "kind=ConfigMap",
+                            "risk": "low",
+                            "reason": "Canonical intent differs at data.mode.",
+                            "canonical_diff": '{"current":{},"planned":{},"field_changes":[]}',
+                            "evidence_refs": [],
+                            "redacted": True,
+                        }
+                    ],
+                    "result_count": 1,
+                    "unfiltered_result_count": 1,
+                    "summary": {
+                        "total": 1,
+                        "create": 0,
+                        "update": 1,
+                        "explicit_delete": 0,
+                        "no_op": 0,
+                        "unknown": 0,
+                        "immutable_conflict": 0,
+                        "namespace_rewrite": 0,
+                    },
+                },
+                "evidence_refs": ["job:job-phase5e-real"],
+                "fidelity_limitations": [
+                    "Server-side dry-run cannot prove controller convergence."
+                ],
+                "artifacts": [
+                    {
+                        "artifact_id": "report_phase5e",
+                        "filename": "dry-run-report.json",
+                        "media_type": "application/json",
+                        "download_href": "/reports/dry-run-report.json",
+                        "sha256": None,
+                    }
+                ],
+                "failed_steps": [],
+                "partial_steps": [],
+                "applied_filters": deepcopy(params or {}),
+                "model_authority": False,
+                "automatic_instruction_submission": False,
+                "automatic_mutation_retry": False,
+            },
+        }
+
+    async def get_namespace_twin_dry_run(
+        self, twin_id: str, params: dict | None = None
+    ) -> MopExecutionAgentResponse:
+        assert twin_id == self.twin["twin_id"]
+        return _response(
+            "GET",
+            f"v1/namespace-twins/{twin_id}/dry-run",
+            self._dry_run_response_data(params),
+        )
+
+    async def attach_namespace_twin_dry_run_evidence(
+        self, twin_id: str, payload: dict
+    ) -> MopExecutionAgentResponse:
+        assert twin_id == self.twin["twin_id"]
+        assert payload["dry_run_job_id"] == "job-phase5e-real"
+        finalized = deepcopy(self.twin)
+        finalized.update(
+            {
+                "lifecycle_status": "succeeded",
+                "decision": "amber",
+                "decision_is_final": True,
+            }
+        )
+        return _response(
+            "POST",
+            f"v1/namespace-twins/{twin_id}/dry-run-evidence",
+            {
+                "twin": finalized,
+                "dry_run": self._dry_run_response_data(),
+                "idempotent_replay": False,
+            },
+        )
     async def get_namespace_twin(self, twin_id: str) -> MopExecutionAgentResponse:
         assert twin_id == self.twin["twin_id"]
         return _response("GET", f"v1/namespace-twins/{twin_id}", self.twin)
@@ -604,7 +780,7 @@ def test_real_gateway_requires_auth_and_projects_execution_agent_core(
     assert config.status_code == 200
     assert config.headers["x-esda-data-mode"] == "real_core"
     assert config.json()["label"] == (
-        "Real Lifecycle + Overview + Release Delta + Dependency Graph + Policy Twin + Mock Remaining Modules"
+        "Real Lifecycle + Overview + Release Delta + Dependency Graph + Policy Twin + Dry-run / Diff Twin + Mock Remaining Modules"
     )
     assert listed.json()["items"][0]["data_mode"] == "real_core"
     assert listed.json()["warning"].startswith(
@@ -847,6 +1023,7 @@ def test_policy_twin_is_authoritative_filterable_and_model_cannot_override(
     assert detail.json()["decision_is_final"] is False
     assert gate.json()["decision"] == "pending"
     assert gate.json()["policy"] == "allow_with_approval"
+    assert gate.json()["dry_run"] == "passed"
     assert gate.json()["risk"]["score"] == 55
     assert gate.json()["decision_projection"]["label"] == "Amber"
     assert gate.json()["model_authority"] is False
@@ -857,3 +1034,76 @@ def test_policy_twin_is_authoritative_filterable_and_model_cannot_override(
     assert 'panel.dataset.loading = "true"' in detail_script
     assert 'activePanel.dataset.loading !== "true"' in detail_script
     assert "Server-authoritative deterministic axes" in detail_script
+
+
+def test_dry_run_diff_twin_is_authoritative_filterable_and_non_mutating(
+    tmp_path, monkeypatch
+) -> None:
+    with build_client(tmp_path, monkeypatch) as client:
+        login(client)
+        response = client.get(
+            f"/api/digital-twins/{CORE_TWIN['twin_id']}/tabs/dry-run",
+            params={
+                "phase": "phase-apply",
+                "step": "step-k8s-apply",
+                "resource": "sample-app",
+                "tool": "k8s_apply_manifest",
+                "outcome": "accepted",
+                "model_profile": "azure_gpt5_pro",
+            },
+        )
+        forwarded = deepcopy(client.app.state.digital_twin_gateway.client.dry_run_params)
+        attached = client.post(
+            f"/api/digital-twins/{CORE_TWIN['twin_id']}/dry-run-evidence",
+            json={
+                "dry_run_job_id": "job-phase5e-real",
+                "bundle_hash": "b" * 64,
+                "input_hash": "a" * 64,
+                "command_fingerprint_hash": "e" * 64,
+            },
+        )
+        with client.app.state.database.session() as session:
+            explanation_logs = list(session.scalars(select(DigitalTwinExplanationLog)))
+        detail_script = client.get("/static/digital-twin/digital-twin-detail-page.js").text
+        detail_css = client.get("/static/digital-twin/prototype-phase2.css").text
+
+    assert response.status_code == 200
+    payload = response.json()
+    data = payload["data"]
+    assert payload["state"] == "available"
+    assert payload["kind"] == "dry-run"
+    assert payload["module_mode"] == "authoritative"
+    assert payload["non_authoritative"] is False
+    assert forwarded == {
+        "phase": "phase-apply",
+        "step": "step-k8s-apply",
+        "resource": "sample-app",
+        "tool": "k8s_apply_manifest",
+        "outcome": "accepted",
+    }
+    assert data["authoritative"] is True
+    assert data["status"] == "passed"
+    assert data["qualification_status"] == "passed"
+    assert data["target_namespace"] == "sample-target"
+    assert len(data["observations"]) == 1
+    assert data["validations"][1]["type"] == "helm_dry_run"
+    assert data["validations"][2]["type"] == "kubernetes_server_dry_run"
+    assert data["structured_diff"]["result_count"] == 1
+    assert data["command_fingerprint_hash"] == "e" * 64
+    assert data["command_fingerprints"] == ["sha256:phase5e-command"]
+    assert data["automatic_instruction_submission"] is False
+    assert data["automatic_mutation_retry"] is False
+    assert data["model_authority"] is False
+    explanation = payload["safe_explanation"]
+    assert explanation["prompt_version"] == "namespace_twin_dry_run_explanation_v1"
+    assert explanation["chain_of_thought_included"] is False
+    assert explanation["automatic_instruction_submission"] is False
+    assert explanation["automatic_mutation_retry"] is False
+    assert explanation_logs[0].safe_output_json == explanation
+    assert attached.status_code == 200
+    assert attached.json()["twin"]["decision_is_final"] is True
+    assert attached.json()["idempotent_replay"] is False
+    assert "data-dry-run-filter" in detail_script
+    assert "data-copy-fingerprints" in detail_script
+    assert "cannot submit instructions, retry a mutation" in detail_script
+    assert ".dry-run-identity-grid" in detail_css

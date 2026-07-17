@@ -35,6 +35,7 @@
   var graphDisplayMode = "canvas";
   var auditPage = 0;
   var policyFilter = "all";
+  var dryRunFilters = { phase: "", step: "", resource: "", tool: "", outcome: "" };
 
   if (!adapter || !header || !summary || !tabs.length) return;
 
@@ -340,9 +341,56 @@
       + '<div class="content-grid"><article class="content-block span-8"><div class="tab-toolbar"><h3>Policy Findings</h3><div class="inline-actions">' + filters + '</div></div><ul class="finding-list policy-findings">' + findingRows + '</ul></article><article class="content-block span-4"><h3>Passed Groups</h3><ul class="list-clean policy-passed-groups">' + passed + '</ul><div class="notice green">Passing a group does not bypass approval, evidence, risk, or dry-run requirements.</div></article><article class="content-block span-12"><div class="tab-toolbar"><h3>Full Rule Contribution Breakdown</h3><button class="btn" type="button" data-copy-tab>Copy facts</button></div><div class="table-scroll"><table class="policy-rule-table"><thead><tr><th>Axis</th><th>Rule</th><th>Match</th><th>Effect</th><th>Score</th><th>Deterministic reason</th></tr></thead><tbody>' + contributions + '</tbody></table></div></article></div>';
   }
   function renderDryRun(tab) {
-    return metricCards(tab.metrics) + '<div class="content-grid tab-followup"><article class="content-block span-8"><h3>Observations</h3><div class="log-view">' + tab.observations.map(function (line, index) { return "[" + String(index + 1).padStart(2, "0") + "] " + ui.escapeHtml(line); }).join("\n") + '</div></article><article class="content-block span-4"><h3>Fidelity Limits</h3><div class="notice amber">Runtime readiness, external DNS, storage attach latency, and application behavior remain outside server-side dry-run evidence.</div></article></div>';
+    var data = tab.data || {};
+    var observations = data.observations || [];
+    var validations = data.validations || [];
+    var diffRows = (data.structured_diff || {}).rows || [];
+    var artifacts = data.artifacts || [];
+    var fingerprints = data.command_fingerprints || [];
+    var snapshot = data.snapshot || {};
+    var filters = [
+      ["phase", "Phase", "e.g. dry_run"],
+      ["step", "Step", "e.g. helm_template"],
+      ["resource", "Resource", "kind or name"],
+      ["tool", "Tool", "helm or kubectl"]
+    ].map(function (entry) {
+      return '<label>' + entry[1] + '<input type="search" data-dry-run-filter="' + entry[0] + '" value="' + ui.escapeHtml(dryRunFilters[entry[0]]) + '" placeholder="' + entry[2] + '"></label>';
+    }).join("") + '<label>Outcome<select data-dry-run-filter="outcome"><option value="">All</option>' + ["accepted", "rejected", "warning", "skipped", "unknown"].map(function (value) {
+      return '<option value="' + value + '"' + (dryRunFilters.outcome === value ? " selected" : "") + '>' + ui.escapeHtml(ui.label(value)) + '</option>';
+    }).join("") + '</select></label>';
+    var validationRows = validations.map(function (item) {
+      var tone = item.status === "passed" ? "green" : item.status === "failed" ? "red" : "amber";
+      return '<tr><td><strong>' + ui.escapeHtml(ui.label(item.type)) + '</strong></td><td>' + ui.badge(tone, item.status) + '</td><td>' + ui.escapeHtml(item.summary) + '</td></tr>';
+    }).join("") || '<tr><td colspan="3" class="empty-inline">No Kubernetes or Helm validation facts were returned.</td></tr>';
+    var observationRows = observations.map(function (item) {
+      var tone = item.outcome === "accepted" ? "green" : item.outcome === "rejected" ? "red" : item.outcome === "warning" ? "amber" : "info";
+      return '<tr class="dry-run-outcome-' + ui.escapeHtml(item.outcome) + '"><td>' + ui.badge(tone, item.outcome) + '</td><td><strong>' + ui.escapeHtml(item.phase) + '</strong><small>' + ui.escapeHtml(item.step) + '</small></td><td>' + ui.escapeHtml(item.tool) + '</td><td><strong>' + ui.escapeHtml(item.resource_identity || "General") + '</strong><small>' + ui.escapeHtml(item.summary) + '</small></td><td>' + ui.escapeHtml(String((item.evidence_refs || []).length)) + '</td></tr>';
+    }).join("") || '<tr><td colspan="5" class="empty-inline">No observations match the selected filters.</td></tr>';
+    var diffTableRows = diffRows.map(function (row) {
+      var risk = row.risk || "unknown";
+      var tone = risk === "high" || risk === "critical" ? "red" : risk === "medium" ? "amber" : "green";
+      return '<tr><td><strong>' + ui.escapeHtml(row.resource_identity || row.resource || "Unknown resource") + '</strong></td><td>' + ui.badge("info", row.action || "unknown") + '</td><td>' + ui.badge(tone, risk) + '</td><td>' + ui.escapeHtml(row.current_summary || row.current || "Not observed") + '</td><td>' + ui.escapeHtml(row.planned_summary || row.planned || "Not supplied") + '</td><td>' + ui.escapeHtml(row.reason || "Authoritative dry-run delta") + '</td></tr>';
+    }).join("") || '<tr><td colspan="6" class="empty-inline">No structured resource deltas were returned.</td></tr>';
+    var explanation = tab.safe_explanation
+      ? '<article class="content-block span-12 dry-run-explanation"><p class="eyebrow">SIGMA 5 PRO / Bounded Explanation</p><p>' + ui.escapeHtml(tab.safe_explanation.content) + '</p><p class="muted">This explanation is audit logged and cannot submit instructions, retry a mutation, or alter authoritative outcomes.</p></article>'
+      : "";
+    var artifactLinks = artifacts.map(function (artifact) {
+      return '<li><a class="table-link" href="' + ui.escapeHtml(artifact.download_href) + '">' + ui.escapeHtml(artifact.filename) + '</a><small>' + ui.escapeHtml(artifact.media_type) + '</small></li>';
+    }).join("") || '<li>No report artifacts were returned.</li>';
+    var fidelity = (data.fidelity_limitations || []).map(function (item) {
+      return '<li>' + ui.escapeHtml(item) + '</li>';
+    }).join("") || '<li>No fidelity statement was returned.</li>';
+    return '<div class="notice dry-run-authority">Execution-agent evidence only. Job status, validation outcomes, observations, hashes, and fingerprints are rendered without browser inference.</div>'
+      + metricCards(tab.metrics || [])
+      + '<div class="dry-run-identity-grid"><article><span>Dry-run job</span><strong>' + ui.escapeHtml(data.dry_run_job_id || "Not attached") + '</strong></article><article><span>Qualification</span><strong>' + ui.escapeHtml(ui.label(data.qualification_status || data.status || "unknown")) + '</strong></article><article><span>Target</span><strong>' + ui.escapeHtml(data.target_namespace || "Unknown") + '</strong></article><article><span>Snapshot</span><strong>' + ui.escapeHtml(snapshot.snapshot_id || "Unknown") + '</strong><small>' + ui.escapeHtml(snapshot.captured_at ? ui.formatDate(snapshot.captured_at) : "No timestamp") + '</small></article></div>'
+      + '<article class="content-block dry-run-filter-block"><div class="tab-toolbar"><h3>Evidence Filters</h3><button class="btn" type="button" data-dry-run-clear>Clear filters</button></div><div class="dry-run-filter-grid">' + filters + '</div></article>'
+      + explanation
+      + '<div class="content-grid"><article class="content-block span-12"><h3>Kubernetes and Helm Validation</h3><div class="table-scroll"><table><thead><tr><th>Validation</th><th>Status</th><th>Authoritative summary</th></tr></thead><tbody>' + validationRows + '</tbody></table></div></article>'
+      + '<article class="content-block span-12"><div class="tab-toolbar"><h3>Redacted Agent Observations</h3><button class="btn" type="button" data-copy-tab>Copy safe facts</button></div><div class="table-scroll"><table class="dry-run-observation-table"><thead><tr><th>Outcome</th><th>Phase / Step</th><th>Tool</th><th>Resource / Safe log</th><th>Evidence</th></tr></thead><tbody>' + observationRows + '</tbody></table></div></article>'
+      + '<article class="content-block span-12"><h3>Structured Dry-run Diff</h3><div class="table-scroll"><table class="dry-run-diff-table"><thead><tr><th>Resource</th><th>Action</th><th>Risk</th><th>Current</th><th>Planned</th><th>Reason</th></tr></thead><tbody>' + diffTableRows + '</tbody></table></div></article>'
+      + '<article class="content-block span-7"><div class="tab-toolbar"><h3>Command Fingerprints</h3><button class="btn" type="button" data-copy-fingerprints>Copy fingerprints</button></div><p class="muted">Canonical hash: <code>' + ui.escapeHtml(data.command_fingerprint_hash || "Not available") + '</code></p><ol class="fingerprint-list">' + (fingerprints.map(function (item) { return '<li><code>' + ui.escapeHtml(item) + '</code></li>'; }).join("") || '<li>No command fingerprints were returned.</li>') + '</ol></article>'
+      + '<article class="content-block span-5"><h3>Reports</h3><ul class="artifact-list">' + artifactLinks + '</ul><h3>Fidelity Limits</h3><ul class="list-clean dry-run-fidelity">' + fidelity + '</ul></article></div>';
   }
-
   function renderRollback(tab) {
     var rows = tab.evidence.map(function (row) { return "<tr><td>" + ui.escapeHtml(row.asset) + "</td><td>" + ui.badge(row.status === "high" ? "green" : "amber", row.status) + "</td><td>" + ui.escapeHtml(row.gap) + "</td></tr>"; }).join("");
     return '<div class="content-grid"><article class="content-block span-4"><span class="fact-label">Rollback confidence</span><div class="big-number">' + tab.confidence + '%</div><div class="progress-track"><div class="progress-fill" style="width:' + tab.confidence + '%"></div></div></article><article class="content-block span-8"><h3>Recovery Sequence</h3><ol class="reason-list">' + tab.steps.map(function (step) { return "<li>" + ui.escapeHtml(step) + "</li>"; }).join("") + '</ol></article><article class="content-block span-12"><table><thead><tr><th>Asset</th><th>Confidence</th><th>Gap</th></tr></thead><tbody>' + rows + "</tbody></table></article></div>";
@@ -396,6 +444,7 @@
     if (slug === "release-delta") tabQuery = Object.assign({}, deltaFilters);
     if (slug === "dependency-graph") tabQuery = Object.assign({}, graphFilters);
     if (slug === "policy" && policyFilter !== "all") tabQuery = { effect: policyFilter === "block" ? "deny" : "approval_required" };
+    if (slug === "dry-run") tabQuery = Object.assign({}, dryRunFilters);
     adapter.getTab(twin.twin_id, slug, twin.decision_version, tabQuery).then(function (tabData) {
       if (slug === "audit" && ui.params().get("event")) {
         var eventIndex = tabData.events.findIndex(function (item) { return item.event_id === ui.params().get("event"); });
@@ -519,6 +568,19 @@
       activateTab("policy", true);
       return;
     }
+    var clearDryRun = event.target.closest("[data-dry-run-clear]");
+    if (clearDryRun && twin) {
+      dryRunFilters = { phase: "", step: "", resource: "", tool: "", outcome: "" };
+      activateTab("dry-run", true);
+      return;
+    }
+    var copyFingerprints = event.target.closest("[data-copy-fingerprints]");
+    if (copyFingerprints) {
+      var dryRunPanel = document.getElementById("panel-dry-run");
+      var dryRunData = (dryRunPanel._tabData || {}).data || {};
+      ui.copyText((dryRunData.command_fingerprints || []).join("\n"), "Command fingerprints copied.");
+      return;
+    }
     var evidence = event.target.closest("[data-evidence-modal]");
     if (evidence) {
       var policyPanel = document.getElementById("panel-policy");
@@ -530,7 +592,8 @@
         title: findingId,
         body: '<pre class="log-view">' + ui.escapeHtml(JSON.stringify(selectedFinding || { finding_id: findingId, evidence_refs: [] }, null, 2)) + '</pre>'
       });
-    }    var graphNode = event.target.closest("[data-graph-node]");
+    }
+    var graphNode = event.target.closest("[data-graph-node]");
     if (graphNode && twin) {
       graphFilters.resource = graphNode.getAttribute("data-graph-node");
       ui.updateUrl({ resource: graphFilters.resource }, true);
@@ -618,6 +681,12 @@
       graphEdgeCursorHistory = [];
       ui.updateUrl({ resource: null }, true);
       activateTab("dependency-graph", true);
+      return;
+    }
+    var dryRunFilter = event.target.closest("[data-dry-run-filter]");
+    if (dryRunFilter && twin) {
+      dryRunFilters[dryRunFilter.getAttribute("data-dry-run-filter")] = dryRunFilter.value.trim();
+      activateTab("dry-run", true);
     }
   });
   window.addEventListener("popstate", function () {

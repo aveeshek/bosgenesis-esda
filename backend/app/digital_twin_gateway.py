@@ -55,6 +55,15 @@ class RealTwinCreateRequest(BaseModel):
     scenario_id: str | None = Field(default=None, max_length=100)
 
 
+class RealTwinDryRunEvidenceRequest(BaseModel):
+    dry_run_job_id: str = Field(min_length=1, max_length=200)
+    bundle_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    input_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    command_fingerprint_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    wait_seconds: int = Field(default=0, ge=0, le=30)
+    poll_interval_ms: int = Field(default=500, ge=100, le=5000)
+
+
 class DigitalTwinGatewayService:
     """Projects execution-agent facts without becoming decision authority."""
 
@@ -165,6 +174,18 @@ class DigitalTwinGatewayService:
     async def cancel(self, twin_id: str) -> dict[str, Any]:
         return self.project(self._unwrap(await self.client.cancel_namespace_twin(twin_id)))
 
+    async def attach_dry_run_evidence(
+        self,
+        twin_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        result = self._unwrap(
+            await self.client.attach_namespace_twin_dry_run_evidence(twin_id, payload)
+        )
+        projected = deepcopy(result)
+        if isinstance(projected.get("twin"), dict):
+            projected["twin"] = self.project(projected["twin"])
+        return projected
     async def events(self, twin_id: str, *, limit: int, offset: int) -> dict[str, Any]:
         core = self._unwrap(
             await self.client.get_namespace_twin_events(twin_id, {"limit": limit, "offset": offset})
@@ -332,7 +353,7 @@ class DigitalTwinGatewayService:
             "partial": False,
             "warning": (
                 "Lifecycle, Overview, Release Delta, Dependency Graph, summaries, freshness, "
-                "Policy Twin, and actions are authoritative. Remaining evidence modules are mock and "
+                "Policy Twin, Dry-run / Diff Twin, and actions are authoritative. Remaining evidence modules are mock and "
                 "non-authoritative."
             ),
         }
@@ -426,6 +447,63 @@ class DigitalTwinGatewayService:
                 twin, dependency_graph, model_profile=model_profile
             )
             return dependency_graph
+        if slug == "dry-run":
+            query = query or {}
+            params = {
+                key: query.get(key)
+                for key in ("phase", "step", "resource", "tool", "outcome")
+                if query.get(key) not in (None, "", "all")
+            }
+            dry_run = self._unwrap(
+                await self.client.get_namespace_twin_dry_run(twin["twin_id"], params)
+            )
+            availability = dry_run.get("availability") or {}
+            data = dry_run.get("data") or {}
+            counts = data.get("observation_counts") or {}
+            dry_run.update(
+                {
+                    "state": availability.get("state") or "not_run",
+                    "kind": "dry-run",
+                    "title": "Authoritative Dry-run / Diff Twin",
+                    "summary": availability.get("message")
+                    or "Authoritative dry-run evidence has not been attached.",
+                    "data_mode": DATA_MODE,
+                    "module_mode": "authoritative",
+                    "non_authoritative": False,
+                    "applied_query": params,
+                    "metrics": [
+                        {
+                            "label": "Accepted",
+                            "value": int(counts.get("accepted") or 0),
+                            "tone": "green",
+                        },
+                        {
+                            "label": "Rejected",
+                            "value": int(counts.get("rejected") or 0),
+                            "tone": "red",
+                        },
+                        {
+                            "label": "Warnings",
+                            "value": int(counts.get("warning") or 0),
+                            "tone": "amber",
+                        },
+                        {
+                            "label": "Diff rows",
+                            "value": int(
+                                (data.get("structured_diff") or {}).get("result_count") or 0
+                            ),
+                            "tone": "info",
+                        },
+                    ],
+                }
+            )
+            if data:
+                dry_run["safe_explanation"] = await self.dry_run_explanation(
+                    twin,
+                    dry_run,
+                    model_profile=model_profile,
+                )
+            return dry_run
         if slug == "policy":
             query = query or {}
             params = {
@@ -838,6 +916,124 @@ class DigitalTwinGatewayService:
         )
         return safe_output
 
+    async def dry_run_explanation(
+        self,
+        twin: dict[str, Any],
+        dry_run: dict[str, Any],
+        *,
+        model_profile: str | None = None,
+    ) -> dict[str, Any]:
+        """Explain supplied dry-run failures and safe next steps without taking action."""
+        prompt_version = "namespace_twin_dry_run_explanation_v1"
+        data = dry_run.get("data") or {}
+        fact_envelope = {
+            "twin_id": twin["twin_id"],
+            "decision_version": twin["decision_version"],
+            "decision": twin["decision"],
+            "dry_run_job_id": data.get("dry_run_job_id"),
+            "status": data.get("status"),
+            "qualification_status": data.get("qualification_status"),
+            "target_namespace": data.get("target_namespace"),
+            "bundle_hash": data.get("bundle_hash"),
+            "input_hash": data.get("input_hash"),
+            "command_fingerprint_hash": data.get("command_fingerprint_hash"),
+            "failed_steps": list(data.get("failed_steps") or []),
+            "partial_steps": list(data.get("partial_steps") or []),
+            "failed_validations": [
+                item
+                for item in (data.get("validations") or [])
+                if item.get("status") in {"failed", "warning"}
+            ][:20],
+            "rejected_observations": [
+                {
+                    "phase": item.get("phase"),
+                    "step": item.get("step"),
+                    "tool": item.get("tool"),
+                    "resource_identity": item.get("resource_identity"),
+                    "outcome": item.get("outcome"),
+                    "summary": item.get("summary"),
+                }
+                for item in (data.get("observations") or [])
+                if item.get("outcome") in {"rejected", "warning"}
+            ][:30],
+            "fidelity_limitations": list(data.get("fidelity_limitations") or []),
+            "model_authority": False,
+            "automatic_instruction_submission": False,
+            "automatic_mutation_retry": False,
+        }
+        canonical = json.dumps(fact_envelope, sort_keys=True, separators=(",", ":"), default=str)
+        input_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        system = (
+            "Explain authoritative Namespace Digital Twin dry-run facts for an operator. "
+            "Return JSON with only a concise summary string. For failures, explain the supplied "
+            "rejections and safe investigation steps. For success, summarize accepted evidence "
+            "and fidelity limits. Do not invent facts, submit instructions, trigger tools, retry "
+            "dry-run or mutation, bypass approval, or expose hidden chain-of-thought."
+        )
+        prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        rejected = len(fact_envelope["rejected_observations"])
+        deterministic_summary = (
+            f"Authoritative dry-run status is {fact_envelope['status']} for "
+            f"{fact_envelope['target_namespace']}; {rejected} rejected or warning "
+            "observation(s) require operator review. No instruction or mutation retry was "
+            "submitted automatically."
+        )
+        fallback = {
+            "summary": deterministic_summary,
+            "model_profile": model_profile or "azure_gpt5_pro",
+            "llm_fallback": {"used": True, "error": None},
+        }
+        started = time.perf_counter()
+        generated = (
+            fallback
+            if self.llm is None
+            else await self.llm.structured_response(
+                system=system,
+                user_payload=fact_envelope,
+                fallback=fallback,
+                model_profile=model_profile or "azure_gpt5_pro",
+            )
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        model_summary = generated.get("summary")
+        if not isinstance(model_summary, str) or not model_summary.strip():
+            model_summary = deterministic_summary
+        token_usage = generated.get("token_usage") or {}
+        fallback_used = bool((generated.get("llm_fallback") or {}).get("used"))
+        safe_output = {
+            "schema_version": "1.0.0",
+            "explanation_id": f"twinexp_{uuid4().hex}",
+            "status": "fallback" if fallback_used else "generated",
+            "model_profile": generated.get("model_profile")
+            or model_profile
+            or "azure_gpt5_pro",
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "input_hash": input_hash,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "format": "plain_text",
+            "content": model_summary.strip()[:12000],
+            "evidence_refs": list(data.get("evidence_refs") or [])[:100],
+            "fallback_reason": (
+                str((generated.get("llm_fallback") or {}).get("error"))[:1000]
+                if (generated.get("llm_fallback") or {}).get("error")
+                else None
+            ),
+            "latency_ms": latency_ms,
+            "input_tokens": token_usage.get("input_tokens"),
+            "output_tokens": token_usage.get("output_tokens"),
+            "chain_of_thought_included": False,
+            "model_authority": False,
+            "automatic_instruction_submission": False,
+            "automatic_mutation_retry": False,
+        }
+        self._log_explanation(
+            twin=twin,
+            safe_output=safe_output,
+            token_usage=token_usage,
+            error_message=(generated.get("llm_fallback") or {}).get("error"),
+        )
+        return safe_output
     async def policy_explanation(
         self,
         twin: dict[str, Any],
@@ -1042,7 +1238,7 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
             "non_production": False,
             "label": (
                 "Real Lifecycle + Overview + Release Delta + Dependency Graph + Policy Twin + "
-                "Mock Remaining Modules"
+                "Dry-run / Diff Twin + Mock Remaining Modules"
             ),
         }
 
@@ -1064,6 +1260,17 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
         _response_headers(response)
         return await service.create(payload.model_dump(mode="json"))
 
+    @router.post("/{twin_id}/dry-run-evidence")
+    async def attach_dry_run_evidence(
+        twin_id: str,
+        payload: RealTwinDryRunEvidenceRequest,
+        response: Response,
+    ) -> dict[str, Any]:
+        _response_headers(response)
+        return await service.attach_dry_run_evidence(
+            twin_id,
+            payload.model_dump(mode="json", exclude_none=True),
+        )
     @router.get("/active")
     async def active_twin(response: Response) -> dict[str, Any] | None:
         _response_headers(response)
@@ -1141,10 +1348,13 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
         twin = await service.get(twin_id)
         policy = service._unwrap(await service.client.get_namespace_twin_policy(twin_id, None))
         policy_data = policy.get("data") or {}
+        dry_run = service._unwrap(await service.client.get_namespace_twin_dry_run(twin_id, None))
+        dry_run_data = dry_run.get("data") or {}
+        dry_run_availability = dry_run.get("availability") or {}
         return {
             "schema_version": "1.0.0",
             "data_mode": DATA_MODE,
-            "module_mode": "mixed_authoritative_policy",
+            "module_mode": "mixed_authoritative_policy_and_dry_run",
             "twin": twin,
             "decision": twin["decision"],
             "risk": policy_data.get("risk_axis") or twin["risk"],
@@ -1152,7 +1362,10 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
             "evidence": policy_data.get("evidence_axis") or {"classification": "unavailable"},
             "decision_projection": policy_data.get("decision_projection"),
             "freshness": twin["freshness"],
-            "dry_run": "awaiting_authoritative_dry_run",
+            "dry_run": dry_run_data.get("qualification_status")
+            or dry_run_data.get("status")
+            or dry_run_availability.get("state")
+            or "not_available",
             "rollback": "not_available",
             "drift": "not_available",
             "reasons": twin["top_reasons"],
