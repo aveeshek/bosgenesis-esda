@@ -282,6 +282,29 @@ class MopExecutionAgentClient:
             json_body={},
         )
 
+    async def get_namespace_twin_mop_replay(
+        self,
+        twin_id: str,
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/mop-replay",
+        )
+
+    async def record_namespace_twin_mop_replay(
+        self,
+        twin_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_id: str | None = None,
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/mop-replay",
+            json_body=payload,
+            extra_headers={"x-esda-actor": actor_id} if actor_id else None,
+        )
+
     async def get_namespace_twin_release_note_validation(
         self,
         twin_id: str,
@@ -304,6 +327,7 @@ class MopExecutionAgentClient:
             json_body=payload,
             extra_headers={"x-esda-actor": actor_id} if actor_id else None,
         )
+
     async def get_namespace_twin_actions(self, twin_id: str) -> MopExecutionAgentResponse:
         return await self._request("GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/actions")
 

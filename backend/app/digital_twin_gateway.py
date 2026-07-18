@@ -71,6 +71,7 @@ class RealTwinReleaseNoteValidationRequest(BaseModel):
     content: str = Field(min_length=1, max_length=200000)
     model_profile: str | None = Field(default=None, max_length=200)
 
+
 class DigitalTwinGatewayService:
     """Projects execution-agent facts without becoming decision authority."""
 
@@ -172,7 +173,10 @@ class DigitalTwinGatewayService:
             },
             "applied_query": deepcopy(query),
             "partial": False,
-            "warning": "Lifecycle facts are real. Evidence modules remain mock and non-authoritative.",
+            "warning": (
+                "Lifecycle and configured evidence facts are authoritative. MoP Replay "
+                "remains Not Run until approved isolated replay facts are recorded."
+            ),
         }
 
     async def get(self, twin_id: str) -> dict[str, Any]:
@@ -186,6 +190,17 @@ class DigitalTwinGatewayService:
 
     async def refresh_runtime_behavior(self, twin_id: str) -> dict[str, Any]:
         return self._unwrap(await self.client.refresh_namespace_twin_runtime_behavior(twin_id))
+
+    async def record_mop_replay(
+        self,
+        twin_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        return self._unwrap(
+            await self.client.record_namespace_twin_mop_replay(twin_id, payload, actor_id=actor_id)
+        )
 
     async def validate_release_note(
         self,
@@ -207,13 +222,25 @@ class DigitalTwinGatewayService:
             "artifact_hash": artifact_hash,
             "release_note_markdown": content,
             "allowed_categories": [
-                "image", "configuration", "migration", "pvc_storage", "rbac", "route",
-                "rollback", "breaking_change", "known_risk", "other",
+                "image",
+                "configuration",
+                "migration",
+                "pvc_storage",
+                "rbac",
+                "route",
+                "rollback",
+                "breaking_change",
+                "known_risk",
+                "other",
             ],
         }
         input_hash = hashlib.sha256(
             json.dumps(
-                {key: value for key, value in input_envelope.items() if key != "release_note_markdown"},
+                {
+                    key: value
+                    for key, value in input_envelope.items()
+                    if key != "release_note_markdown"
+                },
                 sort_keys=True,
                 separators=(",", ":"),
             ).encode("utf-8")
@@ -308,6 +335,7 @@ class DigitalTwinGatewayService:
             "release-note-validation",
             model_profile=model_profile,
         )
+
     async def attach_dry_run_evidence(
         self,
         twin_id: str,
@@ -487,9 +515,11 @@ class DigitalTwinGatewayService:
             "applied_query": deepcopy(core.get("applied_query") or query),
             "partial": False,
             "warning": (
-                "Lifecycle, Overview, Release Delta, Dependency Graph, summaries, freshness, "
-                "Policy Twin, Dry-run / Diff Twin, Rollback Twin, Drift Twin, Runtime Behavior Twin, Release Note Validation Twin, Audit Reports, and actions are authoritative. Remaining evidence modules are mock and "
-                "non-authoritative."
+                "Lifecycle, Overview, Release Delta, Dependency Graph, Policy Twin, "
+                "Dry-run / Diff Twin, Rollback Twin, Drift Twin, Runtime Behavior Twin, "
+                "Release Note Validation Twin, Audit Reports, and recorded MoP Replay facts "
+                "are authoritative. MoP Replay remains Not Run until approved isolated facts "
+                "are submitted."
             ),
         }
 
@@ -639,6 +669,56 @@ class DigitalTwinGatewayService:
                     model_profile=model_profile,
                 )
             return dry_run
+        if slug == "mop-replay":
+            replay = self._unwrap(await self.client.get_namespace_twin_mop_replay(twin["twin_id"]))
+            availability = replay.get("availability") or {}
+            data = replay.get("data") or {}
+            checks = list(data.get("checks") or [])
+            replay.update(
+                {
+                    "state": availability.get("state") or "not_run",
+                    "kind": "mop-replay",
+                    "title": "MoP Replay Twin",
+                    "summary": availability.get("message")
+                    or "Separately approved isolated replay evidence has not been recorded.",
+                    "data_mode": DATA_MODE,
+                    "module_mode": "authoritative",
+                    "non_authoritative": False,
+                    "metrics": [
+                        {
+                            "label": "Result",
+                            "value": str(data.get("status") or "not run"),
+                            "tone": "green" if data.get("status") == "passed" else "red",
+                        },
+                        {
+                            "label": "Checks passed",
+                            "value": sum(item.get("status") == "passed" for item in checks),
+                            "tone": "green",
+                        },
+                        {
+                            "label": "Checks failed",
+                            "value": sum(item.get("status") == "failed" for item in checks),
+                            "tone": (
+                                "red"
+                                if any(item.get("status") == "failed" for item in checks)
+                                else "green"
+                            ),
+                        },
+                        {
+                            "label": "Cleanup",
+                            "value": str(data.get("cleanup_status") or "not run"),
+                            "tone": (
+                                "green" if data.get("cleanup_status") == "completed" else "red"
+                            ),
+                        },
+                    ],
+                }
+            )
+            if data:
+                replay["safe_explanation"] = await self.mop_replay_explanation(
+                    twin, replay, model_profile=model_profile
+                )
+            return replay
         if slug == "release-note-validation":
             validation = self._unwrap(
                 await self.client.get_namespace_twin_release_note_validation(twin["twin_id"])
@@ -927,6 +1007,122 @@ class DigitalTwinGatewayService:
             )
             return policy
         return await self._tab_phase4(twin, slug)
+
+    async def mop_replay_explanation(
+        self,
+        twin: dict[str, Any],
+        replay: dict[str, Any],
+        *,
+        model_profile: str | None = None,
+    ) -> dict[str, Any]:
+        """Summarize deterministic replay facts without claiming production success."""
+        prompt_version = "namespace_twin_mop_replay_summary_v1"
+        data = replay.get("data") or {}
+        fact_envelope = {
+            "twin_id": twin["twin_id"],
+            "decision_version": twin["decision_version"],
+            "replay_id": data.get("replay_id"),
+            "status": data.get("status"),
+            "isolation": data.get("isolation"),
+            "synthetic_secret_strategy": data.get("synthetic_secret_strategy"),
+            "timeline": list(data.get("timeline") or [])[:100],
+            "checks": list(data.get("checks") or [])[:100],
+            "cleanup_status": data.get("cleanup_status"),
+            "limitations": list(data.get("limitations") or [])[:50],
+            "additional_evidence_only": True,
+            "production_secret_values_copied": False,
+            "production_data_copied": False,
+            "model_authority": False,
+            "execution_eligibility_effect": "none",
+        }
+        canonical = json.dumps(fact_envelope, sort_keys=True, separators=(",", ":"), default=str)
+        input_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        system = (
+            "Summarize deterministic isolated MoP replay facts for an operator. Return exactly "
+            "one JSON object with schema {\"summary\": \"concise summary\"} and no other keys "
+            "or prose. State replay result, isolation, readiness, "
+            "failures, smoke tests, cleanup, and limitations exactly as supplied. Explicitly "
+            "state that replay is additional evidence and does not prove production success. "
+            "Never claim replay ran when facts are absent, change the persisted twin decision, "
+            "approve execution, expose Secret values, or reveal hidden chain-of-thought."
+        )
+        prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        failures = sum(
+            item.get("status") == "failed"
+            for item in [*fact_envelope["timeline"], *fact_envelope["checks"]]
+        )
+        deterministic_summary = (
+            f"Isolated MoP replay {fact_envelope['replay_id']} "
+            f"{fact_envelope['status']} with {failures} failed phase/check item(s); cleanup "
+            f"is {fact_envelope['cleanup_status']}. Replay is additional evidence only and "
+            "does not prove production success."
+        )
+        fallback = {
+            "summary": deterministic_summary,
+            "model_profile": model_profile or "azure_gpt5_pro",
+            "llm_fallback": {"used": True, "error": None},
+        }
+        started = time.perf_counter()
+        if self.llm is None:
+            generated = fallback
+        else:
+            structured_response = getattr(
+                self.llm,
+                "strict_structured_response",
+                self.llm.structured_response,
+            )
+            generated = await structured_response(
+                system=system,
+                user_payload=fact_envelope,
+                fallback=fallback,
+                model_profile=model_profile or "azure_gpt5_pro",
+            )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        summary = generated.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            summary = deterministic_summary
+        production_disclaimer = (
+            "Replay is additional evidence only and does not prove production success."
+        )
+        if "does not prove production success" not in summary.lower():
+            summary = f"{summary.strip()} {production_disclaimer}"
+        token_usage = generated.get("token_usage") or {}
+        fallback_used = bool((generated.get("llm_fallback") or {}).get("used"))
+        safe_output = {
+            "schema_version": "1.0.0",
+            "explanation_id": f"twinexp_{uuid4().hex}",
+            "status": "fallback" if fallback_used else "generated",
+            "model_profile": generated.get("model_profile") or model_profile or "azure_gpt5_pro",
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "input_hash": input_hash,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "format": "plain_text",
+            "content": summary.strip()[:12000],
+            "evidence_refs": [
+                str(item.get("evidence_id"))
+                for item in (data.get("evidence_refs") or [])
+                if isinstance(item, dict) and item.get("evidence_id")
+            ][:100],
+            "fallback_reason": (
+                str((generated.get("llm_fallback") or {}).get("error"))[:1000]
+                if (generated.get("llm_fallback") or {}).get("error")
+                else None
+            ),
+            "latency_ms": latency_ms,
+            "input_tokens": token_usage.get("input_tokens"),
+            "output_tokens": token_usage.get("output_tokens"),
+            "chain_of_thought_included": False,
+            "model_authority": False,
+            "execution_eligibility_effect": "none",
+        }
+        self._log_explanation(
+            twin=twin,
+            safe_output=safe_output,
+            token_usage=token_usage,
+            error_message=(generated.get("llm_fallback") or {}).get("error"),
+        )
+        return safe_output
 
     async def audit_executive_summary(
         self,
@@ -2025,8 +2221,16 @@ class DigitalTwinGatewayService:
 
 
 _RELEASE_NOTE_CATEGORIES = {
-    "image", "configuration", "migration", "pvc_storage", "rbac", "route",
-    "rollback", "breaking_change", "known_risk", "other",
+    "image",
+    "configuration",
+    "migration",
+    "pvc_storage",
+    "rbac",
+    "route",
+    "rollback",
+    "breaking_change",
+    "known_risk",
+    "other",
 }
 _RELEASE_NOTE_SECRET = re.compile(
     r"(?i)\b(password|token|secret|api[_-]?key|authorization)\b\s*[:=]\s*\S+"
@@ -2084,10 +2288,12 @@ def _release_note_fallback_claims(content: str) -> list[dict[str, str]]:
         if len(candidate) < 4:
             continue
         inferred_category = _release_note_category(candidate)
-        claims.append({
-            "category": category if category != "other" else inferred_category,
-            "claim": candidate,
-        })
+        claims.append(
+            {
+                "category": category if category != "other" else inferred_category,
+                "claim": candidate,
+            }
+        )
         if len(claims) >= 100:
             break
     return _sanitize_release_note_claims(claims)
@@ -2115,6 +2321,7 @@ def _release_note_category(value: str) -> str:
         return "known_risk"
     return "other"
 
+
 def _response_headers(response: Response) -> None:
     response.headers["X-ESDA-Data-Mode"] = DATA_MODE
     response.headers["Cache-Control"] = "no-store"
@@ -2138,7 +2345,7 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
             "non_production": False,
             "label": (
                 "Real Lifecycle + Overview + Release Delta + Dependency Graph + Policy Twin + "
-                "Dry-run / Diff Twin + Rollback Twin + Release Note Validation Twin + Audit Reports + Mock Remaining Modules"
+                "Dry-run / Diff Twin + Rollback Twin + MoP Replay Twin + Release Note Validation Twin + Audit Reports"
             ),
         }
 
@@ -2253,6 +2460,20 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
         _response_headers(response)
         return await service.refresh_runtime_behavior(twin_id)
 
+    @router.post("/{twin_id}/mop-replay")
+    async def record_mop_replay(
+        twin_id: str,
+        payload: dict[str, Any],
+        response: Response,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict[str, Any]:
+        _response_headers(response)
+        return await service.record_mop_replay(
+            twin_id,
+            payload,
+            actor_id=principal.username,
+        )
+
     @router.post("/{twin_id}/release-note-validation")
     async def validate_release_note(
         twin_id: str,
@@ -2266,6 +2487,7 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
             payload.model_dump(mode="json"),
             actor_id=principal.username,
         )
+
     async def _report_response(twin_id: str, report_format: str) -> Response:
         content, content_type, filename = await service.client.download_namespace_twin_report(
             twin_id, report_format

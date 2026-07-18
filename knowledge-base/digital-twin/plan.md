@@ -617,13 +617,13 @@ Approval note: the three unchecked items are human sign-offs and are intentional
 
 ### Slice 5K: MoP Replay Twin, Optional and Last
 
-- [ ] Keep the tab `Not Run` until replay infrastructure is explicitly approved.
-- [ ] Rehearse only in an isolated mimic namespace or ephemeral cluster.
-- [ ] Never copy production Secret values or production data.
-- [ ] Record replay phases, readiness, failures, smoke tests, cleanup, and limitations.
-- [ ] Treat replay as additional evidence, not proof of production success.
-- [ ] Add server-side SIGMA 5 PRO replay summary only after deterministic replay facts exist.
-- [ ] Do not block baseline delivery on this optional slice.
+- [x] Keep the tab `Not Run` until replay infrastructure is explicitly approved.
+- [x] Rehearse only in an isolated mimic namespace or ephemeral cluster.
+- [x] Never copy production Secret values or production data.
+- [x] Record replay phases, readiness, failures, smoke tests, cleanup, and limitations.
+- [x] Treat replay as additional evidence, not proof of production success.
+- [x] Add server-side SIGMA 5 PRO replay summary only after deterministic replay facts exist.
+- [x] Do not block baseline delivery on this optional slice.
 
 ---
 ## 8. Phase 6: Compact Twin Gate and Real Bundle Execution

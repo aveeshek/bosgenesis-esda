@@ -30,6 +30,10 @@
                          "schema":  "../schemas/tabs/mop-replay.schema.json"
                      },
                      {
+                         "fixture":  "mop-replay-deterministic.json",
+                         "schema":  "../schemas/tabs/mop-replay.schema.json"
+                     },
+                     {
                          "fixture":  "audit-timeline.json",
                          "schema":  "../schemas/tabs/audit-timeline.schema.json"
                      },

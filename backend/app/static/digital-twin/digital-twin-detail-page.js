@@ -500,6 +500,36 @@
       + '<div class="tab-toolbar"><span>Collected from namespace-scoped Kubernetes evidence; no browser-side risk inference.</span><button class="btn" type="button" data-refresh-runtime' + (canRefresh ? '' : ' disabled') + '>Refresh Runtime</button></div>';
   }
 
+  function renderMopReplay(tab) {
+    var data = tab.data || {};
+    var timeline = Array.isArray(data.timeline) ? data.timeline : [];
+    var checks = Array.isArray(data.checks) ? data.checks : [];
+    function tone(value) {
+      if (value === "passed" || value === "completed") return "green";
+      if (value === "failed") return "red";
+      return "amber";
+    }
+    var timelineRows = timeline.map(function (item) {
+      return "<tr><td>" + ui.escapeHtml(String(item.sequence)) + "</td><td><strong>" + ui.escapeHtml(ui.label(item.phase)) + "</strong></td><td>" + ui.badge(tone(item.status), ui.label(item.status)) + "</td><td>" + ui.escapeHtml(item.summary || "") + "</td><td>" + ui.escapeHtml(ui.formatDate(item.created_at)) + "</td></tr>";
+    }).join("");
+    if (!timelineRows) timelineRows = '<tr><td colspan="5"><div class="empty-inline">No replay timeline facts were recorded.</div></td></tr>';
+    var checkRows = checks.map(function (item) {
+      return "<tr><td><strong>" + ui.escapeHtml(ui.label(item.type)) + "</strong></td><td>" + ui.badge(tone(item.status), ui.label(item.status)) + "</td><td>" + ui.escapeHtml(item.summary || "") + "</td></tr>";
+    }).join("");
+    if (!checkRows) checkRows = '<tr><td colspan="3"><div class="empty-inline">No replay check facts were recorded.</div></td></tr>';
+    var limitations = (data.limitations || []).map(function (item) { return "<li>" + ui.escapeHtml(item) + "</li>"; }).join("") || "<li>No limitations were recorded.</li>";
+    var explanation = tab.safe_explanation
+      ? '<article class="content-block span-12"><p class="eyebrow">SIGMA 5 PRO / Bounded Replay Summary</p><p>' + ui.escapeHtml(tab.safe_explanation.content) + '</p><p class="muted">SIGMA summarizes deterministic replay facts only. It cannot run replay, alter the decision, or grant execution eligibility.</p></article>'
+      : "";
+    return '<div class="notice runtime-authority">Replay is separately approved, isolated rehearsal evidence. It never copies production Secret values or data and does not prove production success.</div>'
+      + metricCards(tab.metrics || [])
+      + '<div class="drift-status-grid"><article class="drift-status-card"><span>Replay result</span><strong>' + ui.escapeHtml(ui.label(data.status || "unknown")) + '</strong>' + ui.badge(tone(data.status), data.status || "unknown") + '</article><article class="drift-status-card"><span>Isolation</span><strong>' + ui.escapeHtml(data.isolation || "unavailable") + '</strong><small>Approval ' + ui.escapeHtml(data.approval_id || "unavailable") + '</small></article><article class="drift-status-card"><span>Cleanup</span><strong>' + ui.escapeHtml(ui.label(data.cleanup_status || "unknown")) + '</strong>' + ui.badge(tone(data.cleanup_status), data.cleanup_status || "unknown") + '</article><article class="drift-status-card"><span>Retention</span><strong>' + Number(data.retention_seconds || 0) + ' seconds</strong><small>' + ui.escapeHtml(data.rules_version || "rules unavailable") + '</small></article></div>'
+      + explanation
+      + '<div class="content-grid tab-followup"><article class="content-block span-8"><h3>Synthetic Secret Strategy</h3><p>' + ui.escapeHtml(data.synthetic_secret_strategy || "Not recorded.") + '</p><dl class="fact-list"><div><dt>Production Secrets copied</dt><dd>No</dd></div><div><dt>Production data copied</dt><dd>No</dd></div><div><dt>Decision effect</dt><dd>None</dd></div></dl></article><article class="content-block span-4"><h3>Limitations</h3><ul class="artifact-list">' + limitations + '</ul></article></div>'
+      + '<article class="content-block"><h3>Replay Timeline</h3><div class="table-scroll"><table><thead><tr><th>#</th><th>Phase</th><th>Status</th><th>Summary</th><th>Recorded</th></tr></thead><tbody>' + timelineRows + '</tbody></table></div></article>'
+      + '<article class="content-block"><h3>Readiness, Smoke Tests, and Cleanup</h3><div class="table-scroll"><table><thead><tr><th>Check</th><th>Status</th><th>Summary</th></tr></thead><tbody>' + checkRows + '</tbody></table></div></article>'
+      + '<div class="notice amber">No Run Replay control is exposed. An independently approved replay worker must submit terminal, redacted evidence through the authenticated server API.</div>';
+  }
   function renderReleaseNoteValidation(tab) {
     var data = tab.data || {};
     var counts = data.claim_counts || {};
@@ -550,6 +580,7 @@
 
   function renderTab(tab) {
     if (tab.kind === "release-note-validation") return renderReleaseNoteValidation(tab);
+    if (tab.kind === "mop-replay" && tab.state === "available") return renderMopReplay(tab);
     if (tab.state !== "available") return unavailableView(tab);
     if (tab.kind === "overview") return renderOverview(tab);
     if (tab.kind === "delta") return renderDelta(tab);

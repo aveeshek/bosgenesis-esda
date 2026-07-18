@@ -349,6 +349,7 @@ class AzureGpt5Service:
         user_payload: dict,
         fallback: dict,
         model_profile: str | None = None,
+        json_mode: bool = False,
     ) -> dict:
         profile = self._resolve_profile(model_profile)
         if not self._profile_configured(profile):
@@ -356,6 +357,11 @@ class AzureGpt5Service:
         user = json.dumps(redact(user_payload), default=str)
         try:
             model = self._model(model_profile)
+            if json_mode:
+                model = model.bind(
+                    response_format={"type": "json_object"},
+                    reasoning_effort="low",
+                )
             response = await model.ainvoke(
                 [
                     {"role": "system", "content": system},
@@ -418,6 +424,24 @@ class AzureGpt5Service:
             fallback=fallback,
             model_profile=model_profile,
         )
+
+    async def strict_structured_response(
+        self,
+        *,
+        system: str,
+        user_payload: dict,
+        fallback: dict,
+        model_profile: str | None = None,
+    ) -> dict:
+        """Request provider-enforced JSON for bounded, schema-sensitive summaries."""
+        return await self._json_response(
+            system=system,
+            user_payload=user_payload,
+            fallback=fallback,
+            model_profile=model_profile,
+            json_mode=True,
+        )
+
 
     def _model(self, model_profile: str | None = None):
         profile = self._resolve_profile(model_profile)

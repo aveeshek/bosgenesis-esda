@@ -121,6 +121,8 @@ class FakeNamespaceTwinClient:
         self.runtime_refreshes = 0
         self.release_note_validation_payload: dict | None = None
         self.release_note_validation_actor: str | None = None
+        self.mop_replay_payload: dict | None = None
+        self.mop_replay_actor: str | None = None
 
     async def create_namespace_twin(self, payload: dict) -> MopExecutionAgentResponse:
         created = deepcopy(self.twin)
@@ -740,6 +742,59 @@ class FakeNamespaceTwinClient:
             payload=response.payload,
         )
 
+    async def get_namespace_twin_mop_replay(self, twin_id: str) -> MopExecutionAgentResponse:
+        assert twin_id == self.twin["twin_id"]
+        if self.mop_replay_payload is None:
+            return _response(
+                "GET",
+                f"v1/namespace-twins/{twin_id}/mop-replay",
+                {
+                    "schema_version": "1.0.0",
+                    "twin_id": twin_id,
+                    "decision_version": self.twin["decision_version"],
+                    "lifecycle_status": self.twin["lifecycle_status"],
+                    "freshness": self.twin["freshness"],
+                    "availability": {
+                        "state": "not_run",
+                        "message": "MoP replay requires separately approved isolated infrastructure.",
+                    },
+                    "data": None,
+                },
+            )
+        fixture = (
+            Path(__file__).resolve().parents[2]
+            / "knowledge-base"
+            / "digital-twin"
+            / "contracts"
+            / "v1"
+            / "fixtures"
+            / "mop-replay-deterministic.json"
+        )
+        result = json.loads(fixture.read_text(encoding="utf-8"))
+        result["twin_id"] = twin_id
+        result["decision_version"] = self.twin["decision_version"]
+        result["lifecycle_status"] = self.twin["lifecycle_status"]
+        result["freshness"] = self.twin["freshness"]
+        return _response("GET", f"v1/namespace-twins/{twin_id}/mop-replay", result)
+
+    async def record_namespace_twin_mop_replay(
+        self,
+        twin_id: str,
+        payload: dict,
+        *,
+        actor_id: str | None = None,
+    ) -> MopExecutionAgentResponse:
+        assert twin_id == self.twin["twin_id"]
+        self.mop_replay_payload = deepcopy(payload)
+        self.mop_replay_actor = actor_id
+        response = await self.get_namespace_twin_mop_replay(twin_id)
+        return MopExecutionAgentResponse(
+            method="POST",
+            url=f"http://execution-agent/v1/namespace-twins/{twin_id}/mop-replay",
+            status_code=200,
+            payload=response.payload,
+        )
+
     async def get_namespace_twin_release_note_validation(
         self, twin_id: str
     ) -> MopExecutionAgentResponse:
@@ -784,9 +839,7 @@ class FakeNamespaceTwinClient:
         result["data"]["extraction"] = deepcopy(
             self.release_note_validation_payload["extraction"]
         ) | {"chain_of_thought_included": False, "model_authority": False}
-        return _response(
-            "GET", f"v1/namespace-twins/{twin_id}/release-note-validation", result
-        )
+        return _response("GET", f"v1/namespace-twins/{twin_id}/release-note-validation", result)
 
     async def validate_namespace_twin_release_note(
         self,
@@ -805,6 +858,7 @@ class FakeNamespaceTwinClient:
             status_code=200,
             payload=response.payload,
         )
+
     async def attach_namespace_twin_dry_run_evidence(
         self, twin_id: str, payload: dict
     ) -> MopExecutionAgentResponse:
@@ -1073,11 +1127,11 @@ def test_real_gateway_requires_auth_and_projects_execution_agent_core(
     assert config.status_code == 200
     assert config.headers["x-esda-data-mode"] == "real_core"
     assert config.json()["label"] == (
-        "Real Lifecycle + Overview + Release Delta + Dependency Graph + Policy Twin + Dry-run / Diff Twin + Rollback Twin + Release Note Validation Twin + Audit Reports + Mock Remaining Modules"
+        "Real Lifecycle + Overview + Release Delta + Dependency Graph + Policy Twin + Dry-run / Diff Twin + Rollback Twin + MoP Replay Twin + Release Note Validation Twin + Audit Reports"
     )
     assert listed.json()["items"][0]["data_mode"] == "real_core"
     assert listed.json()["warning"].startswith(
-        "Lifecycle, Overview, Release Delta, Dependency Graph, summaries"
+        "Lifecycle, Overview, Release Delta, Dependency Graph, Policy Twin"
     )
     assert detail.json()["lifecycle_status"] == "awaiting_dry_run"
     assert detail.json()["decision_is_final"] is False
@@ -1583,9 +1637,7 @@ def test_slice5j_release_note_validation_is_bounded_authoritative_and_editorial_
             },
         )
         login(client)
-        initial = client.get(
-            f"/api/digital-twins/{twin_id}/tabs/release-note-validation"
-        )
+        initial = client.get(f"/api/digital-twins/{twin_id}/tabs/release-note-validation")
         validated = client.post(
             f"/api/digital-twins/{twin_id}/release-note-validation",
             json={
@@ -1629,6 +1681,7 @@ def test_slice5j_release_note_validation_is_bounded_authoritative_and_editorial_
     assert "data-validate-release-note" in script
     assert "Automatic overwrite: disabled" in script
 
+
 def test_slice5j_hostile_claim_text_is_filtered_and_deduplicated() -> None:
     from backend.app.digital_twin_gateway import (
         _release_note_fallback_claims,
@@ -1654,8 +1707,82 @@ def test_slice5j_hostile_claim_text_is_filtered_and_deduplicated() -> None:
         "- Runtime configuration was updated.\n"
     )
 
-    expected = [
-        {"category": "configuration", "claim": "Runtime configuration was updated."}
-    ]
+    expected = [{"category": "configuration", "claim": "Runtime configuration was updated."}]
     assert extracted == expected
     assert fallback == expected
+
+
+def test_slice5k_mop_replay_is_optional_isolated_and_summarized_only_after_facts(
+    tmp_path, monkeypatch
+) -> None:
+    twin_id = CORE_TWIN["twin_id"]
+    replay_payload = {
+        "replay_id": "replay_signal_scout_001",
+        "infrastructure_approved": True,
+        "approval_id": "approval_replay_001",
+        "mode": "mimic_namespace",
+        "isolation_target": "esda-twin-signal-scout-001",
+        "synthetic_secret_strategy": "Synthetic placeholders with redacted references only.",
+        "production_secret_values_copied": False,
+        "production_data_copied": False,
+        "retention_seconds": 0,
+        "timeline": [
+            {
+                "sequence": 1,
+                "phase": "prepare",
+                "status": "passed",
+                "summary": "Mimic namespace prepared.",
+                "created_at": "2026-07-18T12:10:00Z",
+            }
+        ],
+        "checks": [
+            {"type": "readiness", "status": "passed", "summary": "Ready."},
+            {"type": "smoke_test", "status": "passed", "summary": "Passed."},
+            {"type": "cleanup", "status": "passed", "summary": "Removed."},
+        ],
+        "cleanup_status": "completed",
+        "evidence_refs": [],
+        "limitations": ["Production endpoints were not contacted."],
+    }
+    with build_client(tmp_path, monkeypatch) as client:
+        unauthorized = client.post(f"/api/digital-twins/{twin_id}/mop-replay", json=replay_payload)
+        login(client)
+        initial = client.get(f"/api/digital-twins/{twin_id}/tabs/mop-replay")
+        with client.app.state.database.session() as session:
+            initial_logs = list(session.scalars(select(DigitalTwinExplanationLog)))
+        recorded = client.post(f"/api/digital-twins/{twin_id}/mop-replay", json=replay_payload)
+        available = client.get(
+            f"/api/digital-twins/{twin_id}/tabs/mop-replay",
+            params={"model_profile": "azure_gpt5_pro"},
+        )
+        fake = client.app.state.digital_twin_gateway.client
+        with client.app.state.database.session() as session:
+            explanation_logs = list(session.scalars(select(DigitalTwinExplanationLog)))
+        detail_script = client.get("/static/digital-twin/digital-twin-detail-page.js").text
+
+    assert unauthorized.status_code == 401
+    assert initial.status_code == 200
+    assert initial.json()["state"] == "not_run"
+    assert initial.json()["data"] is None
+    assert initial_logs == []
+    assert recorded.status_code == 200
+    assert fake.mop_replay_actor == "admin"
+    assert fake.mop_replay_payload["infrastructure_approved"] is True
+    payload = available.json()
+    assert payload["state"] == "available"
+    assert payload["kind"] == "mop-replay"
+    assert payload["module_mode"] == "authoritative"
+    assert payload["non_authoritative"] is False
+    assert payload["data"]["additional_evidence_only"] is True
+    assert payload["data"]["production_secret_values_copied"] is False
+    assert payload["data"]["production_data_copied"] is False
+    assert payload["data"]["execution_eligibility_effect"] == "none"
+    explanation = payload["safe_explanation"]
+    assert explanation["prompt_version"] == "namespace_twin_mop_replay_summary_v1"
+    assert explanation["chain_of_thought_included"] is False
+    assert explanation["model_authority"] is False
+    assert explanation["execution_eligibility_effect"] == "none"
+    assert "does not prove production success" in explanation["content"].lower()
+    assert explanation_logs[-1].safe_output_json == explanation
+    assert "No Run Replay control is exposed" in detail_script
+    assert "does not prove production success" in detail_script
