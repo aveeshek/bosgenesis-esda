@@ -1,0 +1,96 @@
+{
+  "schema_version": "1.0.0",
+  "twin_id": "twin_signal_scout_001",
+  "decision_version": 2,
+  "lifecycle_status": "superseded",
+  "freshness": {
+    "status": "superseded",
+    "captured_at": "2026-07-16T14:52:00Z",
+    "expires_at": "2026-07-17T14:52:00Z",
+    "superseded_by": "drift_current_001",
+    "message": "Material namespace drift superseded prior execution eligibility."
+  },
+  "availability": {
+    "state": "available",
+    "message": "Deterministic Drift Twin facts are available.",
+    "reason_code": null,
+    "retryable": false,
+    "last_attempt_at": "2026-07-16T15:02:00Z"
+  },
+  "data": {
+    "status": "major",
+    "snapshot": {
+      "captured_at": "2026-07-16T14:52:00Z",
+      "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "baseline": {
+      "captured_at": "2026-07-16T14:52:00Z",
+      "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "available": true,
+      "resource_count": 1,
+      "complete_kinds": ["Deployment"],
+      "warning": null
+    },
+    "current_capture": {
+      "captured_at": "2026-07-16T15:02:00Z",
+      "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "available": true,
+      "resource_count": 1,
+      "complete_kinds": ["Deployment"],
+      "warning": null
+    },
+    "freshness_threshold_seconds": 900,
+    "freshness": {
+      "status": "fresh",
+      "age_seconds": 600
+    },
+    "changes": [
+      {
+        "change_id": "drift_deployment_image_001",
+        "resource_identity": "apps/v1:Deployment:agent-testing:sample-app",
+        "kind": "Deployment",
+        "namespace": "agent-testing",
+        "name": "sample-app",
+        "change_type": "updated",
+        "classification": "major",
+        "summary": "Deployment/sample-app was updated.",
+        "axes": {
+          "spec": true,
+          "policy_boundary": false,
+          "target": false,
+          "helm_revision": false,
+          "safety_control": false,
+          "manual_patch": true
+        },
+        "before_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "after_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "evidence_refs": [
+          {
+            "evidence_id": "evidence_deployment_image_001",
+            "source_type": "live_snapshot",
+            "summary": "Read-only drift comparison for the sample Deployment.",
+            "captured_at": "2026-07-16T15:02:00Z",
+            "redacted": true
+          }
+        ]
+      }
+    ],
+    "change_counts": {
+      "total": 1,
+      "minor": 0,
+      "major": 1,
+      "critical": 0,
+      "unknown": 0
+    },
+    "helm_revision_drift": false,
+    "manual_patch_indicators": ["apps/v1:Deployment:agent-testing:sample-app"],
+    "health_changes": [],
+    "material": true,
+    "execution_disabled": true,
+    "decision_invalidated": true,
+    "rules_version": "namespace-twin-drift-1.0.0",
+    "model_authority": false,
+    "summary": "Detected 1 changed resource(s); overall drift is major. The prior execution decision is superseded.",
+    "evidence_refs": ["snapshot-baseline-001", "snapshot-current-001"]
+  }
+}

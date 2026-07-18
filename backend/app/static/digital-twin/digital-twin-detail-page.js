@@ -33,7 +33,8 @@
   var graphNodeCursorHistory = [];
   var graphEdgeCursorHistory = [];
   var graphDisplayMode = "canvas";
-  var auditPage = 0;
+  var auditCursor = null;
+  var auditCursorHistory = [];
   var policyFilter = "all";
   var dryRunFilters = { phase: "", step: "", resource: "", tool: "", outcome: "" };
 
@@ -63,10 +64,10 @@
   function renderHeader(item) {
     item = Object.assign({}, item, { lifecycle_status: item.visible_lifecycle || item.lifecycle_status });
     var status = item.decision === "pending" ? item.visible_lifecycle : item.decision;
-    header.innerHTML = '<div><p class="eyebrow">Digital Twin · ' + (item.decision_is_final ? "Final Decision" : "Preliminary State") + '</p><div class="title-line"><h1 id="twin-title">' + ui.escapeHtml(item.display_name) + "</h1>" + ui.badge(status, decisionLabel(item)) + ui.badge(item.lifecycle_status) + '</div><p class="muted">Risk ' + ui.escapeHtml(item.risk.score == null ? "not calculated" : item.risk.score) + " · " + ui.escapeHtml(ui.label(item.autonomy_eligibility)) + " · " + ui.escapeHtml(item.recommended_action) + '</p></div><div class="action-row" aria-label="Twin actions">' + actionsFor(item).map(actionButton).join("") + "</div>";
+    header.innerHTML = '<div><p class="eyebrow">Digital Twin - ' + (item.decision_is_final ? "Final Decision" : "Preliminary State") + '</p><div class="title-line"><h1 id="twin-title">' + ui.escapeHtml(item.display_name) + "</h1>" + ui.badge(status, decisionLabel(item)) + ui.badge(item.lifecycle_status) + '</div><p class="muted">Risk ' + ui.escapeHtml(item.risk.score == null ? "not calculated" : item.risk.score) + " - " + ui.escapeHtml(ui.label(item.autonomy_eligibility)) + " - " + ui.escapeHtml(item.recommended_action) + '</p></div><div class="action-row" aria-label="Twin actions">' + actionsFor(item).map(actionButton).join("") + "</div>";
 
     if (item.prior_decision && !item.decision_is_final) {
-      preview.innerHTML = '<article class="status-preview"><span class="badge generating">Generating v' + item.decision_version + '</span><div><strong>New evidence is being evaluated</strong><p>Preliminary values cannot authorize execution.</p></div></article><article class="status-preview"><span class="badge ' + ui.badgeClass(item.prior_decision.decision) + '">Prior ' + ui.escapeHtml(ui.label(item.prior_decision.decision)) + '</span><div><strong>Previous evidence remains visible</strong><p>Decision v' + item.prior_decision.decision_version + " · risk " + ui.escapeHtml(item.prior_decision.risk.score) + " · now superseded.</p></div></article>";
+      preview.innerHTML = '<article class="status-preview"><span class="badge generating">Generating v' + item.decision_version + '</span><div><strong>New evidence is being evaluated</strong><p>Preliminary values cannot authorize execution.</p></div></article><article class="status-preview"><span class="badge ' + ui.badgeClass(item.prior_decision.decision) + '">Prior ' + ui.escapeHtml(ui.label(item.prior_decision.decision)) + '</span><div><strong>Previous evidence remains visible</strong><p>Decision v' + item.prior_decision.decision_version + " - risk " + ui.escapeHtml(item.prior_decision.risk.score) + " - now superseded.</p></div></article>";
     } else {
       preview.innerHTML = '<article class="status-preview"><span class="badge generating">Preliminary</span><div><strong>Generation states never authorize execution</strong><p>Requested, generating, dry-run, and calculation states stay visibly provisional.</p></div></article><article class="status-preview">' + ui.badge(status, item.decision_is_final ? "Final " + decisionLabel(item) : decisionLabel(item)) + '<div><strong>' + ui.escapeHtml(item.decision_is_final ? item.recommended_action : "Decision evidence is still being assembled.") + '</strong><p>' + ui.escapeHtml(item.freshness.message) + "</p></div></article>";
     }
@@ -392,27 +393,163 @@
       + '<article class="content-block span-5"><h3>Reports</h3><ul class="artifact-list">' + artifactLinks + '</ul><h3>Fidelity Limits</h3><ul class="list-clean dry-run-fidelity">' + fidelity + '</ul></article></div>';
   }
   function renderRollback(tab) {
-    var rows = tab.evidence.map(function (row) { return "<tr><td>" + ui.escapeHtml(row.asset) + "</td><td>" + ui.badge(row.status === "high" ? "green" : "amber", row.status) + "</td><td>" + ui.escapeHtml(row.gap) + "</td></tr>"; }).join("");
-    return '<div class="content-grid"><article class="content-block span-4"><span class="fact-label">Rollback confidence</span><div class="big-number">' + tab.confidence + '%</div><div class="progress-track"><div class="progress-fill" style="width:' + tab.confidence + '%"></div></div></article><article class="content-block span-8"><h3>Recovery Sequence</h3><ol class="reason-list">' + tab.steps.map(function (step) { return "<li>" + ui.escapeHtml(step) + "</li>"; }).join("") + '</ol></article><article class="content-block span-12"><table><thead><tr><th>Asset</th><th>Confidence</th><th>Gap</th></tr></thead><tbody>' + rows + "</tbody></table></article></div>";
+    var data = tab.data || {};
+    var coverage = data.coverage || {};
+    var helm = data.helm || {};
+    var previous = data.previous_artifacts || {};
+    var proof = data.proof || {};
+    var steps = data.machine_plan_steps || [];
+    var gaps = data.gaps || [];
+    var findings = data.non_reversible_changes || [];
+    var explanation = tab.safe_explanation
+      ? '<article class="content-block span-12 rollback-explanation"><p class="eyebrow">SIGMA 5 PRO / Bounded Explanation</p><p>' + ui.escapeHtml(tab.safe_explanation.content) + '</p><p class="muted">SIGMA explains deterministic rollback facts only. It cannot change confidence, prove rollback, or execute recovery.</p></article>'
+      : "";
+    var stepRows = steps.map(function (step) {
+      return '<tr><td><strong>' + ui.escapeHtml(step.summary) + '</strong><small>' + ui.escapeHtml(step.step_id) + '</small></td><td>' + ui.escapeHtml((step.forward_step_ids || []).join(", ") || "Unlinked") + '</td><td>' + ui.badge(step.reversible ? "green" : "red", step.reversible ? "reversible" : "not reversible") + '</td><td>' + ui.escapeHtml(ui.label(step.mechanism)) + '</td><td>' + ui.badge(step.dry_run_capable ? "green" : "amber", step.dry_run_capable ? "available" : "not available") + '</td></tr>';
+    }).join("") || '<tr><td colspan="5" class="empty-inline">No rollback steps are defined in the machine plan.</td></tr>';
+    var gapRows = gaps.map(function (gap) {
+      var tone = gap.severity === "critical" || gap.severity === "high" ? "red" : "amber";
+      return '<tr><td><strong>' + ui.escapeHtml(gap.code) + '</strong></td><td>' + ui.badge(tone, gap.severity) + '</td><td>' + ui.escapeHtml(gap.summary) + '</td></tr>';
+    }).join("") || '<tr><td colspan="3" class="empty-inline">No deterministic rollback gaps were found.</td></tr>';
+    var findingRows = findings.map(function (finding) {
+      return '<li><strong>' + ui.escapeHtml(finding.title) + '</strong><small>' + ui.escapeHtml(finding.summary) + '</small></li>';
+    }).join("") || '<li>No non-reversible changes were identified.</li>';
+    var previousRows = (previous.manifest_paths || []).concat(previous.values_paths || []).map(function (path) {
+      return '<li><code>' + ui.escapeHtml(path) + '</code></li>';
+    }).join("") || '<li>No previous manifests or values were supplied.</li>';
+    var manual = (data.manual_steps || []).map(function (item) { return '<li>' + ui.escapeHtml(item) + '</li>'; }).join("") || '<li>No manual rollback steps were supplied.</li>';
+    var validation = (data.validation_checks || []).map(function (item) { return '<li>' + ui.escapeHtml(item) + '</li>'; }).join("") || '<li>No rollback validation checks were supplied.</li>';
+    return '<div class="notice rollback-authority">Deterministic rollback readiness only. Defined rollback and proven rollback are separate facts; this tab does not execute recovery.</div>'
+      + metricCards(tab.metrics || [])
+      + '<div class="rollback-status-grid"><article><span>Rule version</span><strong>' + ui.escapeHtml(data.rule_version || "Not available") + '</strong></article><article><span>Plan coverage</span><strong>' + ui.escapeHtml(String(coverage.coverage_percent || 0)) + '%</strong><small>' + ui.escapeHtml(String(coverage.linked_operations || 0)) + ' of ' + ui.escapeHtml(String(coverage.mutating_operations || 0)) + ' operations linked</small></article><article><span>Runtime proof</span><strong>' + ui.escapeHtml(ui.label(proof.status || "not_run")) + '</strong><small>' + ui.escapeHtml(proof.summary || "No proof summary") + '</small></article><article><span>PVC / data</span><strong>' + ui.escapeHtml(ui.label(data.pvc_data_reversibility || "unknown")) + '</strong></article></div>'
+      + explanation
+      + '<div class="content-grid"><article class="content-block span-12"><h3>Forward-to-Rollback Linkage</h3><div class="table-scroll"><table><thead><tr><th>Rollback step</th><th>Forward operations</th><th>Reversibility</th><th>Mechanism</th><th>Dry-run</th></tr></thead><tbody>' + stepRows + '</tbody></table></div></article>'
+      + '<article class="content-block span-6"><h3>Helm Revision and Provenance</h3><dl class="fact-list"><div><dt>Required</dt><dd>' + ui.escapeHtml(helm.required ? "Yes" : "No") + '</dd></div><div><dt>Release</dt><dd>' + ui.escapeHtml(helm.release_name || "Not supplied") + '</dd></div><div><dt>Current revision</dt><dd>' + ui.escapeHtml(String(helm.current_revision || "Not supplied")) + '</dd></div><div><dt>Previous revision</dt><dd>' + ui.escapeHtml(String(helm.previous_revision || "Not supplied")) + '</dd></div><div><dt>Provenance</dt><dd>' + ui.escapeHtml(ui.label(helm.provenance || "not_available")) + '</dd></div></dl></article>'
+      + '<article class="content-block span-6"><h3>Previous Manifests and Values</h3><p>' + ui.badge(previous.manifests_available ? "green" : "amber", previous.manifests_available ? "manifests available" : "manifests missing") + ' ' + ui.badge(previous.values_available ? "green" : "amber", previous.values_available ? "values available" : "values missing") + '</p><ul class="artifact-list">' + previousRows + '</ul></article>'
+      + '<article class="content-block span-12"><h3>Evidence Gaps</h3><div class="table-scroll"><table><thead><tr><th>Rule</th><th>Severity</th><th>Gap</th></tr></thead><tbody>' + gapRows + '</tbody></table></div></article>'
+      + '<article class="content-block span-4"><h3>Non-reversible Changes</h3><ul class="artifact-list">' + findingRows + '</ul></article><article class="content-block span-4"><h3>Manual Review</h3><ol class="reason-list">' + manual + '</ol></article><article class="content-block span-4"><h3>Rollback Validation</h3><ol class="reason-list">' + validation + '</ol></article></div>';
   }
 
   function renderDrift(tab) {
-    var rows = tab.changes.map(function (change) { return "<tr><td>" + ui.escapeHtml(change.resource) + "</td><td>" + ui.escapeHtml(change.change) + "</td><td>" + ui.badge(change.materiality === "material" ? "red" : "info", change.materiality) + "</td></tr>"; }).join("");
-    return '<div class="content-grid"><article class="content-block span-4"><span class="fact-label">Snapshot age</span><div class="big-number">' + ui.escapeHtml(tab.snapshot_age) + '</div><p class="muted">Freshness limit: 2h</p></article><article class="content-block span-8"><div class="notice ' + (tab.material ? "red" : "green") + '">' + (tab.material ? "Material drift invalidates execution eligibility. Regenerate the twin." : "No material drift. The decision remains eligible inside its freshness window.") + '</div></article><article class="content-block span-12"><table><thead><tr><th>Resource</th><th>Observed change</th><th>Materiality</th></tr></thead><tbody>' + rows + "</tbody></table></article></div>";
+    var data = tab.data || {};
+    var changes = Array.isArray(data.changes) ? data.changes : [];
+    var baseline = data.baseline || data.snapshot || {};
+    var current = data.current_capture || {};
+    var freshness = data.freshness || {};
+    var counts = data.change_counts || {};
+    var refreshContract = twin && actionsFor(twin).find(function (item) { return item.code === "refresh_drift"; });
+    var canRefresh = Boolean(refreshContract && refreshContract.enabled);
+    function tone(value) {
+      if (value === "critical" || value === "major") return "red";
+      if (value === "minor" || value === "unknown") return "amber";
+      return "green";
+    }
+    var rows = changes.map(function (change) {
+      var axes = Object.keys(change.axes || {}).filter(function (key) { return change.axes[key]; }).map(ui.label).join(", ") || "spec";
+      return "<tr><td><strong>" + ui.escapeHtml(change.name || change.resource_identity) + "</strong><small>" + ui.escapeHtml(change.resource_identity) + "</small></td><td>" + ui.escapeHtml(change.kind || "Unknown") + "</td><td>" + ui.badge(tone(change.classification), ui.label(change.classification)) + "</td><td>" + ui.escapeHtml(ui.label(change.change_type)) + "</td><td>" + ui.escapeHtml(axes) + "</td><td>" + ui.escapeHtml(change.summary) + "</td></tr>";
+    }).join("");
+    if (!rows) rows = '<tr><td colspan="6"><div class="empty-inline">No changed resources were detected.</div></td></tr>';
+    var explanation = tab.safe_explanation
+      ? '<article class="content-block span-12"><p class="eyebrow">SIGMA 5 PRO / Bounded Drift Explanation</p><p>' + ui.escapeHtml(tab.safe_explanation.content) + '</p><p class="muted">The model explains structured changed-resource facts only. Deterministic rules retain classification and execution authority.</p></article>'
+      : "";
+    var materialNotice = data.execution_disabled
+      ? '<div class="notice red">Execution eligibility is disabled. Regenerate the twin after reviewing material, unknown, or stale drift evidence.</div>'
+      : '<div class="notice green">No material drift blocks the current decision inside its freshness window.</div>';
+    return '<div class="drift-status-grid">'
+      + '<article class="drift-status-card"><span>Overall drift</span><strong>' + ui.escapeHtml(ui.label(data.status || "unknown")) + '</strong>' + ui.badge(tone(data.status), data.status || "unknown") + '</article>'
+      + '<article class="drift-status-card"><span>Baseline</span><strong>' + ui.escapeHtml(String(baseline.resource_count == null ? "n/a" : baseline.resource_count)) + ' resources</strong><small>' + ui.escapeHtml(String(baseline.hash || "").slice(0, 16) || "No hash") + '</small></article>'
+      + '<article class="drift-status-card"><span>Current</span><strong>' + ui.escapeHtml(String(current.resource_count == null ? "n/a" : current.resource_count)) + ' resources</strong><small>' + ui.escapeHtml(String(current.hash || "").slice(0, 16) || "No hash") + '</small></article>'
+      + '<article class="drift-status-card"><span>Freshness</span><strong>' + ui.escapeHtml(ui.label(freshness.status || "unknown")) + '</strong><small>' + ui.escapeHtml(String(freshness.age_seconds || 0)) + ' seconds</small></article></div>'
+      + materialNotice + explanation
+      + '<div class="content-grid tab-followup"><article class="content-block span-4"><h3>Decision Effect</h3><dl class="fact-list"><div><dt>Material</dt><dd>' + (data.material ? "Yes" : "No") + '</dd></div><div><dt>Superseded</dt><dd>' + (data.decision_invalidated ? "Yes" : "No") + '</dd></div><div><dt>Rules</dt><dd>' + ui.escapeHtml(data.rules_version || "unavailable") + '</dd></div></dl></article>'
+      + '<article class="content-block span-4"><h3>Drift Axes</h3><p>' + ui.badge(data.helm_revision_drift ? "red" : "green", data.helm_revision_drift ? "Helm revision drift" : "No Helm revision drift") + '</p><p class="muted">' + ui.escapeHtml((data.manual_patch_indicators || []).length) + ' manual-patch indicator(s)</p></article>'
+      + '<article class="content-block span-4"><h3>Change Counts</h3><p>Minor ' + Number(counts.minor || 0) + ' / Major ' + Number(counts.major || 0) + ' / Critical ' + Number(counts.critical || 0) + '</p><p class="muted">' + Number(counts.total || 0) + ' total changed resources</p></article></div>'
+      + '<div class="tab-toolbar"><span>Read-only comparison of persisted baseline and current namespace state.</span><button class="btn" type="button" data-refresh-drift' + (canRefresh ? '' : ' disabled') + '>Refresh Drift</button></div>'
+      + '<div class="table-scroll"><table class="drift-change-table"><thead><tr><th>Resource</th><th>Kind</th><th>Class</th><th>Change</th><th>Axes</th><th>Summary</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
   }
-
   function renderRuntime(tab) {
-    return '<div class="content-grid">' + tab.signals.map(function (signal) { return '<article class="content-block span-6"><div class="mini-bar-row"><span>' + ui.escapeHtml(signal.label) + '</span><div class="progress-track"><div class="progress-fill" style="width:' + signal.score + '%"></div></div><strong>' + signal.score + '</strong></div><p class="muted">' + ui.escapeHtml(signal.detail) + "</p></article>"; }).join("") + "</div>";
+    var data = tab.data || {};
+    var health = data.current_health || {};
+    var factors = Array.isArray(data.factors) ? data.factors : [];
+    var pods = Array.isArray(data.pod_details) ? data.pod_details : [];
+    var refreshContract = twin && actionsFor(twin).find(function (item) { return item.code === "refresh_runtime_behavior"; });
+    var canRefresh = Boolean(refreshContract && refreshContract.enabled);
+    function tone(value) {
+      if (["critical", "high", "unhealthy"].indexOf(value) >= 0) return "red";
+      if (["medium", "unknown", "degraded"].indexOf(value) >= 0) return "amber";
+      return "green";
+    }
+    var factorRows = factors.map(function (factor) {
+      return "<tr><td><strong>" + ui.escapeHtml(factor.title || factor.factor_id) + "</strong><small>" + ui.escapeHtml(factor.factor_id || "rule") + "</small></td><td>" + ui.badge(factor.impact === "reduces_risk" ? "green" : factor.impact === "unknown" ? "amber" : "red", ui.label(factor.impact || "unknown")) + "</td><td>" + ui.escapeHtml(String(factor.confidence == null ? "n/a" : factor.confidence)) + "</td><td>" + ui.escapeHtml(factor.summary || "") + "</td><td>" + ui.escapeHtml(String((factor.evidence_refs || []).length)) + "</td></tr>";
+    }).join("");
+    if (!factorRows) factorRows = '<tr><td colspan="5"><div class="empty-inline">No deterministic runtime factors were produced.</div></td></tr>';
+    var podRows = pods.map(function (pod) {
+      return "<tr><td><strong>" + ui.escapeHtml(pod.name || "unknown") + "</strong></td><td>" + ui.escapeHtml(pod.phase || "Unknown") + "</td><td>" + ui.badge(pod.ready ? "green" : "red", pod.ready ? "Ready" : "Not ready") + "</td><td>" + ui.escapeHtml(String(pod.restarts || 0)) + "</td></tr>";
+    }).join("");
+    if (!podRows) podRows = '<tr><td colspan="4"><div class="empty-inline">No pod rows were returned by the current snapshot.</div></td></tr>';
+    var explanation = tab.safe_explanation
+      ? '<article class="content-block span-12"><p class="eyebrow">SIGMA 5 PRO / Bounded Runtime Explanation</p><p>' + ui.escapeHtml(tab.safe_explanation.content) + '</p><p class="muted">SIGMA explains supplied deterministic facts only. It cannot reclassify runtime risk or approve execution.</p></article>'
+      : "";
+    var historyMessage = data.historical_context_message || "Not Available: validated historical runtime-comparison APIs are not configured.";
+    return '<div class="notice runtime-authority">Rules-first and read-only. Runtime behavior can restrict execution eligibility but can never independently approve it.</div>'
+      + metricCards(tab.metrics || [])
+      + '<div class="drift-status-grid"><article class="drift-status-card"><span>Runtime risk</span><strong>' + ui.escapeHtml(ui.label(data.risk || "unknown")) + '</strong>' + ui.badge(tone(data.risk), data.risk || "unknown") + '</article><article class="drift-status-card"><span>Current health</span><strong>' + ui.escapeHtml(ui.label(health.status || "unknown")) + '</strong>' + ui.badge(tone(health.status), health.status || "unknown") + '</article><article class="drift-status-card"><span>Resource pressure</span><strong>' + ui.escapeHtml(ui.label(health.resource_pressure || "unknown")) + '</strong></article><article class="drift-status-card"><span>Confidence</span><strong>' + ui.escapeHtml(String(data.confidence == null ? "n/a" : data.confidence)) + '</strong><small>' + ui.escapeHtml(data.rules_version || "rules unavailable") + '</small></article></div>'
+      + explanation
+      + '<div class="content-grid tab-followup"><article class="content-block span-8"><h3>Current Signal Summary</h3><p>' + ui.escapeHtml(data.summary || "No summary returned.") + '</p><dl class="fact-list"><div><dt>Not-ready pods</dt><dd>' + Number(health.not_ready_pods || 0) + '</dd></div><div><dt>Restarting pods</dt><dd>' + Number(health.restarting_pods || 0) + '</dd></div><div><dt>Event anomalies</dt><dd>' + Number(health.event_anomalies || 0) + '</dd></div><div><dt>Execution effect</dt><dd>' + ui.escapeHtml(ui.label(data.execution_effect || "require_review")) + '</dd></div></dl></article><article class="content-block span-4"><h3>Historical Comparison</h3><p>' + ui.badge("amber", ui.label(data.historical_context_status || "not_available")) + '</p><p class="muted">' + ui.escapeHtml(historyMessage) + '</p></article></div>'
+      + '<div class="content-grid"><article class="content-block span-12"><h3>Deterministic Runtime Factors</h3><div class="table-scroll"><table><thead><tr><th>Factor</th><th>Impact</th><th>Confidence</th><th>Summary</th><th>Evidence</th></tr></thead><tbody>' + factorRows + '</tbody></table></div></article><article class="content-block span-12"><h3>Current Pod Health</h3><div class="table-scroll"><table><thead><tr><th>Pod</th><th>Phase</th><th>Readiness</th><th>Restarts</th></tr></thead><tbody>' + podRows + '</tbody></table></div></article></div>'
+      + '<div class="tab-toolbar"><span>Collected from namespace-scoped Kubernetes evidence; no browser-side risk inference.</span><button class="btn" type="button" data-refresh-runtime' + (canRefresh ? '' : ' disabled') + '>Refresh Runtime</button></div>';
   }
 
+  function renderReleaseNoteValidation(tab) {
+    var data = tab.data || {};
+    var counts = data.claim_counts || {};
+    var claims = Array.isArray(data.claims) ? data.claims : [];
+    var extraction = data.extraction || {};
+    function tone(value) {
+      if (value === "passed" || value === "supported") return "green";
+      if (value === "failed" || value === "contradicted") return "red";
+      return "amber";
+    }
+    var form = '<article class="content-block release-note-linker"><p class="eyebrow">Link Artifact</p><h3>Validate Release-note Markdown</h3><p>Paste the generated Markdown and provide its artifact ID. SIGMA extracts bounded claims; deterministic twin evidence classifies them.</p><div class="release-note-link-grid"><label class="field"><span>Artifact ID</span><input type="text" data-release-note-artifact-id maxlength="500" placeholder="art_release_note_..." value="' + ui.escapeHtml(data.release_note_artifact_id || "") + '"></label><label class="field release-note-content-field"><span>Release-note Markdown</span><textarea data-release-note-content maxlength="200000" placeholder="# Release notes&#10;&#10;## Configuration&#10;- Updated runtime configuration..."></textarea></label></div><div class="tab-toolbar"><span>Content is sent for bounded claim extraction and is not persisted by the twin. Hashes and safe claim summaries are persisted.</span><button class="btn primary" type="button" data-validate-release-note>Validate Artifact</button></div><p class="muted" data-release-note-status></p></article>';
+    if (!data.release_note_artifact_id) {
+      return '<div class="notice amber">Not Run. Link a release-note artifact to begin validation.</div>' + form + '<div class="notice runtime-authority">Editorial only. Validation cannot overwrite an artifact or change execution eligibility.</div>';
+    }
+    var rows = claims.map(function (item) {
+      return '<tr><td><strong>' + ui.escapeHtml(ui.label(item.category || "other")) + '</strong></td><td>' + ui.escapeHtml(item.claim || "") + '</td><td>' + ui.badge(tone(item.status), ui.label(item.status || "unknown")) + '</td><td>' + ui.escapeHtml(item.summary || "") + '</td><td>' + ui.escapeHtml(String((item.evidence_refs || []).length)) + '</td></tr>';
+    }).join("");
+    if (!rows) rows = '<tr><td colspan="5"><div class="empty-inline">No bounded claims were extracted.</div></td></tr>';
+    var missing = (data.missing_operational_notes || []).map(function (item) { return '<li>' + ui.escapeHtml(item) + '</li>'; }).join("") || '<li>No missing operational notes.</li>';
+    var corrections = (data.suggested_corrections || []).map(function (item) { return '<li>' + ui.escapeHtml(item) + '</li>'; }).join("") || '<li>No editorial corrections suggested.</li>';
+    return '<div class="notice ' + tone(data.status) + '">Validation ' + ui.escapeHtml(ui.label(data.status || "unknown")) + '. Editorial findings do not modify execution eligibility.</div>'
+      + metricCards(tab.metrics || [])
+      + '<div class="content-grid tab-followup"><article class="content-block span-8"><h3>Artifact</h3><dl class="fact-list"><div><dt>Artifact ID</dt><dd>' + ui.escapeHtml(data.release_note_artifact_id) + '</dd></div><div><dt>SHA-256</dt><dd>' + ui.escapeHtml((data.release_note_artifact_hash || "").slice(0, 24)) + '...</dd></div><div><dt>Validated</dt><dd>' + ui.escapeHtml(ui.formatDate(data.validated_at)) + '</dd></div><div><dt>Rules</dt><dd>' + ui.escapeHtml(data.rules_version || "unavailable") + '</dd></div></dl></article><article class="content-block span-4"><h3>Bounded Extraction</h3><p>' + ui.badge(extraction.fallback_used ? "amber" : "green", extraction.fallback_used ? "deterministic fallback" : "model extracted") + '</p><p>' + ui.escapeHtml(extraction.safe_summary || "No extraction summary.") + '</p><small>Prompt ' + ui.escapeHtml((extraction.prompt_hash || "").slice(0, 16) || "not available") + ' / Input ' + ui.escapeHtml((extraction.input_hash || "").slice(0, 16) || "not available") + '</small></article></div>'
+      + '<article class="content-block"><h3>Claim Map</h3><div class="table-scroll"><table><thead><tr><th>Category</th><th>Claim</th><th>Status</th><th>Deterministic assessment</th><th>Evidence</th></tr></thead><tbody>' + rows + '</tbody></table></div></article>'
+      + '<div class="content-grid"><article class="content-block span-6"><h3>Missing Operational Notes</h3><ul class="artifact-list">' + missing + '</ul></article><article class="content-block span-6"><h3>Suggested Corrections</h3><ul class="artifact-list">' + corrections + '</ul></article></div>'
+      + '<div class="notice runtime-authority">Automatic overwrite: disabled. Execution eligibility effect: none. The model extracts claims only; deterministic evidence retains classification authority.</div>'
+      + form;
+  }
   function renderAudit(tab) {
-    var pageSize = 20;
-    var start = auditPage * pageSize;
-    var events = tab.events.slice(start, start + pageSize);
-    return '<div class="tab-toolbar"><span>' + tab.total_events + ' immutable safe-summary events</span><div><button class="btn" type="button" data-copy-tab>Copy page</button></div></div><ol class="timeline">' + events.map(function (event) { return '<li id="' + ui.escapeHtml(event.event_id) + '" data-audit-event><time>' + ui.escapeHtml(ui.formatDate(event.created_at) + " · " + event.event_id) + '</time><button class="timeline-link" type="button" data-audit-modal="' + ui.escapeHtml(event.event_id) + '"><strong>' + ui.escapeHtml(ui.label(event.event_type)) + '</strong></button><p>' + ui.escapeHtml(event.summary) + " · actor " + ui.escapeHtml(event.actor) + '</p></li>'; }).join("") + '</ol><div class="table-footer"><span>Events ' + (start + 1) + '–' + Math.min(start + pageSize, tab.total_events) + ' of ' + tab.total_events + '</span><div class="pagination"><button class="btn" type="button" data-audit-page="previous"' + (auditPage === 0 ? " disabled" : "") + '>Previous</button><button class="btn" type="button" data-audit-page="next"' + (start + pageSize >= tab.total_events ? " disabled" : "") + ">Next</button></div></div>";
+    var events = Array.isArray(tab.events) ? tab.events : [];
+    var page = tab.page || {};
+    var report = tab.report || {};
+    var explanation = tab.safe_explanation && tab.safe_explanation.content
+      ? '<article class="content-block audit-executive"><p class="eyebrow">SIGMA 5 PRO Executive Summary</p><p>' + ui.escapeHtml(tab.safe_explanation.content) + '</p><small>Grounded in report ' + ui.escapeHtml(report.report_id || "not available") + '. Model authority: none.</small></article>'
+      : "";
+    var reportPanel = '<article class="content-block audit-report-card"><div><p class="eyebrow">Deterministic Report</p><h3>' + ui.escapeHtml(report.report_id || "Report not available") + '</h3><p>Decision ' + ui.badge(report.decision || "pending") + ' <span class="muted">Hash ' + ui.escapeHtml((report.report_hash || "").slice(0, 18) || "not available") + '</span></p></div><div class="action-row"><button class="btn" type="button" data-audit-download="json">Download JSON</button><button class="btn" type="button" data-audit-download="markdown">Download Markdown</button><button class="btn" type="button" data-copy-tab>Copy page</button></div></article>';
+    var rows = events.map(function (event) {
+      var actor = event.actor || {};
+      var hashes = Object.keys(event.hashes || {}).map(function (key) { return ui.label(key) + " " + String(event.hashes[key]).slice(0, 12); }).join(" · ");
+      var versions = Object.keys(event.versions || {}).map(function (key) { return ui.label(key) + " " + event.versions[key]; }).join(" · ");
+      return '<li id="' + ui.escapeHtml(event.event_id) + '" data-audit-event><time>' + ui.escapeHtml(ui.formatDate(event.created_at) + " · sequence " + event.sequence) + '</time><button class="timeline-link" type="button" data-audit-modal="' + ui.escapeHtml(event.event_id) + '"><strong>' + ui.escapeHtml(ui.label(event.event_type)) + '</strong></button><p>' + ui.badge(event.status || "completed") + ' <strong>' + ui.escapeHtml(ui.label(event.phase || "lifecycle")) + '</strong> · ' + ui.escapeHtml(event.safe_summary || "") + '</p><small>Actor ' + ui.escapeHtml(actor.display_name || actor.id || "execution-agent") + (hashes ? " · " + ui.escapeHtml(hashes) : "") + (versions ? " · " + ui.escapeHtml(versions) : "") + '</small></li>';
+    }).join("");
+    if (!rows) rows = '<li><p>No audit events were returned for this page.</p></li>';
+    var offset = Number(page.offset || 0);
+    var total = Number(page.result_count || tab.total_events || events.length);
+    return '<div class="notice runtime-authority">Append-only, redacted audit facts. Hidden model reasoning and Secret values are not stored in reports.</div>' + reportPanel + explanation + '<div class="tab-toolbar"><span>' + total + ' immutable safe-summary events</span></div><ol class="timeline">' + rows + '</ol><div class="table-footer"><span>Events ' + (events.length ? offset + 1 : 0) + '–' + (offset + events.length) + ' of ' + total + '</span><div class="pagination"><button class="btn" type="button" data-audit-page="previous"' + (auditCursorHistory.length ? "" : " disabled") + '>Previous</button><button class="btn" type="button" data-audit-page="next"' + (page.has_more ? "" : " disabled") + '>Next</button></div></div>';
   }
 
   function renderTab(tab) {
+    if (tab.kind === "release-note-validation") return renderReleaseNoteValidation(tab);
     if (tab.state !== "available") return unavailableView(tab);
     if (tab.kind === "overview") return renderOverview(tab);
     if (tab.kind === "delta") return renderDelta(tab);
@@ -435,7 +572,7 @@
       tab.tabIndex = selected ? 0 : -1;
     });
     panels.forEach(function (panel) { panel.hidden = panel.id !== "panel-" + slug; });
-    auditPage = slug === "audit" ? auditPage : 0;
+    if (slug !== "audit") { auditCursor = null; auditCursorHistory = []; }
     ui.updateUrl({ tab: slug, twin_id: twin.twin_id }, replace);
     var panel = document.getElementById("panel-" + slug);
     panel.dataset.loading = "true";
@@ -445,12 +582,10 @@
     if (slug === "dependency-graph") tabQuery = Object.assign({}, graphFilters);
     if (slug === "policy" && policyFilter !== "all") tabQuery = { effect: policyFilter === "block" ? "deny" : "approval_required" };
     if (slug === "dry-run") tabQuery = Object.assign({}, dryRunFilters);
+    if (slug === "audit") tabQuery = { cursor: auditCursor, limit: 25 };
     adapter.getTab(twin.twin_id, slug, twin.decision_version, tabQuery).then(function (tabData) {
-      if (slug === "audit" && ui.params().get("event")) {
-        var eventIndex = tabData.events.findIndex(function (item) { return item.event_id === ui.params().get("event"); });
-        if (eventIndex >= 0) auditPage = Math.floor(eventIndex / 20);
-      }
-      panel.innerHTML = '<div class="tab-intro"><div><p class="eyebrow">' + (tabData.non_authoritative ? "Mock / Non-authoritative Module" : "Real Evidence") + ' · ' + ui.escapeHtml(ui.label(tabData.state)) + '</p><h2>' + ui.escapeHtml(tabData.title) + '</h2><p>' + ui.escapeHtml(tabData.summary) + '</p></div>' + ui.badge(tabData.state) + '</div><div data-tab-content>' + renderTab(tabData) + '</div>';
+
+      panel.innerHTML = '<div class="tab-intro"><div><p class="eyebrow">' + (tabData.non_authoritative ? "Mock / Non-authoritative Module" : "Real Evidence") + ' - ' + ui.escapeHtml(ui.label(tabData.state)) + '</p><h2>' + ui.escapeHtml(tabData.title) + '</h2><p>' + ui.escapeHtml(tabData.summary) + '</p></div>' + ui.badge(tabData.state) + '</div><div data-tab-content>' + renderTab(tabData) + '</div>';
       panel._tabData = tabData;
       delete panel.dataset.loading;
       applyDeepLink(panel);
@@ -523,6 +658,30 @@
       var code = action.getAttribute("data-detail-action");
       var contract = actionsFor(twin).find(function (item) { return item.code === code; });
       if (!contract || !contract.enabled) return;
+      if (code === "refresh_runtime_behavior") {
+        adapter.refreshRuntimeBehavior(twin.twin_id).then(function () {
+          adapter.invalidateCache(twin.twin_id);
+          return adapter.getTwin(twin.twin_id);
+        }).then(function (item) {
+          renderTwin(item);
+          activateTab("runtime-behavior", false);
+        }).catch(function (error) {
+          ui.showModal({ title: "Runtime refresh failed", body: "<p>" + ui.escapeHtml(error.message) + "</p>" });
+        });
+        return;
+      }
+      if (code === "refresh_drift") {
+        adapter.refreshDrift(twin.twin_id).then(function () {
+          adapter.invalidateCache(twin.twin_id);
+          return adapter.getTwin(twin.twin_id);
+        }).then(function (item) {
+          renderTwin(item);
+          activateTab("drift", false);
+        }).catch(function (error) {
+          ui.showModal({ title: "Drift refresh failed", body: "<p>" + ui.escapeHtml(error.message) + "</p>" });
+        });
+        return;
+      }
       if (code === "regenerate_twin") ui.navigate(contract.href);
       if (code === "cancel_generation") adapter.cancelGeneration(twin.twin_id).then(renderTwin);
       if (code === "open_bundle") {
@@ -535,7 +694,68 @@
       if (code === "export_evidence") ui.navigate(contract.href);
       return;
     }
-    var jump = event.target.closest("[data-jump-tab]");
+    var refreshDrift = event.target.closest("[data-refresh-drift]");
+    if (refreshDrift && twin) {
+      var contract = actionsFor(twin).find(function (item) { return item.code === "refresh_drift"; });
+      if (contract && contract.enabled) {
+        adapter.refreshDrift(twin.twin_id).then(function () {
+          adapter.invalidateCache(twin.twin_id);
+          return adapter.getTwin(twin.twin_id);
+        }).then(function (item) {
+          renderTwin(item);
+          activateTab("drift", false);
+        }).catch(function (error) {
+          ui.showModal({ title: "Drift refresh failed", body: "<p>" + ui.escapeHtml(error.message) + "</p>" });
+        });
+      }
+      return;
+    }
+    var refreshRuntime = event.target.closest("[data-refresh-runtime]");
+    if (refreshRuntime && twin) {
+      var runtimeContract = actionsFor(twin).find(function (item) { return item.code === "refresh_runtime_behavior"; });
+      if (runtimeContract && runtimeContract.enabled) {
+        adapter.refreshRuntimeBehavior(twin.twin_id).then(function () {
+          adapter.invalidateCache(twin.twin_id);
+          return adapter.getTwin(twin.twin_id);
+        }).then(function (item) {
+          renderTwin(item);
+          activateTab("runtime-behavior", false);
+        }).catch(function (error) {
+          ui.showModal({ title: "Runtime refresh failed", body: "<p>" + ui.escapeHtml(error.message) + "</p>" });
+        });
+      }
+      return;
+    }    var validateReleaseNote = event.target.closest("[data-validate-release-note]");
+    if (validateReleaseNote && twin) {
+      var panel = document.getElementById("panel-release-note-validation");
+      var artifactInput = panel.querySelector("[data-release-note-artifact-id]");
+      var contentInput = panel.querySelector("[data-release-note-content]");
+      var statusNode = panel.querySelector("[data-release-note-status]");
+      var artifactId = artifactInput ? artifactInput.value.trim() : "";
+      var content = contentInput ? contentInput.value.trim() : "";
+      if (!artifactId || !content) {
+        if (statusNode) statusNode.textContent = "Artifact ID and release-note Markdown are required.";
+        return;
+      }
+      validateReleaseNote.disabled = true;
+      validateReleaseNote.textContent = "Validating...";
+      if (statusNode) statusNode.textContent = "Extracting bounded claims and matching deterministic twin evidence.";
+      adapter.validateReleaseNote(twin.twin_id, {
+        release_note_artifact_id: artifactId,
+        content: content
+      }).then(function () {
+        adapter.invalidateCache(twin.twin_id);
+        return adapter.getTwin(twin.twin_id);
+      }).then(function (item) {
+        renderTwin(item);
+        activateTab("release-note-validation", false);
+      }).catch(function (error) {
+        validateReleaseNote.disabled = false;
+        validateReleaseNote.textContent = "Validate Artifact";
+        if (statusNode) statusNode.textContent = error.message;
+      });
+      return;
+    }    var jump = event.target.closest("[data-jump-tab]");
     if (jump && twin) {
       ui.updateUrl({ finding: jump.getAttribute("data-jump-finding") || null, event: null }, true);
       activateTab(jump.getAttribute("data-jump-tab"), false);
@@ -606,7 +826,7 @@
       activateTab("dependency-graph", true);
     }
     var auditModal = event.target.closest("[data-audit-modal]");
-    if (auditModal) ui.showModal({ eyebrow: "Audit Event", title: auditModal.getAttribute("data-audit-modal"), body: '<div class="log-view">Safe event summary only.\nActor and correlation metadata are preserved.\nHidden model reasoning is not stored.</div>' });
+    if (auditModal) { var auditPanel = document.getElementById("panel-audit"); var auditEvent = ((auditPanel && auditPanel._tabData && auditPanel._tabData.events) || []).find(function (item) { return item.event_id === auditModal.getAttribute("data-audit-modal"); }); ui.showModal({ eyebrow: "Immutable Audit Event", title: auditModal.getAttribute("data-audit-modal"), body: '<div class="log-view">' + ui.escapeHtml(JSON.stringify(auditEvent || {}, null, 2)) + '</div>' }); }
     var graphMode = event.target.closest("[data-graph-mode]");
     if (graphMode) {
       var panel = document.getElementById("panel-dependency-graph");
@@ -645,10 +865,22 @@
       activateTab("dependency-graph", true);
     }
     var auditPager = event.target.closest("[data-audit-page]");
-    if (auditPager) {
-      auditPage = Math.max(0, auditPage + (auditPager.getAttribute("data-audit-page") === "next" ? 1 : -1));
+    if (auditPager && twin) {
       var auditPanel = document.getElementById("panel-audit");
-      auditPanel.querySelector("[data-tab-content]").innerHTML = renderAudit(auditPanel._tabData);
+      var auditData = auditPanel._tabData || {};
+      if (auditPager.getAttribute("data-audit-page") === "next" && auditData.page && auditData.page.next_cursor) {
+        auditCursorHistory.push(auditCursor);
+        auditCursor = auditData.page.next_cursor;
+      } else if (auditPager.getAttribute("data-audit-page") === "previous" && auditCursorHistory.length) {
+        auditCursor = auditCursorHistory.pop() || null;
+      }
+      activateTab("audit", true);
+      return;
+    }
+    var auditDownload = event.target.closest("[data-audit-download]");
+    if (auditDownload && twin) {
+      window.location.href = "/api/digital-twins/" + encodeURIComponent(twin.twin_id) + "/reports/" + encodeURIComponent(auditDownload.getAttribute("data-audit-download"));
+      return;
     }
     var copy = event.target.closest("[data-copy-tab]");
     if (copy) {

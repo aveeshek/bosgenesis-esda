@@ -234,6 +234,76 @@ class MopExecutionAgentClient:
             f"v1/namespace-twins/{quote(twin_id, safe='')}/dry-run",
             params=params,
         )
+
+    async def get_namespace_twin_rollback(
+        self,
+        twin_id: str,
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/rollback",
+        )
+
+    async def get_namespace_twin_drift(
+        self,
+        twin_id: str,
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/drift",
+        )
+
+    async def refresh_namespace_twin_drift(
+        self,
+        twin_id: str,
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/drift/refresh",
+            json_body={},
+        )
+
+    async def get_namespace_twin_runtime_behavior(
+        self,
+        twin_id: str,
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/runtime-behavior",
+        )
+
+    async def refresh_namespace_twin_runtime_behavior(
+        self,
+        twin_id: str,
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/runtime-behavior/refresh",
+            json_body={},
+        )
+
+    async def get_namespace_twin_release_note_validation(
+        self,
+        twin_id: str,
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/release-note-validation",
+        )
+
+    async def validate_namespace_twin_release_note(
+        self,
+        twin_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_id: str | None = None,
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/release-note-validation",
+            json_body=payload,
+            extra_headers={"x-esda-actor": actor_id} if actor_id else None,
+        )
     async def get_namespace_twin_actions(self, twin_id: str) -> MopExecutionAgentResponse:
         return await self._request("GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/actions")
 
@@ -243,6 +313,48 @@ class MopExecutionAgentClient:
         return await self._request(
             "GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/events", params=params
         )
+
+    async def get_namespace_twin_audit(
+        self, twin_id: str, params: dict[str, Any] | None = None
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/audit", params=params
+        )
+
+    async def get_namespace_twin_report(self, twin_id: str) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/reports/json"
+        )
+
+    async def download_namespace_twin_report(
+        self, twin_id: str, report_format: str
+    ) -> tuple[bytes, str, str]:
+        normalized = "markdown" if report_format in {"markdown", "md"} else "json"
+        url = urljoin(
+            self._base_url(),
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/reports/{normalized}",
+        )
+        headers = self._headers()
+        headers["accept"] = "text/markdown" if normalized == "markdown" else "application/json"
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout(), transport=self.transport
+            ) as client:
+                response = await client.get(url, headers=headers)
+            if response.status_code >= 400:
+                raise MopExecutionAgentError(
+                    method="GET",
+                    url=str(response.url),
+                    status_code=response.status_code,
+                    payload=self._response_payload(response),
+                )
+            extension = "md" if normalized == "markdown" else "json"
+            content_type = response.headers.get("content-type") or headers["accept"]
+            return response.content, content_type, f"{twin_id}-audit-report.{extension}"
+        except httpx.HTTPError as exc:
+            raise MopExecutionAgentError(
+                method="GET", url=url, status_code=None, payload=str(exc)
+            ) from exc
 
     async def cancel_namespace_twin(self, twin_id: str) -> MopExecutionAgentResponse:
         return await self._request(
@@ -471,6 +583,7 @@ class MopExecutionAgentClient:
         *,
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> MopExecutionAgentResponse:
         base_url = self._base_url()
         if not base_url:
@@ -492,8 +605,10 @@ class MopExecutionAgentClient:
             async with httpx.AsyncClient(
                 timeout=self._timeout(), transport=self.transport
             ) as client:
+                headers = self._headers()
+                headers.update(extra_headers or {})
                 response = await client.request(
-                    method, url, json=json_body, params=params, headers=self._headers()
+                    method, url, json=json_body, params=params, headers=headers
                 )
             payload = self._response_payload(response)
             redacted_response = self._redacted_payload(payload)

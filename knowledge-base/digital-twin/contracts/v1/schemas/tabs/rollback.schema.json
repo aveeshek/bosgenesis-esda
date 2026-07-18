@@ -8,24 +8,116 @@
   "required": ["data"],
   "properties": {
     "data": {
-      "type": ["object", "null"], "additionalProperties": false,
-      "required": ["confidence", "summary", "previous_helm_revision", "previous_artifacts_available", "machine_plan_steps", "pvc_data_reversibility", "non_reversible_changes", "runtime_rollback_proven", "manual_steps", "validation_checks", "evidence_refs", "artifacts"],
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "rule_version", "evaluated_at", "confidence", "confidence_score", "summary",
+        "rollback_defined", "rollback_proven", "coverage", "helm",
+        "previous_helm_revision", "previous_artifacts_available", "previous_artifacts",
+        "machine_plan_steps", "pvc_data_reversibility", "non_reversible_changes",
+        "runtime_rollback_proven", "proof", "gaps", "manual_steps",
+        "validation_checks", "evidence_refs", "artifacts", "model_authority"
+      ],
       "properties": {
-        "confidence": {"type": "string", "enum": ["high", "medium", "low", "unavailable", "pending"]},
+        "rule_version": {"type": "string", "minLength": 1, "maxLength": 200},
+        "evaluated_at": {"$ref": "../common.schema.json#/$defs/timestamp"},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low", "unavailable"]},
+        "confidence_score": {"type": "integer", "minimum": 0, "maximum": 100},
         "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "rollback_defined": {"type": "boolean"},
+        "rollback_proven": {"type": "boolean"},
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mutating_operations", "linked_operations", "coverage_percent", "unlinked_forward_step_ids"],
+          "properties": {
+            "mutating_operations": {"type": "integer", "minimum": 0},
+            "linked_operations": {"type": "integer", "minimum": 0},
+            "coverage_percent": {"type": "integer", "minimum": 0, "maximum": 100},
+            "unlinked_forward_step_ids": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/identifier"}}
+          }
+        },
+        "helm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required", "release_name", "current_revision", "previous_revision", "history_available", "provenance", "evidence_refs"],
+          "properties": {
+            "required": {"type": "boolean"},
+            "release_name": {"type": ["string", "null"], "maxLength": 253},
+            "current_revision": {"type": ["integer", "null"], "minimum": 1},
+            "previous_revision": {"type": ["integer", "null"], "minimum": 1},
+            "history_available": {"type": "boolean"},
+            "provenance": {"type": "string", "enum": ["bundle_metadata", "artifact_index", "not_available"]},
+            "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}}
+          }
+        },
         "previous_helm_revision": {"type": ["integer", "null"], "minimum": 1},
         "previous_artifacts_available": {"type": "boolean"},
-        "machine_plan_steps": {"type": "array", "items": {"type": "object", "required": ["step_id", "summary", "reversible"], "properties": {"step_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}, "reversible": {"type": "boolean"}}, "additionalProperties": false}},
+        "previous_artifacts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["manifests_available", "values_available", "manifest_paths", "values_paths", "provenance"],
+          "properties": {
+            "manifests_available": {"type": "boolean"},
+            "values_available": {"type": "boolean"},
+            "manifest_paths": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+            "values_paths": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+            "provenance": {"type": "string", "enum": ["bundle_artifact_index", "not_available"]}
+          }
+        },
+        "machine_plan_steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["step_id", "summary", "reversible", "forward_step_ids", "mechanism", "command_available", "dry_run_capable", "evidence_refs"],
+            "properties": {
+              "step_id": {"$ref": "../common.schema.json#/$defs/identifier"},
+              "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+              "reversible": {"type": "boolean"},
+              "forward_step_ids": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/identifier"}},
+              "mechanism": {"type": "string", "minLength": 1, "maxLength": 160},
+              "command_available": {"type": "boolean"},
+              "dry_run_capable": {"type": "boolean"},
+              "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}}
+            }
+          }
+        },
         "pvc_data_reversibility": {"type": "string", "enum": ["reversible", "conditional", "not_reversible", "unknown", "not_applicable"]},
         "non_reversible_changes": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/finding"}},
         "runtime_rollback_proven": {"type": "boolean"},
+        "proof": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "dry_run_job_id", "validated_step_ids", "evidence_refs", "summary"],
+          "properties": {
+            "status": {"type": "string", "enum": ["passed", "failed", "not_run"]},
+            "dry_run_job_id": {"$ref": "../common.schema.json#/$defs/nullableIdentifier"},
+            "validated_step_ids": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/identifier"}},
+            "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+            "summary": {"type": "string", "minLength": 1, "maxLength": 4000}
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "summary", "severity"],
+            "properties": {
+              "code": {"type": "string", "minLength": 1, "maxLength": 160},
+              "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+              "severity": {"$ref": "../common.schema.json#/$defs/severity"}
+            }
+          }
+        },
         "manual_steps": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 4000}},
         "validation_checks": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
         "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}},
-        "artifacts": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/artifact"}}
+        "artifacts": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/artifact"}},
+        "model_authority": {"const": false}
       }
     }
   },
   "unevaluatedProperties": false
 }
-

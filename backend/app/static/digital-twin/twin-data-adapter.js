@@ -35,6 +35,7 @@
     "getActiveTwin",
     "getTab",
     "getActions",
+    "refreshDrift",
     "startGeneration",
     "advanceGeneration",
     "regenerate",

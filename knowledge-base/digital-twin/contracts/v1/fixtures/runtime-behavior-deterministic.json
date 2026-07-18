@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0.0",
+  "twin_id": "twin_signal_scout_001",
+  "decision_version": 2,
+  "lifecycle_status": "amber",
+  "freshness": {
+    "status": "fresh",
+    "captured_at": "2026-07-17T14:52:00Z",
+    "expires_at": "2026-07-18T14:52:00Z",
+    "superseded_by": null,
+    "message": "Runtime behavior evidence is current."
+  },
+  "availability": {
+    "state": "available",
+    "message": "Rules-first current runtime evidence is available.",
+    "reason_code": null,
+    "retryable": false,
+    "last_attempt_at": "2026-07-17T14:52:00Z"
+  },
+  "data": {
+    "method": "rules_only",
+    "risk": "high",
+    "risk_score": 63,
+    "confidence": 0.95,
+    "current_health": {
+      "status": "unhealthy",
+      "not_ready_pods": 1,
+      "restarting_pods": 1,
+      "event_anomalies": 2,
+      "resource_pressure": "none"
+    },
+    "pod_details": [
+      {"name": "sample-app-7c9", "phase": "Running", "ready": false, "ready_value": "0/1", "restarts": 7}
+    ],
+    "recent_event_counts": {"total": 2, "warnings": 2, "crash_loop": 2, "image_pull": 0, "resource_pressure": 0},
+    "event_window_minutes": 60,
+    "factors": [
+      {
+        "factor_id": "runtime_pods_not_ready",
+        "title": "Pods are not ready",
+        "impact": "increases_risk",
+        "confidence": 0.95,
+        "summary": "1 pod is not ready: sample-app-7c9.",
+        "evidence_refs": [
+          {"evidence_id": "runtime_snapshot_signal_scout_001", "source_type": "live_snapshot", "source_id": "agent-testing", "summary": "Namespace-scoped pod and workload health snapshot.", "captured_at": "2026-07-17T14:52:00Z", "redacted": true, "href": null}
+        ]
+      }
+    ],
+    "historical_context_status": "not_available",
+    "historical_context_message": "Not Available: validated historical runtime-comparison APIs are not configured.",
+    "may_independently_approve": false,
+    "execution_effect": "force_amber",
+    "rules_version": "namespace-twin-runtime-behavior-1.0.0",
+    "captured_at": "2026-07-17T14:52:00Z",
+    "target_namespace": "agent-testing",
+    "namespace_summary": {"pods": 1},
+    "summary": "Current namespace health is unhealthy; deterministic runtime risk is high.",
+    "model_authority": false,
+    "assessment_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "evidence_refs": [
+      {"evidence_id": "runtime_snapshot_signal_scout_001", "source_type": "live_snapshot", "source_id": "agent-testing", "summary": "Namespace-scoped pod and workload health snapshot.", "captured_at": "2026-07-17T14:52:00Z", "redacted": true, "href": null}
+    ]
+  }
+}

@@ -8,21 +8,33 @@
   "required": ["data"],
   "properties": {
     "data": {
-      "type": ["object", "null"], "additionalProperties": false,
+      "type": ["object", "null"],
+      "additionalProperties": false,
       "required": ["method", "risk", "confidence", "current_health", "factors", "historical_context_status", "may_independently_approve", "rules_version", "evidence_refs"],
       "properties": {
         "method": {"type": "string", "enum": ["rules_only", "model_assisted"]},
         "risk": {"$ref": "../common.schema.json#/$defs/riskLevel"},
+        "risk_score": {"type": "integer", "minimum": 0, "maximum": 100},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "current_health": {"type": "object", "required": ["status", "not_ready_pods", "restarting_pods", "event_anomalies", "resource_pressure"], "properties": {"status": {"type": "string", "enum": ["healthy", "degraded", "unhealthy", "unknown"]}, "not_ready_pods": {"type": "integer", "minimum": 0}, "restarting_pods": {"type": "integer", "minimum": 0}, "event_anomalies": {"type": "integer", "minimum": 0}, "resource_pressure": {"type": "string", "enum": ["none", "low", "medium", "high", "unknown"]}}, "additionalProperties": false},
+        "pod_details": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["name", "phase", "ready", "ready_value", "restarts"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 500}, "phase": {"type": "string", "minLength": 1, "maxLength": 100}, "ready": {"type": "boolean"}, "ready_value": {"type": "string", "maxLength": 100}, "restarts": {"type": "integer", "minimum": 0}}}},
+        "recent_event_counts": {"type": "object", "additionalProperties": false, "required": ["total", "warnings", "crash_loop", "image_pull", "resource_pressure"], "properties": {"total": {"type": "integer", "minimum": 0}, "warnings": {"type": "integer", "minimum": 0}, "crash_loop": {"type": "integer", "minimum": 0}, "image_pull": {"type": "integer", "minimum": 0}, "resource_pressure": {"type": "integer", "minimum": 0}}},
+        "event_window_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
         "factors": {"type": "array", "items": {"type": "object", "required": ["factor_id", "title", "impact", "confidence", "summary", "evidence_refs"], "properties": {"factor_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "title": {"type": "string", "minLength": 1, "maxLength": 300}, "impact": {"type": "string", "enum": ["reduces_risk", "neutral", "increases_risk", "unknown"]}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}, "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}}, "additionalProperties": false}},
         "historical_context_status": {"type": "string", "enum": ["available", "partial", "not_available"]},
+        "historical_context_message": {"type": "string", "minLength": 1, "maxLength": 2000},
         "may_independently_approve": {"const": false},
+        "execution_effect": {"type": "string", "enum": ["force_red", "force_amber", "no_uplift", "require_review"]},
         "rules_version": {"type": "string", "minLength": 1, "maxLength": 200},
+        "captured_at": {"$ref": "../common.schema.json#/$defs/timestamp"},
+        "target_namespace": {"type": "string", "minLength": 1, "maxLength": 300},
+        "namespace_summary": {"type": "object"},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "model_authority": {"const": false},
+        "assessment_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
         "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}
       }
     }
   },
   "unevaluatedProperties": false
 }
-

@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0.0",
+  "report_type": "namespace_digital_twin_audit",
+  "renderer_version": "namespace_twin_report_v1",
+  "generated_at": "2026-07-13T14:59:00Z",
+  "twin": {"twin_id":"twin_signal_scout_001","display_name":"Signal Scout","target_namespace":"agent-testing"},
+  "decision": {"value":"green","version":1,"is_final":true,"lifecycle_status":"green"},
+  "versions": {"policy":"namespace_twin_policy_v1"},
+  "hashes": {"input":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "evidence_summary": {"resource_count":12,"policy_verdict":"allow","dry_run_status":"qualified"},
+  "timeline": [{
+    "event_id":"evt_twin_requested_001","twin_id":"twin_signal_scout_001","sequence":1,
+    "event_type":"twin_requested","phase":"intake","status":"completed",
+    "actor":{"type":"operator","id":"usr_admin","display_name":"admin"},
+    "safe_summary":"Namespace Readiness Twin generation was requested.","evidence_refs":[],
+    "hashes":{"input_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "versions":{"decision_version":1},"safe_links":[],"redacted":true,
+    "created_at":"2026-07-13T14:50:00Z"
+  }],
+  "safe_evidence_links": [{"format":"json","href":"/v1/namespace-twins/twin_signal_scout_001/reports/json"}],
+  "safety": {"redacted":true,"secret_values_included":false,"chain_of_thought_included":false,"model_authority":false},
+  "report_id": "twinreport_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "report_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

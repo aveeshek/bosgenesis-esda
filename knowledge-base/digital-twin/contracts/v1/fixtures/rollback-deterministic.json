@@ -1,0 +1,105 @@
+{
+    "schema_version": "1.0.0",
+    "twin_id": "twin_signal_scout_001",
+    "decision_version": 2,
+    "lifecycle_status": "amber",
+    "freshness": {
+        "status": "fresh",
+        "captured_at": "2026-07-16T14:52:00Z",
+        "expires_at": "2026-07-17T14:52:00Z",
+        "superseded_by": null,
+        "message": "Rollback evidence is inside the configured freshness window."
+    },
+    "availability": {
+        "state": "available",
+        "message": "Deterministic Rollback Twin facts are available.",
+        "reason_code": null,
+        "retryable": false,
+        "last_attempt_at": "2026-07-16T14:52:00Z"
+    },
+    "data": {
+        "rule_version": "namespace-twin-rollback-1.0.0",
+        "evaluated_at": "2026-07-16T14:52:00Z",
+        "confidence": "medium",
+        "confidence_score": 79,
+        "summary": "Rollback confidence is medium. Plan coverage is 100%. Rollback is defined and not proven at runtime.",
+        "rollback_defined": true,
+        "rollback_proven": false,
+        "coverage": {
+            "mutating_operations": 1,
+            "linked_operations": 1,
+            "coverage_percent": 100,
+            "unlinked_forward_step_ids": []
+        },
+        "helm": {
+            "required": false,
+            "release_name": null,
+            "current_revision": null,
+            "previous_revision": null,
+            "history_available": false,
+            "provenance": "not_available",
+            "evidence_refs": []
+        },
+        "previous_helm_revision": null,
+        "previous_artifacts_available": true,
+        "previous_artifacts": {
+            "manifests_available": true,
+            "values_available": false,
+            "manifest_paths": [
+                "previous/configmap-sample-app.yaml"
+            ],
+            "values_paths": [],
+            "provenance": "bundle_artifact_index"
+        },
+        "machine_plan_steps": [
+            {
+                "step_id": "rollback-sample-configmap",
+                "summary": "Restore previous sample ConfigMap",
+                "reversible": true,
+                "forward_step_ids": [
+                    "apply-sample-configmap"
+                ],
+                "mechanism": "previous_manifest_reapply",
+                "command_available": true,
+                "dry_run_capable": true,
+                "evidence_refs": []
+            }
+        ],
+        "pvc_data_reversibility": "not_applicable",
+        "non_reversible_changes": [],
+        "runtime_rollback_proven": false,
+        "proof": {
+            "status": "not_run",
+            "dry_run_job_id": null,
+            "validated_step_ids": [],
+            "evidence_refs": [],
+            "summary": "No rollback-specific authoritative dry-run or execution evidence is attached."
+        },
+        "gaps": [
+            {
+                "code": "ROLLBACK_NOT_PROVEN",
+                "summary": "Rollback is not proven by authoritative rollback-specific dry-run or execution evidence.",
+                "severity": "medium"
+            }
+        ],
+        "manual_steps": [
+            "Review and resolve every rollback evidence gap before autonomous execution."
+        ],
+        "validation_checks": [
+            "Verify target resources return to the expected previous state."
+        ],
+        "evidence_refs": [
+            {
+                "evidence_id": "rollback_machine_plan",
+                "source_type": "bundle",
+                "source_id": "machine_execution_plan.yaml",
+                "summary": "Machine plan rollback and forward operations were parsed.",
+                "captured_at": "2026-07-16T14:52:00Z",
+                "redacted": true,
+                "href": null
+            }
+        ],
+        "artifacts": [],
+        "model_authority": false
+    }
+}

@@ -557,63 +557,63 @@ Approval note: the three unchecked items are human sign-offs and are intentional
 
 ### Slice 5F: Rollback Twin
 
-- [ ] Parse rollback steps and link them to forward operations.
-- [ ] Collect Helm revision/provenance evidence.
-- [ ] Assess previous manifests/values availability.
-- [ ] Assess PVC/data reversibility and non-reversible changes.
-- [ ] Calculate deterministic High, Medium, Low, or Unavailable confidence.
-- [ ] Implement real rollback API and evidence links.
-- [ ] Switch Rollback tab from mock to real.
-- [ ] Add server-side SIGMA 5 PRO explanation of rollback gaps and operator review items.
-- [ ] Distinguish defined rollback from proven rollback.
+- [x] Parse rollback steps and link them to forward operations.
+- [x] Collect Helm revision/provenance evidence.
+- [x] Assess previous manifests/values availability.
+- [x] Assess PVC/data reversibility and non-reversible changes.
+- [x] Calculate deterministic High, Medium, Low, or Unavailable confidence.
+- [x] Implement real rollback API and evidence links.
+- [x] Switch Rollback tab from mock to real.
+- [x] Add server-side SIGMA 5 PRO explanation of rollback gaps and operator review items.
+- [x] Distinguish defined rollback from proven rollback.
 - [ ] Obtain user acceptance before Slice 5G.
 
 ### Slice 5G: Drift Twin
 
-- [ ] Implement mandatory baseline snapshot hash, capture time, and freshness evaluation.
-- [ ] Implement read-only current-state comparison.
-- [ ] Classify none, minor, major, and critical drift with versioned rules.
-- [ ] Detect spec, policy-boundary, target, Helm revision, and safety-control drift.
-- [ ] Invalidate or supersede decisions after material drift.
-- [ ] Implement real drift API and Refresh Drift authorization.
-- [ ] Switch Drift tab from mock to real.
-- [ ] Add server-side SIGMA 5 PRO explanation of material drift using structured changed-resource facts.
+- [x] Implement mandatory baseline snapshot hash, capture time, and freshness evaluation.
+- [x] Implement read-only current-state comparison.
+- [x] Classify none, minor, major, and critical drift with versioned rules.
+- [x] Detect spec, policy-boundary, target, Helm revision, and safety-control drift.
+- [x] Invalidate or supersede decisions after material drift.
+- [x] Implement real drift API and Refresh Drift authorization.
+- [x] Switch Drift tab from mock to real.
+- [x] Add server-side SIGMA 5 PRO explanation of material drift using structured changed-resource facts.
 - [ ] Obtain user acceptance before Slice 5H.
 
 ### Slice 5H: Runtime Behavior Twin, Rules First
 
-- [ ] Collect current namespace health, not-ready/restarting pods, recent events, and resource pressure.
-- [ ] Implement explainable deterministic runtime-risk rules.
-- [ ] Mark historical comparison as Not Available until validated history APIs exist.
-- [ ] Implement real runtime-risk API with provenance and confidence.
-- [ ] Switch Runtime Behavior tab from mock to real rules-first mode.
-- [ ] Add server-side SIGMA 5 PRO explanation of current runtime signals.
-- [ ] Prevent runtime risk from independently approving execution.
+- [x] Collect current namespace health, not-ready/restarting pods, recent events, and resource pressure.
+- [x] Implement explainable deterministic runtime-risk rules.
+- [x] Mark historical comparison as Not Available until validated history APIs exist.
+- [x] Implement real runtime-risk API with provenance and confidence.
+- [x] Switch Runtime Behavior tab from mock to real rules-first mode.
+- [x] Add server-side SIGMA 5 PRO explanation of current runtime signals.
+- [x] Prevent runtime risk from independently approving execution.
 - [ ] Obtain user acceptance before Slice 5I.
 
 ### Slice 5I: Audit Timeline and Reports
 
-- [ ] Persist append-only twin lifecycle and operator events.
-- [ ] Implement cursor-paginated audit API.
-- [ ] Include actors, timestamps, phases, statuses, hashes, versions, and safe evidence links.
-- [ ] Generate deterministic JSON report.
-- [ ] Generate Markdown from the same structured report model.
-- [ ] Verify JSON and Markdown decisions match exactly.
-- [ ] Switch Audit Timeline and report downloads from mock to real.
-- [ ] Add server-side SIGMA 5 PRO executive summary grounded in the immutable report.
-- [ ] Verify reports and explanations contain no Secret values.
+- [x] Persist append-only twin lifecycle and operator events.
+- [x] Implement cursor-paginated audit API.
+- [x] Include actors, timestamps, phases, statuses, hashes, versions, and safe evidence links.
+- [x] Generate deterministic JSON report.
+- [x] Generate Markdown from the same structured report model.
+- [x] Verify JSON and Markdown decisions match exactly.
+- [x] Switch Audit Timeline and report downloads from mock to real.
+- [x] Add server-side SIGMA 5 PRO executive summary grounded in the immutable report.
+- [x] Verify reports and explanations contain no Secret values.
 - [ ] Obtain user acceptance before optional slices or execution gate.
 
 ### Slice 5J: Release Note Validation Twin
 
-- [ ] Keep the tab `Not Run` until a release-note artifact is linked.
-- [ ] Extract claims through a bounded server-side model prompt when enabled.
-- [ ] Match claims against deterministic bundle, delta, policy, dry-run, rollback, and runtime evidence.
-- [ ] Classify claims as supported, unsupported, contradicted, or missing.
-- [ ] Persist prompt/model/input hashes and safe claim summaries.
-- [ ] Implement real release-note-validation API.
-- [ ] Switch the tab from mock only after contract tests pass.
-- [ ] Keep editorial suggestions separate from execution eligibility.
+- [x] Keep the tab `Not Run` until a release-note artifact is linked.
+- [x] Extract claims through a bounded server-side model prompt when enabled.
+- [x] Match claims against deterministic bundle, delta, policy, dry-run, rollback, and runtime evidence.
+- [x] Classify claims as supported, unsupported, contradicted, or missing.
+- [x] Persist prompt/model/input hashes and safe claim summaries.
+- [x] Implement real release-note-validation API.
+- [x] Switch the tab from mock only after contract tests pass.
+- [x] Keep editorial suggestions separate from execution eligibility.
 
 ### Slice 5K: MoP Replay Twin, Optional and Last
 

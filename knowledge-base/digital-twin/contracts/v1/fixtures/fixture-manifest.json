@@ -1,14 +1,57 @@
 {
-  "contract_version": "1.0.0",
-  "fixtures": [
-    {"fixture": "list-green.json", "schema": "../schemas/twin-list.schema.json"},
-    {"fixture": "detail-amber.json", "schema": "../schemas/twin-detail.schema.json"},
-    {"fixture": "actions-amber.json", "schema": "../schemas/action-eligibility.schema.json"},
-    {"fixture": "safe-explanation.json", "schema": "../schemas/safe-explanation.schema.json"},
-    {"fixture": "overview-green.json", "schema": "../schemas/tabs/overview.schema.json"},
-    {"fixture": "dry-run-authoritative.json", "schema": "../schemas/tabs/dry-run.schema.json"},
-    {"fixture": "mop-replay-not-run.json", "schema": "../schemas/tabs/mop-replay.schema.json"},
-    {"fixture": "audit-timeline.json", "schema": "../schemas/tabs/audit-timeline.schema.json"}
-  ]
+    "contract_version":  "1.0.0",
+    "fixtures":  [
+                     {
+                         "fixture":  "list-green.json",
+                         "schema":  "../schemas/twin-list.schema.json"
+                     },
+                     {
+                         "fixture":  "detail-amber.json",
+                         "schema":  "../schemas/twin-detail.schema.json"
+                     },
+                     {
+                         "fixture":  "actions-amber.json",
+                         "schema":  "../schemas/action-eligibility.schema.json"
+                     },
+                     {
+                         "fixture":  "safe-explanation.json",
+                         "schema":  "../schemas/safe-explanation.schema.json"
+                     },
+                     {
+                         "fixture":  "overview-green.json",
+                         "schema":  "../schemas/tabs/overview.schema.json"
+                     },
+                     {
+                         "fixture":  "dry-run-authoritative.json",
+                         "schema":  "../schemas/tabs/dry-run.schema.json"
+                     },
+                     {
+                         "fixture":  "mop-replay-not-run.json",
+                         "schema":  "../schemas/tabs/mop-replay.schema.json"
+                     },
+                     {
+                         "fixture":  "audit-timeline.json",
+                         "schema":  "../schemas/tabs/audit-timeline.schema.json"
+                     },
+                     {
+                         "fixture":  "rollback-deterministic.json",
+                         "schema":  "../schemas/tabs/rollback.schema.json"
+                     },
+                     {
+                         "fixture":  "drift-deterministic.json",
+                         "schema":  "../schemas/tabs/drift.schema.json"
+                     },
+                     {
+                         "fixture":  "runtime-behavior-deterministic.json",
+                         "schema":  "../schemas/tabs/runtime-behavior.schema.json"
+                     },
+                     {
+                         "fixture":  "namespace-twin-report.json",
+                         "schema":  "../schemas/namespace-twin-report.schema.json"
+                     },
+                     {
+                         "fixture":  "release-note-validation-deterministic.json",
+                         "schema":  "../schemas/tabs/release-note-validation.schema.json"
+                     }
+                 ]
 }
-

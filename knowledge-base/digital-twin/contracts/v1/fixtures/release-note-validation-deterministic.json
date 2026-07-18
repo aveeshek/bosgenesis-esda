@@ -1,0 +1,103 @@
+{
+  "schema_version": "1.0.0",
+  "twin_id": "twin_signal_scout_001",
+  "decision_version": 2,
+  "lifecycle_status": "amber",
+  "freshness": {
+    "status": "fresh",
+    "captured_at": "2026-07-18T14:52:00Z",
+    "expires_at": "2026-07-19T14:52:00Z",
+    "superseded_by": null,
+    "message": "Release-note validation facts are current."
+  },
+  "availability": {
+    "state": "available",
+    "message": "Deterministic release-note claim validation is available.",
+    "reason_code": null,
+    "retryable": false,
+    "last_attempt_at": "2026-07-18T14:52:00Z"
+  },
+  "data": {
+    "status": "warning",
+    "release_note_artifact_id": "art_release_note_signal_scout_001",
+    "release_note_artifact_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "validated_at": "2026-07-18T14:52:00Z",
+    "rules_version": "namespace-twin-release-note-validation-1.0.0",
+    "claims": [
+      {
+        "claim_id": "rnclaim_supported_config",
+        "category": "configuration",
+        "claim": "Runtime configuration was updated.",
+        "status": "supported",
+        "summary": "Deterministic configuration evidence supports this claim.",
+        "evidence_refs": [
+          {
+            "evidence_id": "rnevidence_config_delta",
+            "source_type": "bundle",
+            "source_id": "source_config_delta",
+            "summary": "update ConfigMap sample-config (medium risk).",
+            "captured_at": "2026-07-18T14:52:00Z",
+            "redacted": true,
+            "href": null
+          }
+        ]
+      },
+      {
+        "claim_id": "rnclaim_missing_rollback",
+        "category": "rollback",
+        "claim": "Release notes do not document deterministic rollback evidence.",
+        "status": "missing",
+        "summary": "Operational rollback evidence exists but is absent from the artifact.",
+        "evidence_refs": [
+          {
+            "evidence_id": "rnevidence_rollback",
+            "source_type": "report",
+            "source_id": "source_rollback",
+            "summary": "Deterministic rollback evidence is available.",
+            "captured_at": "2026-07-18T14:52:00Z",
+            "redacted": true,
+            "href": null
+          }
+        ]
+      }
+    ],
+    "claim_counts": {"supported": 1, "unsupported": 0, "contradicted": 0, "missing": 1},
+    "missing_operational_notes": ["Release notes do not document deterministic rollback evidence."],
+    "suggested_corrections": ["Add an operational note for rollback."],
+    "automatic_overwrite_allowed": false,
+    "execution_eligibility_effect": "none",
+    "editorial_only": true,
+    "extraction": {
+      "method": "bounded_model_with_deterministic_fallback",
+      "model_profile": "azure_gpt5_pro",
+      "prompt_version": "namespace_twin_release_note_claim_extraction_v1",
+      "prompt_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "input_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "fallback_used": false,
+      "safe_summary": "Extracted one bounded operational claim; deterministic twin evidence retains classification authority.",
+      "chain_of_thought_included": false,
+      "model_authority": false
+    },
+    "evidence_refs": [
+      {
+        "evidence_id": "rnevidence_config_delta",
+        "source_type": "bundle",
+        "source_id": "source_config_delta",
+        "summary": "update ConfigMap sample-config (medium risk).",
+        "captured_at": "2026-07-18T14:52:00Z",
+        "redacted": true,
+        "href": null
+      },
+      {
+        "evidence_id": "rnevidence_rollback",
+        "source_type": "report",
+        "source_id": "source_rollback",
+        "summary": "Deterministic rollback evidence is available.",
+        "captured_at": "2026-07-18T14:52:00Z",
+        "redacted": true,
+        "href": null
+      }
+    ],
+    "validation_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  }
+}

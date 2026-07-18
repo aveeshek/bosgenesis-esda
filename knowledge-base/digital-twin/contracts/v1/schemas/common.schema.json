@@ -15,7 +15,7 @@
         "requested", "bundle_validating", "normalizing", "snapshot_collecting", "rendering",
         "graph_building", "diffing", "policy_checking", "awaiting_dry_run",
         "dry_run_evidence_attached", "decision_calculating", "green", "amber", "red",
-        "failed", "cancelled"
+        "failed", "cancelled", "expired", "superseded"
       ]
     },
     "visibleLifecycle": {

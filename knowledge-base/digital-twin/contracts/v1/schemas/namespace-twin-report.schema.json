@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bosgenesis.local/contracts/digital-twin/v1/namespace-twin-report.schema.json",
+  "title": "Deterministic Namespace Digital Twin Audit Report",
+  "x-contract-version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version","report_type","renderer_version","generated_at","twin","decision","versions","hashes","evidence_summary","timeline","safe_evidence_links","safety","report_id","report_hash"],
+  "properties": {
+    "schema_version": {"$ref": "common.schema.json#/$defs/schemaVersion"},
+    "report_type": {"const": "namespace_digital_twin_audit"},
+    "renderer_version": {"const": "namespace_twin_report_v1"},
+    "generated_at": {"$ref": "common.schema.json#/$defs/timestamp"},
+    "twin": {"type": "object"},
+    "decision": {
+      "type": "object",
+      "required": ["value","version","is_final","lifecycle_status"],
+      "properties": {
+        "value": {"type": "string"},
+        "version": {"type": "integer","minimum": 0},
+        "is_final": {"type": "boolean"},
+        "lifecycle_status": {"type": "string"}
+      }
+    },
+    "versions": {"type": "object"},
+    "hashes": {"type": "object"},
+    "evidence_summary": {"type": "object"},
+    "timeline": {"type": "array","items":{"$ref": "event-timeline.schema.json#/$defs/event"}},
+    "safe_evidence_links": {"type": "array","items":{"type": "object"}},
+    "safety": {
+      "type": "object",
+      "required": ["redacted","secret_values_included","chain_of_thought_included","model_authority"],
+      "properties": {
+        "redacted": {"const": true},
+        "secret_values_included": {"const": false},
+        "chain_of_thought_included": {"const": false},
+        "model_authority": {"const": false}
+      }
+    },
+    "report_id": {"$ref": "common.schema.json#/$defs/identifier"},
+    "report_hash": {"type": "string","pattern": "^[a-f0-9]{64}$"}
+  }
+}

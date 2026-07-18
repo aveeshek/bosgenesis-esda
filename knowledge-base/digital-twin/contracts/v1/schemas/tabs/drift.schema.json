@@ -8,19 +8,115 @@
   "required": ["data"],
   "properties": {
     "data": {
-      "type": ["object", "null"], "additionalProperties": false,
-      "required": ["status", "snapshot", "current_capture", "freshness_threshold_seconds", "changes", "helm_revision_drift", "manual_patch_indicators", "health_changes", "execution_disabled", "rules_version"],
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "status", "snapshot", "baseline", "current_capture",
+        "freshness_threshold_seconds", "freshness", "changes", "change_counts",
+        "helm_revision_drift", "manual_patch_indicators", "health_changes",
+        "material", "execution_disabled", "decision_invalidated", "rules_version",
+        "model_authority", "summary", "evidence_refs"
+      ],
       "properties": {
         "status": {"type": "string", "enum": ["pending", "none", "minor", "major", "critical", "unknown"]},
-        "snapshot": {"type": "object", "required": ["captured_at", "hash"], "properties": {"captured_at": {"$ref": "../common.schema.json#/$defs/timestamp"}, "hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}}, "additionalProperties": false},
-        "current_capture": {"type": "object", "required": ["captured_at", "hash"], "properties": {"captured_at": {"$ref": "../common.schema.json#/$defs/timestamp"}, "hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}}, "additionalProperties": false},
+        "snapshot": {"$ref": "#/$defs/snapshotIdentity"},
+        "baseline": {"$ref": "#/$defs/capture"},
+        "current_capture": {"$ref": "#/$defs/capture"},
         "freshness_threshold_seconds": {"type": "integer", "minimum": 1},
-        "changes": {"type": "array", "items": {"type": "object", "required": ["change_id", "resource_identity", "change_type", "classification", "summary", "evidence_refs"], "properties": {"change_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "resource_identity": {"$ref": "../common.schema.json#/$defs/identifier"}, "change_type": {"type": "string", "enum": ["created", "updated", "deleted", "status_only", "helm_revision", "manual_patch", "health"]}, "classification": {"type": "string", "enum": ["minor", "major", "critical", "unknown"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}, "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}}, "additionalProperties": false}},
+        "freshness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "age_seconds"],
+          "properties": {
+            "status": {"type": "string", "enum": ["fresh", "stale"]},
+            "age_seconds": {"type": "integer", "minimum": 0}
+          }
+        },
+        "changes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/change"}
+        },
+        "change_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total", "minor", "major", "critical", "unknown"],
+          "properties": {
+            "total": {"type": "integer", "minimum": 0},
+            "minor": {"type": "integer", "minimum": 0},
+            "major": {"type": "integer", "minimum": 0},
+            "critical": {"type": "integer", "minimum": 0},
+            "unknown": {"type": "integer", "minimum": 0}
+          }
+        },
         "helm_revision_drift": {"type": "boolean"},
         "manual_patch_indicators": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
-        "health_changes": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
+        "health_changes": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 4000}},
+        "material": {"type": "boolean"},
         "execution_disabled": {"type": "boolean"},
-        "rules_version": {"type": "string", "minLength": 1, "maxLength": 200}
+        "decision_invalidated": {"type": "boolean"},
+        "rules_version": {"type": "string", "minLength": 1, "maxLength": 200},
+        "model_authority": {"const": false},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}}
+      }
+    }
+  },
+  "$defs": {
+    "snapshotIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["captured_at", "hash"],
+      "properties": {
+        "captured_at": {"$ref": "../common.schema.json#/$defs/timestamp"},
+        "hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["captured_at", "hash", "available", "resource_count", "complete_kinds", "warning"],
+      "properties": {
+        "captured_at": {"$ref": "../common.schema.json#/$defs/timestamp"},
+        "hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+        "available": {"type": "boolean"},
+        "resource_count": {"type": "integer", "minimum": 0},
+        "complete_kinds": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+        "warning": {"type": ["string", "null"], "maxLength": 4000}
+      }
+    },
+    "axes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec", "policy_boundary", "target", "helm_revision", "safety_control", "manual_patch"],
+      "properties": {
+        "spec": {"type": "boolean"},
+        "policy_boundary": {"type": "boolean"},
+        "target": {"type": "boolean"},
+        "helm_revision": {"type": "boolean"},
+        "safety_control": {"type": "boolean"},
+        "manual_patch": {"type": "boolean"}
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "change_id", "resource_identity", "kind", "namespace", "name", "change_type",
+        "classification", "summary", "axes", "before_hash", "after_hash", "evidence_refs"
+      ],
+      "properties": {
+        "change_id": {"$ref": "../common.schema.json#/$defs/identifier"},
+        "resource_identity": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "kind": {"type": "string", "minLength": 1, "maxLength": 200},
+        "namespace": {"type": ["string", "null"], "maxLength": 253},
+        "name": {"type": ["string", "null"], "maxLength": 253},
+        "change_type": {"type": "string", "enum": ["created", "updated", "deleted", "status_only", "helm_revision", "manual_patch", "health"]},
+        "classification": {"type": "string", "enum": ["minor", "major", "critical", "unknown"]},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "axes": {"$ref": "#/$defs/axes"},
+        "before_hash": {"type": ["string", "null"], "pattern": "^[a-fA-F0-9]{64}$"},
+        "after_hash": {"type": ["string", "null"], "pattern": "^[a-fA-F0-9]{64}$"},
+        "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}
       }
     }
   },

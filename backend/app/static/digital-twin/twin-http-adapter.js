@@ -152,6 +152,9 @@
         key: "tab"
       });
   };
+  HttpTwinAdapter.prototype.refreshDrift = function (twinId) { return this._request("POST", "/" + encodeURIComponent(twinId) + "/drift/refresh", { body: {}, key: "drift:" + twinId }); };
+  HttpTwinAdapter.prototype.refreshRuntimeBehavior = function (twinId) { return this._request("POST", "/" + encodeURIComponent(twinId) + "/runtime-behavior/refresh", { body: {}, key: "runtime:" + twinId }); };
+  HttpTwinAdapter.prototype.validateReleaseNote = function (twinId, payload) { payload = Object.assign({}, payload || {}, { model_profile: selectedModelProfile() }); return this._request("POST", "/" + encodeURIComponent(twinId) + "/release-note-validation", { body: payload, key: "release-note-validation:" + twinId }); };
   HttpTwinAdapter.prototype.getActions = function (twinId) { return this._request("GET", "/" + encodeURIComponent(twinId) + "/actions", { key: "actions:" + twinId }); };
   HttpTwinAdapter.prototype.startGeneration = function (scenarioId) { return this._request("POST", "", { body: { scenario_id: scenarioId }, key: "generate" }); };
   HttpTwinAdapter.prototype.advanceGeneration = function (twinId) { return this._request("POST", "/" + encodeURIComponent(twinId) + "/advance", { key: "advance:" + twinId }); };

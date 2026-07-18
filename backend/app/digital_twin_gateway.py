@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from uuid import uuid4
 from copy import deepcopy
@@ -13,6 +14,7 @@ from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from backend.app.auth.security import SessionPrincipal
 from backend.app.db.database import Database
 from backend.app.db.models import DigitalTwinExplanationLog
 from backend.app.llm.azure_gpt5 import AzureGpt5Service
@@ -63,6 +65,11 @@ class RealTwinDryRunEvidenceRequest(BaseModel):
     wait_seconds: int = Field(default=0, ge=0, le=30)
     poll_interval_ms: int = Field(default=500, ge=100, le=5000)
 
+
+class RealTwinReleaseNoteValidationRequest(BaseModel):
+    release_note_artifact_id: str = Field(min_length=1, max_length=500)
+    content: str = Field(min_length=1, max_length=200000)
+    model_profile: str | None = Field(default=None, max_length=200)
 
 class DigitalTwinGatewayService:
     """Projects execution-agent facts without becoming decision authority."""
@@ -174,6 +181,133 @@ class DigitalTwinGatewayService:
     async def cancel(self, twin_id: str) -> dict[str, Any]:
         return self.project(self._unwrap(await self.client.cancel_namespace_twin(twin_id)))
 
+    async def refresh_drift(self, twin_id: str) -> dict[str, Any]:
+        return self._unwrap(await self.client.refresh_namespace_twin_drift(twin_id))
+
+    async def refresh_runtime_behavior(self, twin_id: str) -> dict[str, Any]:
+        return self._unwrap(await self.client.refresh_namespace_twin_runtime_behavior(twin_id))
+
+    async def validate_release_note(
+        self,
+        twin_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """Extract bounded claims with SIGMA, then delegate classification authority."""
+        twin = await self.get(twin_id)
+        artifact_id = str(payload.get("release_note_artifact_id") or "").strip()
+        content = str(payload.get("content") or "")
+        model_profile = str(payload.get("model_profile") or "azure_gpt5_pro")
+        artifact_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        prompt_version = "namespace_twin_release_note_claim_extraction_v1"
+        input_envelope = {
+            "twin_id": twin_id,
+            "artifact_id": artifact_id,
+            "artifact_hash": artifact_hash,
+            "release_note_markdown": content,
+            "allowed_categories": [
+                "image", "configuration", "migration", "pvc_storage", "rbac", "route",
+                "rollback", "breaking_change", "known_risk", "other",
+            ],
+        }
+        input_hash = hashlib.sha256(
+            json.dumps(
+                {key: value for key, value in input_envelope.items() if key != "release_note_markdown"},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        system = (
+            "Extract bounded operational claims from the supplied release-note Markdown. "
+            "Return JSON with a claims array only. Each item must contain category and claim. "
+            "Use only the allowed categories. Preserve negation because deterministic code must "
+            "detect contradictions. Do not classify support, infer evidence, edit the artifact, "
+            "include credentials or Secret values, reveal hidden chain-of-thought, or decide "
+            "execution eligibility. Return at most 100 concise claims."
+        )
+        prompt_hash = hashlib.sha256((system + input_hash).encode("utf-8")).hexdigest()
+        fallback_claims = _release_note_fallback_claims(content)
+        fallback = {
+            "claims": fallback_claims,
+            "model_profile": model_profile,
+            "llm_fallback": {"used": True, "error": None},
+        }
+        started = time.perf_counter()
+        generated = (
+            fallback
+            if self.llm is None
+            else await self.llm.structured_response(
+                system=system,
+                user_payload=input_envelope,
+                fallback=fallback,
+                model_profile=model_profile,
+            )
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        claims = _sanitize_release_note_claims(generated.get("claims"))
+        if not claims:
+            claims = fallback_claims
+        fallback_used = bool((generated.get("llm_fallback") or {}).get("used"))
+        token_usage = generated.get("token_usage") or {}
+        safe_summary = (
+            f"Extracted {len(claims)} bounded operational claim(s); deterministic twin "
+            "evidence retains classification and execution authority."
+        )
+        safe_output = {
+            "schema_version": "1.0.0",
+            "explanation_id": f"twinexp_{uuid4().hex}",
+            "status": "fallback" if fallback_used else "generated",
+            "model_profile": generated.get("model_profile") or model_profile,
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "input_hash": input_hash,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "format": "plain_text",
+            "content": safe_summary,
+            "evidence_refs": [],
+            "fallback_reason": (
+                str((generated.get("llm_fallback") or {}).get("error"))[:1000]
+                if (generated.get("llm_fallback") or {}).get("error")
+                else None
+            ),
+            "latency_ms": latency_ms,
+            "input_tokens": token_usage.get("input_tokens"),
+            "output_tokens": token_usage.get("output_tokens"),
+            "chain_of_thought_included": False,
+            "model_authority": False,
+        }
+        self._log_explanation(
+            twin=twin,
+            safe_output=safe_output,
+            token_usage=token_usage,
+            error_message=(generated.get("llm_fallback") or {}).get("error"),
+        )
+        self._unwrap(
+            await self.client.validate_namespace_twin_release_note(
+                twin_id,
+                {
+                    "release_note_artifact_id": artifact_id,
+                    "release_note_artifact_hash": artifact_hash,
+                    "claims": claims,
+                    "extraction": {
+                        "method": "bounded_model_with_deterministic_fallback",
+                        "model_profile": generated.get("model_profile") or model_profile,
+                        "prompt_version": prompt_version,
+                        "prompt_hash": prompt_hash,
+                        "input_hash": input_hash,
+                        "fallback_used": fallback_used,
+                        "safe_summary": safe_summary,
+                    },
+                },
+                actor_id=actor_id,
+            )
+        )
+        return await self.tab(
+            await self.get(twin_id),
+            "release-note-validation",
+            model_profile=model_profile,
+        )
     async def attach_dry_run_evidence(
         self,
         twin_id: str,
@@ -186,6 +320,7 @@ class DigitalTwinGatewayService:
         if isinstance(projected.get("twin"), dict):
             projected["twin"] = self.project(projected["twin"])
         return projected
+
     async def events(self, twin_id: str, *, limit: int, offset: int) -> dict[str, Any]:
         core = self._unwrap(
             await self.client.get_namespace_twin_events(twin_id, {"limit": limit, "offset": offset})
@@ -353,7 +488,7 @@ class DigitalTwinGatewayService:
             "partial": False,
             "warning": (
                 "Lifecycle, Overview, Release Delta, Dependency Graph, summaries, freshness, "
-                "Policy Twin, Dry-run / Diff Twin, and actions are authoritative. Remaining evidence modules are mock and "
+                "Policy Twin, Dry-run / Diff Twin, Rollback Twin, Drift Twin, Runtime Behavior Twin, Release Note Validation Twin, Audit Reports, and actions are authoritative. Remaining evidence modules are mock and "
                 "non-authoritative."
             ),
         }
@@ -504,6 +639,262 @@ class DigitalTwinGatewayService:
                     model_profile=model_profile,
                 )
             return dry_run
+        if slug == "release-note-validation":
+            validation = self._unwrap(
+                await self.client.get_namespace_twin_release_note_validation(twin["twin_id"])
+            )
+            availability = validation.get("availability") or {}
+            data = validation.get("data") or {}
+            counts = data.get("claim_counts") or {}
+            status = str(data.get("status") or "not_run")
+            validation.update(
+                {
+                    "state": availability.get("state") or "not_run",
+                    "kind": "release-note-validation",
+                    "title": "Release Note Validation Twin",
+                    "summary": availability.get("message")
+                    or "Link a release-note artifact to validate operational claims.",
+                    "data_mode": DATA_MODE,
+                    "module_mode": "authoritative",
+                    "non_authoritative": False,
+                    "metrics": [
+                        {
+                            "label": "Supported",
+                            "value": int(counts.get("supported") or 0),
+                            "tone": "green",
+                        },
+                        {
+                            "label": "Unsupported",
+                            "value": int(counts.get("unsupported") or 0),
+                            "tone": "amber",
+                        },
+                        {
+                            "label": "Contradicted",
+                            "value": int(counts.get("contradicted") or 0),
+                            "tone": "red",
+                        },
+                        {
+                            "label": "Missing",
+                            "value": int(counts.get("missing") or 0),
+                            "tone": "amber",
+                        },
+                    ],
+                    "validation_status": status,
+                }
+            )
+            return validation
+        if slug == "runtime-behavior":
+            runtime = self._unwrap(
+                await self.client.get_namespace_twin_runtime_behavior(twin["twin_id"])
+            )
+            availability = runtime.get("availability") or {}
+            data = runtime.get("data") or {}
+            health = data.get("current_health") or {}
+            risk = str(data.get("risk") or "unknown")
+            runtime.update(
+                {
+                    "state": availability.get("state") or "not_available",
+                    "kind": "runtime",
+                    "title": "Runtime Behavior Twin",
+                    "summary": availability.get("message")
+                    or "Rules-first current runtime facts are unavailable.",
+                    "data_mode": DATA_MODE,
+                    "module_mode": "authoritative",
+                    "non_authoritative": False,
+                    "metrics": [
+                        {
+                            "label": "Runtime risk",
+                            "value": risk,
+                            "tone": (
+                                "green"
+                                if risk == "low"
+                                else "amber"
+                                if risk in {"medium", "unknown"}
+                                else "red"
+                            ),
+                        },
+                        {
+                            "label": "Health",
+                            "value": str(health.get("status") or "unknown"),
+                            "tone": (
+                                "green"
+                                if health.get("status") == "healthy"
+                                else "amber"
+                                if health.get("status") in {"degraded", "unknown"}
+                                else "red"
+                            ),
+                        },
+                        {
+                            "label": "Not ready",
+                            "value": int(health.get("not_ready_pods") or 0),
+                            "tone": "red" if int(health.get("not_ready_pods") or 0) else "green",
+                        },
+                        {
+                            "label": "Event anomalies",
+                            "value": int(health.get("event_anomalies") or 0),
+                            "tone": "amber" if int(health.get("event_anomalies") or 0) else "green",
+                        },
+                    ],
+                }
+            )
+            if data:
+                runtime["safe_explanation"] = await self.runtime_behavior_explanation(
+                    twin, runtime, model_profile=model_profile
+                )
+            return runtime
+        if slug == "drift":
+            drift = self._unwrap(await self.client.get_namespace_twin_drift(twin["twin_id"]))
+            availability = drift.get("availability") or {}
+            data = drift.get("data") or {}
+            counts = data.get("change_counts") or {}
+            status = str(data.get("status") or "unknown")
+            drift.update(
+                {
+                    "state": availability.get("state") or "not_available",
+                    "kind": "drift",
+                    "title": "Drift Twin",
+                    "summary": availability.get("message")
+                    or "Deterministic drift facts are unavailable.",
+                    "data_mode": DATA_MODE,
+                    "module_mode": "authoritative",
+                    "non_authoritative": False,
+                    "metrics": [
+                        {
+                            "label": "Status",
+                            "value": status,
+                            "tone": (
+                                "green"
+                                if status == "none"
+                                else "amber"
+                                if status in {"minor", "unknown"}
+                                else "red"
+                            ),
+                        },
+                        {
+                            "label": "Changed",
+                            "value": int(counts.get("total") or 0),
+                            "tone": "info",
+                        },
+                        {
+                            "label": "Material",
+                            "value": "Yes" if data.get("material") else "No",
+                            "tone": "red" if data.get("material") else "green",
+                        },
+                        {
+                            "label": "Execution",
+                            "value": "Disabled" if data.get("execution_disabled") else "Eligible",
+                            "tone": "red" if data.get("execution_disabled") else "green",
+                        },
+                    ],
+                }
+            )
+            if data.get("material"):
+                drift["safe_explanation"] = await self.drift_explanation(
+                    twin, drift, model_profile=model_profile
+                )
+            return drift
+        if slug == "rollback":
+            rollback = self._unwrap(await self.client.get_namespace_twin_rollback(twin["twin_id"]))
+            availability = rollback.get("availability") or {}
+            data = rollback.get("data") or {}
+            coverage = data.get("coverage") or {}
+            rollback.update(
+                {
+                    "state": availability.get("state") or "not_available",
+                    "kind": "rollback",
+                    "title": "Rollback Twin",
+                    "summary": availability.get("message")
+                    or "Deterministic rollback facts are unavailable.",
+                    "data_mode": DATA_MODE,
+                    "module_mode": "authoritative",
+                    "non_authoritative": False,
+                    "metrics": [
+                        {
+                            "label": "Confidence",
+                            "value": str(data.get("confidence") or "unavailable"),
+                            "tone": (
+                                "green"
+                                if data.get("confidence") == "high"
+                                else "amber"
+                                if data.get("confidence") == "medium"
+                                else "red"
+                            ),
+                        },
+                        {
+                            "label": "Plan coverage",
+                            "value": f"{int(coverage.get('coverage_percent') or 0)}%",
+                            "tone": (
+                                "green"
+                                if int(coverage.get("coverage_percent") or 0) == 100
+                                else "amber"
+                            ),
+                        },
+                        {
+                            "label": "Defined",
+                            "value": "Yes" if data.get("rollback_defined") else "No",
+                            "tone": "green" if data.get("rollback_defined") else "red",
+                        },
+                        {
+                            "label": "Proven",
+                            "value": "Yes" if data.get("rollback_proven") else "No",
+                            "tone": "green" if data.get("rollback_proven") else "amber",
+                        },
+                    ],
+                }
+            )
+            if data:
+                rollback["safe_explanation"] = await self.rollback_explanation(
+                    twin, rollback, model_profile=model_profile
+                )
+            return rollback
+        if slug == "audit":
+            query = query or {}
+            params = {
+                key: query.get(key)
+                for key in ("cursor", "limit")
+                if query.get(key) not in (None, "")
+            }
+            audit = self._unwrap(
+                await self.client.get_namespace_twin_audit(twin["twin_id"], params)
+            )
+            report_response = await self.client.get_namespace_twin_report(twin["twin_id"])
+            report = report_response.payload
+            if not isinstance(report, dict) or not report.get("report_hash"):
+                raise DigitalTwinGatewayError(
+                    502,
+                    "invalid_execution_agent_report",
+                    "Execution agent returned an invalid Namespace Twin report.",
+                )
+            audit.update(
+                {
+                    "state": "available",
+                    "kind": "audit",
+                    "title": "Audit Timeline and Reports",
+                    "summary": (
+                        "Append-only lifecycle and operator events with deterministic "
+                        "JSON and Markdown reports."
+                    ),
+                    "data_mode": DATA_MODE,
+                    "module_mode": "authoritative",
+                    "non_authoritative": False,
+                    "report": {
+                        "report_id": report.get("report_id"),
+                        "report_hash": report.get("report_hash"),
+                        "generated_at": report.get("generated_at"),
+                        "decision": (report.get("decision") or {}).get("value"),
+                        "json_href": (f"/api/digital-twins/{twin['twin_id']}/reports/json"),
+                        "markdown_href": (f"/api/digital-twins/{twin['twin_id']}/reports/markdown"),
+                    },
+                    "total_events": int((audit.get("page") or {}).get("result_count") or 0),
+                    "applied_query": params,
+                }
+            )
+            audit["safe_explanation"] = await self.audit_executive_summary(
+                twin,
+                report,
+                model_profile=model_profile,
+            )
+            return audit
         if slug == "policy":
             query = query or {}
             params = {
@@ -536,6 +927,111 @@ class DigitalTwinGatewayService:
             )
             return policy
         return await self._tab_phase4(twin, slug)
+
+    async def audit_executive_summary(
+        self,
+        twin: dict[str, Any],
+        report: dict[str, Any],
+        *,
+        model_profile: str | None = None,
+    ) -> dict[str, Any]:
+        """Summarize the immutable redacted report without changing its decision."""
+        prompt_version = "namespace_twin_audit_executive_summary_v1"
+        fact_envelope = {
+            "report_id": report.get("report_id"),
+            "report_hash": report.get("report_hash"),
+            "twin": report.get("twin") or {},
+            "decision": report.get("decision") or {},
+            "versions": report.get("versions") or {},
+            "hashes": report.get("hashes") or {},
+            "evidence_summary": report.get("evidence_summary") or {},
+            "event_count": len(report.get("timeline") or []),
+            "recent_events": [
+                {
+                    "sequence": item.get("sequence"),
+                    "phase": item.get("phase"),
+                    "status": item.get("status"),
+                    "event_type": item.get("event_type"),
+                    "safe_summary": item.get("safe_summary"),
+                }
+                for item in (report.get("timeline") or [])[-20:]
+            ],
+            "safety": report.get("safety") or {},
+            "model_authority": False,
+        }
+        canonical = json.dumps(fact_envelope, sort_keys=True, separators=(",", ":"), default=str)
+        input_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        system = (
+            "Write a concise executive summary of an immutable Namespace Digital Twin "
+            "audit report. Return JSON with only a summary string. Use only supplied "
+            "redacted report facts. State the persisted decision, lifecycle, evidence "
+            "coverage, notable phases, and operator follow-up. Never alter the decision, "
+            "invent events, expose Secret values, include hidden chain-of-thought, or "
+            "claim model authority."
+        )
+        prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        decision = str((report.get("decision") or {}).get("value") or "pending")
+        evidence = report.get("evidence_summary") or {}
+        deterministic_summary = (
+            f"Audit report {report.get('report_id')} records "
+            f"{len(report.get('timeline') or [])} append-only event(s). The persisted "
+            f"decision is {decision}; policy is "
+            f"{evidence.get('policy_verdict') or 'not available'}, dry-run is "
+            f"{evidence.get('dry_run_status') or 'not run'}, and runtime risk is "
+            f"{evidence.get('runtime_risk') or 'not available'}."
+        )
+        fallback = {
+            "summary": deterministic_summary,
+            "model_profile": model_profile or "azure_gpt5_pro",
+            "llm_fallback": {"used": True, "error": None},
+        }
+        started = time.perf_counter()
+        generated = (
+            fallback
+            if self.llm is None
+            else await self.llm.structured_response(
+                system=system,
+                user_payload=fact_envelope,
+                fallback=fallback,
+                model_profile=model_profile or "azure_gpt5_pro",
+            )
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        summary = generated.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            summary = deterministic_summary
+        token_usage = generated.get("token_usage") or {}
+        fallback_used = bool((generated.get("llm_fallback") or {}).get("used"))
+        safe_output = {
+            "schema_version": "1.0.0",
+            "explanation_id": f"twinexp_{uuid4().hex}",
+            "status": "fallback" if fallback_used else "generated",
+            "model_profile": generated.get("model_profile") or model_profile or "azure_gpt5_pro",
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "input_hash": input_hash,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "format": "plain_text",
+            "content": summary.strip()[:12000],
+            "evidence_refs": [str(report.get("report_id"))],
+            "fallback_reason": (
+                str((generated.get("llm_fallback") or {}).get("error"))[:1000]
+                if (generated.get("llm_fallback") or {}).get("error")
+                else None
+            ),
+            "latency_ms": latency_ms,
+            "input_tokens": token_usage.get("input_tokens"),
+            "output_tokens": token_usage.get("output_tokens"),
+            "chain_of_thought_included": False,
+            "model_authority": False,
+        }
+        self._log_explanation(
+            twin=twin,
+            safe_output=safe_output,
+            token_usage=token_usage,
+            error_message=(generated.get("llm_fallback") or {}).get("error"),
+        )
+        return safe_output
 
     async def safe_explanation(
         self,
@@ -1004,9 +1500,7 @@ class DigitalTwinGatewayService:
             "schema_version": "1.0.0",
             "explanation_id": f"twinexp_{uuid4().hex}",
             "status": "fallback" if fallback_used else "generated",
-            "model_profile": generated.get("model_profile")
-            or model_profile
-            or "azure_gpt5_pro",
+            "model_profile": generated.get("model_profile") or model_profile or "azure_gpt5_pro",
             "prompt_version": prompt_version,
             "prompt_hash": prompt_hash,
             "input_hash": input_hash,
@@ -1034,6 +1528,321 @@ class DigitalTwinGatewayService:
             error_message=(generated.get("llm_fallback") or {}).get("error"),
         )
         return safe_output
+
+    async def rollback_explanation(
+        self,
+        twin: dict[str, Any],
+        rollback: dict[str, Any],
+        *,
+        model_profile: str | None = None,
+    ) -> dict[str, Any]:
+        """Explain deterministic rollback gaps without changing rollback authority."""
+        prompt_version = "namespace_twin_rollback_explanation_v1"
+        data = rollback.get("data") or {}
+        fact_envelope = {
+            "twin_id": twin["twin_id"],
+            "decision_version": twin["decision_version"],
+            "confidence": data.get("confidence"),
+            "confidence_score": data.get("confidence_score"),
+            "rollback_defined": data.get("rollback_defined"),
+            "rollback_proven": data.get("rollback_proven"),
+            "coverage": data.get("coverage") or {},
+            "helm": data.get("helm") or {},
+            "previous_artifacts": data.get("previous_artifacts") or {},
+            "pvc_data_reversibility": data.get("pvc_data_reversibility"),
+            "non_reversible_changes": [
+                {
+                    "code": item.get("code"),
+                    "severity": item.get("severity"),
+                    "status": item.get("status"),
+                    "summary": item.get("summary"),
+                }
+                for item in (data.get("non_reversible_changes") or [])[:30]
+            ],
+            "gaps": list(data.get("gaps") or [])[:30],
+            "proof": data.get("proof") or {},
+            "manual_steps": list(data.get("manual_steps") or [])[:30],
+            "validation_checks": list(data.get("validation_checks") or [])[:30],
+            "model_authority": False,
+        }
+        canonical = json.dumps(fact_envelope, sort_keys=True, separators=(",", ":"), default=str)
+        input_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        system = (
+            "Explain deterministic Namespace Digital Twin rollback facts for an operator. "
+            "Return JSON with only a concise summary string. State confidence, whether "
+            "rollback is defined and proven, plan coverage, previous Helm/artifact evidence, "
+            "PVC/data reversibility, non-reversible changes, evidence gaps, manual review, "
+            "and validation needs exactly as supplied. Never claim defined means proven, "
+            "change confidence, execute rollback, submit instructions, bypass approval, or "
+            "reveal hidden chain-of-thought."
+        )
+        prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        coverage = fact_envelope["coverage"]
+        deterministic_summary = (
+            f"Rollback confidence is {fact_envelope['confidence']} with "
+            f"{int(coverage.get('coverage_percent') or 0)}% plan coverage. Rollback is "
+            f"{'defined' if fact_envelope['rollback_defined'] else 'not fully defined'} "
+            f"and {'proven' if fact_envelope['rollback_proven'] else 'not proven'}; "
+            f"{len(fact_envelope['gaps'])} evidence gap(s) require review."
+        )
+        fallback = {
+            "summary": deterministic_summary,
+            "model_profile": model_profile or "azure_gpt5_pro",
+            "llm_fallback": {"used": True, "error": None},
+        }
+        started = time.perf_counter()
+        generated = (
+            fallback
+            if self.llm is None
+            else await self.llm.structured_response(
+                system=system,
+                user_payload=fact_envelope,
+                fallback=fallback,
+                model_profile=model_profile or "azure_gpt5_pro",
+            )
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        model_summary = generated.get("summary")
+        if not isinstance(model_summary, str) or not model_summary.strip():
+            model_summary = deterministic_summary
+        token_usage = generated.get("token_usage") or {}
+        fallback_used = bool((generated.get("llm_fallback") or {}).get("used"))
+        safe_output = {
+            "schema_version": "1.0.0",
+            "explanation_id": f"twinexp_{uuid4().hex}",
+            "status": "fallback" if fallback_used else "generated",
+            "model_profile": generated.get("model_profile") or model_profile or "azure_gpt5_pro",
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "input_hash": input_hash,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "format": "plain_text",
+            "content": model_summary.strip()[:12000],
+            "evidence_refs": [
+                str(item.get("evidence_id"))
+                for item in (data.get("evidence_refs") or [])
+                if isinstance(item, dict) and item.get("evidence_id")
+            ][:100],
+            "fallback_reason": (
+                str((generated.get("llm_fallback") or {}).get("error"))[:1000]
+                if (generated.get("llm_fallback") or {}).get("error")
+                else None
+            ),
+            "latency_ms": latency_ms,
+            "input_tokens": token_usage.get("input_tokens"),
+            "output_tokens": token_usage.get("output_tokens"),
+            "chain_of_thought_included": False,
+            "model_authority": False,
+        }
+        self._log_explanation(
+            twin=twin,
+            safe_output=safe_output,
+            token_usage=token_usage,
+            error_message=(generated.get("llm_fallback") or {}).get("error"),
+        )
+        return safe_output
+
+    async def drift_explanation(
+        self,
+        twin: dict[str, Any],
+        drift: dict[str, Any],
+        *,
+        model_profile: str | None = None,
+    ) -> dict[str, Any]:
+        """Explain deterministic changed-resource facts without classifying drift."""
+        prompt_version = "namespace_twin_drift_explanation_v1"
+        data = drift.get("data") or {}
+        fact_envelope = {
+            "twin_id": twin["twin_id"],
+            "decision_version": twin["decision_version"],
+            "status": data.get("status"),
+            "material": data.get("material"),
+            "execution_disabled": data.get("execution_disabled"),
+            "decision_invalidated": data.get("decision_invalidated"),
+            "rules_version": data.get("rules_version"),
+            "freshness": data.get("freshness") or {},
+            "change_counts": data.get("change_counts") or {},
+            "helm_revision_drift": data.get("helm_revision_drift"),
+            "manual_patch_indicators": list(data.get("manual_patch_indicators") or [])[:40],
+            "health_changes": list(data.get("health_changes") or [])[:40],
+            "changes": [
+                {
+                    "resource_identity": item.get("resource_identity"),
+                    "change_type": item.get("change_type"),
+                    "classification": item.get("classification"),
+                    "summary": item.get("summary"),
+                    "axes": item.get("axes") or {},
+                }
+                for item in (data.get("changes") or [])[:80]
+            ],
+            "model_authority": False,
+        }
+        canonical = json.dumps(fact_envelope, sort_keys=True, separators=(",", ":"), default=str)
+        input_hash = hashlib.sha256(canonical.encode()).hexdigest()
+        system = (
+            "Explain deterministic Namespace Drift Twin facts for an operator. Return JSON "
+            "with only a concise summary string. Use only supplied changed-resource facts, "
+            "classification, rule version, freshness, Helm, target, policy-boundary, safety, "
+            "manual-patch, and health axes. Never reclassify drift, restore execution "
+            "eligibility, mutate resources, bypass policy, or reveal hidden chain-of-thought."
+        )
+        prompt_hash = hashlib.sha256((system + canonical).encode()).hexdigest()
+        deterministic_summary = str(data.get("summary") or "Drift facts are unavailable.")
+        fallback = {
+            "summary": deterministic_summary,
+            "model_profile": model_profile or "azure_gpt5_pro",
+            "llm_fallback": {"used": True, "error": None},
+        }
+        started = time.perf_counter()
+        generated = (
+            fallback
+            if self.llm is None
+            else await self.llm.structured_response(
+                system=system,
+                user_payload=fact_envelope,
+                fallback=fallback,
+                model_profile=model_profile or "azure_gpt5_pro",
+            )
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        summary = generated.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            summary = deterministic_summary
+        token_usage = generated.get("token_usage") or {}
+        fallback_used = bool((generated.get("llm_fallback") or {}).get("used"))
+        safe_output = {
+            "schema_version": "1.0.0",
+            "explanation_id": f"twinexp_{uuid4().hex}",
+            "status": "fallback" if fallback_used else "generated",
+            "model_profile": generated.get("model_profile") or model_profile or "azure_gpt5_pro",
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "input_hash": input_hash,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "format": "plain_text",
+            "content": summary.strip()[:12000],
+            "evidence_refs": list(data.get("evidence_refs") or [])[:100],
+            "fallback_reason": (
+                str((generated.get("llm_fallback") or {}).get("error"))[:1000]
+                if (generated.get("llm_fallback") or {}).get("error")
+                else None
+            ),
+            "latency_ms": latency_ms,
+            "input_tokens": token_usage.get("input_tokens"),
+            "output_tokens": token_usage.get("output_tokens"),
+            "chain_of_thought_included": False,
+            "model_authority": False,
+        }
+        self._log_explanation(
+            twin=twin,
+            safe_output=safe_output,
+            token_usage=token_usage,
+            error_message=(generated.get("llm_fallback") or {}).get("error"),
+        )
+        return safe_output
+
+    async def runtime_behavior_explanation(
+        self,
+        twin: dict[str, Any],
+        runtime: dict[str, Any],
+        *,
+        model_profile: str | None = None,
+    ) -> dict[str, Any]:
+        """Explain deterministic runtime signals without changing decision authority."""
+        prompt_version = "namespace_twin_runtime_behavior_explanation_v1"
+        data = runtime.get("data") or {}
+        health = data.get("current_health") or {}
+        fact_envelope = {
+            "twin_id": twin["twin_id"],
+            "decision_version": twin["decision_version"],
+            "runtime_risk": data.get("risk"),
+            "risk_score": data.get("risk_score"),
+            "confidence": data.get("confidence"),
+            "current_health": health,
+            "factors": [
+                {
+                    "factor_id": item.get("factor_id"),
+                    "title": item.get("title"),
+                    "impact": item.get("impact"),
+                    "confidence": item.get("confidence"),
+                    "summary": item.get("summary"),
+                }
+                for item in (data.get("factors") or [])[:40]
+            ],
+            "historical_context_status": data.get("historical_context_status"),
+            "historical_context_message": data.get("historical_context_message"),
+            "execution_effect": data.get("execution_effect"),
+            "rules_version": data.get("rules_version"),
+            "may_independently_approve": False,
+            "model_authority": False,
+        }
+        canonical = json.dumps(fact_envelope, sort_keys=True, separators=(",", ":"), default=str)
+        input_hash = hashlib.sha256(canonical.encode()).hexdigest()
+        system = (
+            "Explain rules-first Namespace Runtime Behavior Twin facts for an operator. "
+            "Return JSON with only a concise summary string. Use only the supplied current "
+            "health, pod, event, pressure, confidence, and deterministic factor facts. "
+            "State that historical comparison is Not Available when indicated. Never alter "
+            "risk or health classification, approve execution, execute changes, invent "
+            "history, bypass policy, or reveal hidden chain-of-thought."
+        )
+        prompt_hash = hashlib.sha256((system + canonical).encode()).hexdigest()
+        deterministic_summary = str(
+            data.get("summary") or "Rules-first runtime behavior facts are unavailable."
+        )
+        fallback = {
+            "summary": deterministic_summary,
+            "model_profile": model_profile or "azure_gpt5_pro",
+            "llm_fallback": {"used": True, "error": None},
+        }
+        started = time.perf_counter()
+        generated = (
+            fallback
+            if self.llm is None
+            else await self.llm.structured_response(
+                system=system,
+                user_payload=fact_envelope,
+                fallback=fallback,
+                model_profile=model_profile or "azure_gpt5_pro",
+            )
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        summary = generated.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            summary = deterministic_summary
+        token_usage = generated.get("token_usage") or {}
+        fallback_used = bool((generated.get("llm_fallback") or {}).get("used"))
+        safe_output = {
+            "schema_version": "1.0.0",
+            "explanation_id": f"twinexp_{uuid4().hex}",
+            "status": "fallback" if fallback_used else "generated",
+            "model_profile": generated.get("model_profile") or model_profile or "azure_gpt5_pro",
+            "prompt_version": prompt_version,
+            "prompt_hash": prompt_hash,
+            "input_hash": input_hash,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "format": "plain_text",
+            "content": summary.strip()[:12000],
+            "evidence_refs": list(data.get("evidence_refs") or [])[:100],
+            "fallback_reason": (
+                str((generated.get("llm_fallback") or {}).get("error"))[:1000]
+                if (generated.get("llm_fallback") or {}).get("error")
+                else None
+            ),
+            "latency_ms": latency_ms,
+            "input_tokens": token_usage.get("input_tokens"),
+            "output_tokens": token_usage.get("output_tokens"),
+            "chain_of_thought_included": False,
+            "model_authority": False,
+        }
+        self._log_explanation(
+            twin=twin,
+            safe_output=safe_output,
+            token_usage=token_usage,
+            error_message=(generated.get("llm_fallback") or {}).get("error"),
+        )
+        return safe_output
+
     async def policy_explanation(
         self,
         twin: dict[str, Any],
@@ -1215,6 +2024,97 @@ class DigitalTwinGatewayService:
         return data
 
 
+_RELEASE_NOTE_CATEGORIES = {
+    "image", "configuration", "migration", "pvc_storage", "rbac", "route",
+    "rollback", "breaking_change", "known_risk", "other",
+}
+_RELEASE_NOTE_SECRET = re.compile(
+    r"(?i)\b(password|token|secret|api[_-]?key|authorization)\b\s*[:=]\s*\S+"
+)
+_RELEASE_NOTE_INSTRUCTION = re.compile(
+    r"(?i)(?:\b(?:ignore|disregard|override|bypass)\b.{0,120}"
+    r"\b(?:instruction|rule|validation|policy)\b|"
+    r"\b(?:classify|mark)\b.{0,80}\b(?:all|every)\b.{0,80}"
+    r"\b(?:supported|passed|valid)\b)"
+)
+
+
+def _sanitize_release_note_claims(value: Any) -> list[dict[str, str]]:
+    claims: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    if not isinstance(value, list):
+        return claims
+    for item in value[:100]:
+        if not isinstance(item, dict):
+            continue
+        category = str(item.get("category") or "other").strip().lower()
+        if category not in _RELEASE_NOTE_CATEGORIES:
+            category = "other"
+        claim = " ".join(str(item.get("claim") or "").split())[:4000]
+        if (
+            not claim
+            or "-----BEGIN " in claim.upper()
+            or _RELEASE_NOTE_SECRET.search(claim)
+            or _RELEASE_NOTE_INSTRUCTION.search(claim)
+        ):
+            continue
+        normalized = re.sub(r"[^a-z0-9]+", " ", claim.lower()).strip()
+        key = (category, normalized)
+        if normalized and key not in seen:
+            seen.add(key)
+            claims.append({"category": category, "claim": claim})
+    return claims
+
+
+def _release_note_fallback_claims(content: str) -> list[dict[str, str]]:
+    claims: list[dict[str, str]] = []
+    category = "other"
+    in_fence = False
+    for raw in content.splitlines():
+        line = raw.strip()
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence or not line:
+            continue
+        if line.startswith("#"):
+            category = _release_note_category(line.lstrip("# "))
+            continue
+        candidate = re.sub(r"^[-*+]\s+|^\d+[.)]\s+", "", line).strip()
+        if len(candidate) < 4:
+            continue
+        inferred_category = _release_note_category(candidate)
+        claims.append({
+            "category": category if category != "other" else inferred_category,
+            "claim": candidate,
+        })
+        if len(claims) >= 100:
+            break
+    return _sanitize_release_note_claims(claims)
+
+
+def _release_note_category(value: str) -> str:
+    text = value.lower()
+    if any(token in text for token in ("image", "container", "version", "tag")):
+        return "image"
+    if any(token in text for token in ("config", "setting", "value", "environment")):
+        return "configuration"
+    if "migrat" in text:
+        return "migration"
+    if any(token in text for token in ("pvc", "storage", "volume", "persistent")):
+        return "pvc_storage"
+    if any(token in text for token in ("rbac", "role", "permission", "service account")):
+        return "rbac"
+    if any(token in text for token in ("route", "ingress", "service", "endpoint")):
+        return "route"
+    if "rollback" in text or "recovery" in text:
+        return "rollback"
+    if "breaking" in text or "incompatible" in text:
+        return "breaking_change"
+    if any(token in text for token in ("risk", "known issue", "warning")):
+        return "known_risk"
+    return "other"
+
 def _response_headers(response: Response) -> None:
     response.headers["X-ESDA-Data-Mode"] = DATA_MODE
     response.headers["Cache-Control"] = "no-store"
@@ -1238,7 +2138,7 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
             "non_production": False,
             "label": (
                 "Real Lifecycle + Overview + Release Delta + Dependency Graph + Policy Twin + "
-                "Dry-run / Diff Twin + Mock Remaining Modules"
+                "Dry-run / Diff Twin + Rollback Twin + Release Note Validation Twin + Audit Reports + Mock Remaining Modules"
             ),
         }
 
@@ -1271,6 +2171,7 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
             twin_id,
             payload.model_dump(mode="json", exclude_none=True),
         )
+
     @router.get("/active")
     async def active_twin(response: Response) -> dict[str, Any] | None:
         _response_headers(response)
@@ -1342,6 +2243,55 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
         _response_headers(response)
         return await service.cancel(twin_id)
 
+    @router.post("/{twin_id}/drift/refresh")
+    async def refresh_drift(twin_id: str, response: Response) -> dict[str, Any]:
+        _response_headers(response)
+        return await service.refresh_drift(twin_id)
+
+    @router.post("/{twin_id}/runtime-behavior/refresh")
+    async def refresh_runtime_behavior(twin_id: str, response: Response) -> dict[str, Any]:
+        _response_headers(response)
+        return await service.refresh_runtime_behavior(twin_id)
+
+    @router.post("/{twin_id}/release-note-validation")
+    async def validate_release_note(
+        twin_id: str,
+        payload: RealTwinReleaseNoteValidationRequest,
+        response: Response,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict[str, Any]:
+        _response_headers(response)
+        return await service.validate_release_note(
+            twin_id,
+            payload.model_dump(mode="json"),
+            actor_id=principal.username,
+        )
+    async def _report_response(twin_id: str, report_format: str) -> Response:
+        content, content_type, filename = await service.client.download_namespace_twin_report(
+            twin_id, report_format
+        )
+        return Response(
+            content=content,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "no-store",
+                "X-ESDA-Data-Mode": DATA_MODE,
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+
+    @router.get("/{twin_id}/reports/json")
+    async def json_report(twin_id: str) -> Response:
+        return await _report_response(twin_id, "json")
+
+    @router.get("/{twin_id}/reports/markdown")
+    async def markdown_report(twin_id: str) -> Response:
+        return await _report_response(twin_id, "markdown")
+
+    @router.get("/{twin_id}/report")
+    async def legacy_json_report(twin_id: str) -> Response:
+        return await _report_response(twin_id, "json")
+
     @router.get("/{twin_id}/gate")
     async def gate(twin_id: str, response: Response) -> dict[str, Any]:
         _response_headers(response)
@@ -1351,6 +2301,10 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
         dry_run = service._unwrap(await service.client.get_namespace_twin_dry_run(twin_id, None))
         dry_run_data = dry_run.get("data") or {}
         dry_run_availability = dry_run.get("availability") or {}
+        rollback = service._unwrap(await service.client.get_namespace_twin_rollback(twin_id))
+        rollback_data = rollback.get("data") or {}
+        drift = service._unwrap(await service.client.get_namespace_twin_drift(twin_id))
+        drift_data = drift.get("data") or {}
         return {
             "schema_version": "1.0.0",
             "data_mode": DATA_MODE,
@@ -1366,8 +2320,8 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
             or dry_run_data.get("status")
             or dry_run_availability.get("state")
             or "not_available",
-            "rollback": "not_available",
-            "drift": "not_available",
+            "rollback": rollback_data.get("confidence") or "not_available",
+            "drift": drift_data.get("status") or "not_available",
             "reasons": twin["top_reasons"],
             "approval": (
                 "required"

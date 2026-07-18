@@ -675,4 +675,95 @@
 @media (max-width: 640px) {
   .dry-run-identity-grid,
   .dry-run-filter-grid { grid-template-columns: 1fr; }
+}/* Slice 5F: deterministic Rollback Twin */
+.rollback-authority {
+  margin-bottom: 12px;
+  border-color: rgba(126, 221, 255, .42);
+  background: rgba(43, 89, 128, .24);
+}
+
+.rollback-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 9px;
+  margin: 12px 0;
+}
+
+.rollback-status-grid article {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 255, 255, .17);
+  border-radius: 6px;
+  background: rgba(39, 31, 84, .44);
+}
+
+.rollback-status-grid span {
+  color: rgba(255, 255, 255, .7);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.rollback-status-grid strong,
+.rollback-status-grid small { overflow-wrap: anywhere; }
+.rollback-status-grid small { color: rgba(255, 255, 255, .62); }
+.rollback-explanation { margin-bottom: 12px; }
+
+@media (max-width: 980px) {
+  .rollback-status-grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .rollback-status-grid { grid-template-columns: 1fr; }
+}
+
+.drift-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.drift-status-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  background: rgba(43, 35, 89, .42);
+  border-radius: 6px;
+}
+.drift-status-card span,
+.drift-status-card small {
+  display: block;
+  color: var(--muted);
+}
+.drift-status-card strong {
+  display: block;
+  margin: 5px 0;
+  font-size: 1.05rem;
+}
+.drift-change-table td:first-child {
+  min-width: 220px;
+}
+.drift-change-table td small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+@media (max-width: 900px) {
+  .drift-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Slice 5J: Release Note Validation Twin */
+.release-note-link-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, .34fr) minmax(320px, 1fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+.release-note-link-grid .field { margin: 0; }
+.release-note-content-field textarea { min-height: 180px; resize: vertical; }
+.release-note-linker .tab-toolbar { margin-top: 14px; }
+@media (max-width: 900px) {
+  .release-note-link-grid { grid-template-columns: 1fr; }
 }

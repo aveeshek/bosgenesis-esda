@@ -8,19 +8,64 @@
   "required": ["data"],
   "properties": {
     "data": {
-      "type": ["object", "null"], "additionalProperties": false,
-      "required": ["status", "release_note_artifact_id", "claims", "missing_operational_notes", "suggested_corrections", "automatic_overwrite_allowed", "evidence_refs"],
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["status", "release_note_artifact_id", "release_note_artifact_hash", "validated_at", "rules_version", "claims", "claim_counts", "missing_operational_notes", "suggested_corrections", "automatic_overwrite_allowed", "execution_eligibility_effect", "editorial_only", "extraction", "evidence_refs", "validation_hash"],
       "properties": {
-        "status": {"type": "string", "enum": ["not_run", "passed", "warning", "failed", "not_available"]},
-        "release_note_artifact_id": {"$ref": "../common.schema.json#/$defs/nullableIdentifier"},
-        "claims": {"type": "array", "items": {"type": "object", "required": ["claim_id", "category", "claim", "status", "summary", "evidence_refs"], "properties": {"claim_id": {"$ref": "../common.schema.json#/$defs/identifier"}, "category": {"type": "string", "enum": ["image", "configuration", "migration", "pvc_storage", "rbac", "route", "rollback", "breaking_change", "known_risk", "other"]}, "claim": {"type": "string", "minLength": 1, "maxLength": 4000}, "status": {"type": "string", "enum": ["supported", "unsupported", "partial", "unknown"]}, "summary": {"type": "string", "minLength": 1, "maxLength": 4000}, "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}}, "additionalProperties": false}},
+        "status": {"type": "string", "enum": ["passed", "warning", "failed"]},
+        "release_note_artifact_id": {"$ref": "../common.schema.json#/$defs/identifier"},
+        "release_note_artifact_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+        "validated_at": {"$ref": "../common.schema.json#/$defs/timestamp"},
+        "rules_version": {"type": "string", "minLength": 1, "maxLength": 200},
+        "claims": {
+          "type": "array", "maxItems": 200,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["claim_id", "category", "claim", "status", "summary", "evidence_refs"],
+            "properties": {
+              "claim_id": {"$ref": "../common.schema.json#/$defs/identifier"},
+              "category": {"type": "string", "enum": ["image", "configuration", "migration", "pvc_storage", "rbac", "route", "rollback", "breaking_change", "known_risk", "other"]},
+              "claim": {"type": "string", "minLength": 1, "maxLength": 4000},
+              "status": {"type": "string", "enum": ["supported", "unsupported", "contradicted", "missing"]},
+              "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+              "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}
+            }
+          }
+        },
+        "claim_counts": {
+          "type": "object", "additionalProperties": false,
+          "required": ["supported", "unsupported", "contradicted", "missing"],
+          "properties": {
+            "supported": {"type": "integer", "minimum": 0},
+            "unsupported": {"type": "integer", "minimum": 0},
+            "contradicted": {"type": "integer", "minimum": 0},
+            "missing": {"type": "integer", "minimum": 0}
+          }
+        },
         "missing_operational_notes": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 2000}},
         "suggested_corrections": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 4000}},
         "automatic_overwrite_allowed": {"const": false},
-        "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}}
+        "execution_eligibility_effect": {"const": "none"},
+        "editorial_only": {"const": true},
+        "extraction": {
+          "type": "object", "additionalProperties": false,
+          "required": ["method", "model_profile", "prompt_version", "prompt_hash", "input_hash", "fallback_used", "safe_summary", "chain_of_thought_included", "model_authority"],
+          "properties": {
+            "method": {"type": "string", "minLength": 1, "maxLength": 100},
+            "model_profile": {"type": ["string", "null"], "maxLength": 200},
+            "prompt_version": {"type": "string", "minLength": 1, "maxLength": 200},
+            "prompt_hash": {"type": ["string", "null"], "pattern": "^[a-fA-F0-9]{64}$"},
+            "input_hash": {"type": ["string", "null"], "pattern": "^[a-fA-F0-9]{64}$"},
+            "fallback_used": {"type": "boolean"},
+            "safe_summary": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "chain_of_thought_included": {"const": false},
+            "model_authority": {"const": false}
+          }
+        },
+        "evidence_refs": {"type": "array", "items": {"$ref": "../common.schema.json#/$defs/evidenceRef"}},
+        "validation_hash": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}
       }
     }
   },
   "unevaluatedProperties": false
 }
-
