@@ -1,5 +1,6 @@
-import asyncio
+﻿import asyncio
 import base64
+import hashlib
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
@@ -220,12 +221,18 @@ class MopExecutionPreflightRequest(BaseModel):
 
 class MopExecutionValidationRequest(MopExecutionPreflightRequest):
     correlation_id: str | None = None
+    twin_id: str | None = None
+    twin_decision_version: int | None = None
+    twin_gate_hash: str | None = None
     execution_mode: str = "dry_run_then_approval"
     model_profile: str | None = None
 
 
 class MopExecutionDryRunRequest(BaseModel):
     run_id: str
+    twin_id: str | None = None
+    twin_decision_version: int | None = None
+    twin_gate_hash: str | None = None
     bundle_id: str | None = None
     target_namespace: str | None = None
     correlation_id: str | None = None
@@ -246,6 +253,9 @@ class MopExecutionInstructionRequest(BaseModel):
 
 class MopExecutionApprovalRequest(BaseModel):
     run_id: str
+    twin_id: str | None = None
+    twin_decision_version: int | None = None
+    twin_gate_hash: str | None = None
     job_id: str | None = None
     rationale: str = Field(min_length=10, max_length=2000)
     scope: dict = Field(default_factory=dict)
@@ -257,6 +267,9 @@ class MopExecutionApprovalRequest(BaseModel):
 
 class MopExecutionMutationRequest(BaseModel):
     run_id: str
+    twin_id: str | None = None
+    twin_decision_version: int | None = None
+    twin_gate_hash: str | None = None
     strategy: str = Field(default="continue_existing", pattern="^(create_job|continue_existing)$")
     mutation_job_id: str | None = None
     correlation_id: str | None = None
@@ -1981,6 +1994,7 @@ def create_app() -> FastAPI:
                 "filename": bundle_filename,
                 "size_bytes": len(content),
                 "sha256": bundle.get("sha256"),
+                "canonical_sha256": bundle.get("canonical_sha256"),
                 "run_id": source_metadata.get("run_id"),
                 "artifact_id": source_metadata.get("artifact_id"),
                 "folder_name": folder_name,
@@ -2171,6 +2185,18 @@ def create_app() -> FastAPI:
         payloads: list = []
         report_records: list[dict] = []
         errors: list[str] = []
+        authoritative_evidence: dict = {}
+        try:
+            evidence_response = await agent.get_dry_run_evidence(job_id)
+            evidence_payload = _agent_response_dict(evidence_response.payload)
+            payloads.append(evidence_payload)
+            authoritative_evidence = mop_execution_store._payload(
+                ((evidence_payload.get("data") or {}).get("dry_run_evidence") or {})
+            )
+        except Exception as exc:
+            errors.append(
+                str(_agent_error_payload(exc).get("error", {}).get("message") or exc)
+            )
         try:
             list_response = await agent.list_reports(job_id)
             list_payload = _agent_response_dict(list_response.payload)
@@ -2211,7 +2237,9 @@ def create_app() -> FastAPI:
         resources_value = _first_report_value(payloads, ("resources", "resource_changes", "would_change", "would_create", "changes", "change_preview"))
         policy_value = _first_report_value(payloads, ("policy_gates", "policy_decisions", "gates", "warnings", "guardrails"))
         warnings_value = _first_report_value(payloads, ("warnings", "warning", "policy_warnings"))
-        fingerprints = _extract_command_fingerprints(payloads)
+        fingerprints = _string_list(
+            authoritative_evidence.get("command_fingerprints")
+        ) or _extract_command_fingerprints(payloads)
         reports = {
             "status": "available" if report_records or payloads else "unavailable",
             "job_id": job_id,
@@ -2221,6 +2249,9 @@ def create_app() -> FastAPI:
             "policy_gates": policy_value or [],
             "warnings": _string_list(warnings_value) + errors,
             "command_fingerprints": fingerprints,
+            "command_fingerprint_hash": authoritative_evidence.get(
+                "command_fingerprint_hash"
+            ),
         }
         mop_execution_store.record_reports(run_id=run_id, reports=reports)
         return reports
@@ -2488,6 +2519,83 @@ def create_app() -> FastAPI:
         except ArtifactGitPublishError as exc:
             return {"status": "failed", "target": publisher.target_summary(), "error": {"type": type(exc).__name__, "message": str(exc)}}
 
+    async def _link_mop_execution_outcome_to_twin(
+        *,
+        run_id: str,
+        user_id: str,
+        metadata: dict,
+        mutation_job_id: str,
+        validation: dict,
+        reports: dict,
+        artifact_payload: dict,
+        publish_result: dict,
+    ) -> dict:
+        gate = metadata.get("twin_gate") or {}
+        twin_id = str(gate.get("twin_id") or "")
+        if not twin_id:
+            return {"status": "not_bound"}
+        approval_event = _latest_accepted_approval(metadata) or {}
+        approval = approval_event.get("approval") or {}
+        report_artifacts = artifact_payload.get("artifacts") or []
+        report_bundle_id = next(
+            (
+                item.get("artifact_id")
+                for item in reversed(report_artifacts)
+                if item.get("artifact_id")
+            ),
+            None,
+        )
+        payload = {
+            "decision_version": int(gate.get("decision_version") or 0),
+            "gate_hash": str(gate.get("gate_hash") or ""),
+            "bundle_hash": str(gate.get("bundle_hash") or ""),
+            "input_hash": gate.get("input_hash"),
+            "target_namespace": str(gate.get("target_namespace") or metadata.get("target_namespace") or ""),
+            "dry_run_job_id": str(metadata.get("dry_run_job_id") or ""),
+            "authoritative_dry_run_job_id": gate.get("dry_run_job_id"),
+            "command_fingerprint_hash": gate.get("command_fingerprint_hash"),
+            "approval_id": approval.get("approval_id"),
+            "approval_status": "approved" if approval else gate.get("approval") or "not_required",
+            "execution_id": mutation_job_id,
+            "execution_status": "mutation_succeeded",
+            "validation_status": validation.get("status"),
+            "report_bundle_id": report_bundle_id,
+            "rollback_status": (metadata.get("rollback_cleanup") or [{}])[-1].get("rollback_status") if metadata.get("rollback_cleanup") else None,
+            "cleanup_status": (metadata.get("rollback_cleanup") or [{}])[-1].get("cleanup_status") if metadata.get("rollback_cleanup") else None,
+            "outcome_comparison": {
+                "planned_decision": gate.get("decision"),
+                "planned_policy": gate.get("policy"),
+                "planned_risk": gate.get("risk"),
+                "observed_execution_status": "mutation_succeeded",
+                "observed_validation_status": validation.get("status"),
+                "validation_rows": len(validation.get("validation_matrix") or []),
+                "report_status": reports.get("status"),
+                "publish_status": publish_result.get("status"),
+            },
+        }
+        try:
+            linked = await app.state.digital_twin_gateway.record_execution_link(
+                twin_id,
+                payload,
+                actor_id=user_id,
+            )
+            repository.add_event(
+                run_id,
+                "digital_twin_execution_linked",
+                "Bundle execution outcome linked to the Namespace Twin.",
+                {"twin_id": twin_id, "execution_id": mutation_job_id, "link": linked},
+            )
+            return {"status": "linked", "twin_id": twin_id, "response": linked}
+        except Exception as exc:
+            failure = _agent_error_payload(exc)
+            repository.add_event(
+                run_id,
+                "digital_twin_execution_link_failed",
+                "Bundle execution completed but Namespace Twin outcome linkage needs review.",
+                {"twin_id": twin_id, "execution_id": mutation_job_id, "error": failure},
+            )
+            return {"status": "needs_review", "twin_id": twin_id, "error": failure}
+
     async def _run_mop_execution_validation_reports(*, run_id: str, user_id: str, publish: bool) -> dict:
         run = repository.get_run(run_id)
         metadata = mop_execution_store.execution_metadata(run_id)
@@ -2601,13 +2709,23 @@ def create_app() -> FastAPI:
                 else "Post-mutation validation needs review; execution reports are available."
             )
         )
+        twin_execution_link = await _link_mop_execution_outcome_to_twin(
+            run_id=run_id,
+            user_id=user_id,
+            metadata=mop_execution_store.execution_metadata(run_id),
+            mutation_job_id=mutation_job_id,
+            validation=validation,
+            reports=reports,
+            artifact_payload=artifact_payload,
+            publish_result=publish_result,
+        )
         mop_execution_store.record_safe_summary(
             run_id=run_id,
             stage="validation",
             summary=final_summary,
             payload={"mutation_job_id": mutation_job_id, "validation_status": validation["status"], "publish_status": publish_result.get("status")},
         )
-        terminal_payload = {"validation": validation, "reports": reports, "artifact_publish": publish_result}
+        terminal_payload = {"validation": validation, "reports": reports, "artifact_publish": publish_result, "twin_execution_link": twin_execution_link}
         if validation_passed:
             mop_execution_store.mark_completed(run_id=run_id, final_report=final_summary, payload=terminal_payload)
         elif completed_with_review:
@@ -2626,6 +2744,7 @@ def create_app() -> FastAPI:
             "reports": reports,
             "artifacts": artifact_payload.get("artifacts") or [],
             "artifact_publish": publish_result,
+            "twin_execution_link": twin_execution_link,
             "events": repository.list_events(run_id),
         }
     def _latest_reports(metadata: dict) -> dict:
@@ -3922,6 +4041,8 @@ def create_app() -> FastAPI:
         model_profile: str | None = None,
     ) -> dict:
         agent = app.state.mop_execution_agent
+        execution_metadata = mop_execution_store.execution_metadata(run_id)
+        twin_binding = execution_metadata.get("twin_gate") or {}
         attempts = max(1, int(settings.mop_execution_agent_poll_attempts or 1))
         interval = max(0.0, float(settings.mop_execution_agent_poll_interval_seconds or 0))
         idempotency_key = _dry_run_idempotency_key(
@@ -3949,6 +4070,15 @@ def create_app() -> FastAPI:
                 "correlation_id": correlation_id,
                 "idempotency_key": idempotency_key,
             }
+            if twin_binding.get("twin_id"):
+                create_request.update(
+                    {
+                        "namespace_twin_id": twin_binding.get("twin_id"),
+                        "namespace_twin_input_hash": twin_binding.get("input_hash"),
+                        "bundle_hash": twin_binding.get("bundle_hash"),
+                        "snapshot_hash": twin_binding.get("snapshot_hash"),
+                    }
+                )
             create_response = await agent.create_job(create_request)
             create_payload = _agent_response_dict(create_response.payload)
             dry_run_job_id = _job_id(create_payload)
@@ -4201,6 +4331,121 @@ def create_app() -> FastAPI:
                 "observations": observations_payload,
                 "events": repository.list_events(run_id),
             }
+    async def _verify_transactional_twin_gate(
+        *,
+        twin_id: str | None,
+        expected_decision_version: int | None,
+        expected_gate_hash: str | None,
+        bundle_hash: str | None,
+        target_namespace: str,
+        phase: str,
+        require_binding: bool,
+        allow_provisional_dry_run: bool = False,
+        approval_accepted: bool = False,
+        command_fingerprints: list[str] | None = None,
+    ) -> tuple[dict[str, Any], list[str]]:
+        if not twin_id:
+            return {}, (
+                ["Approved mutation requires a Namespace Digital Twin execution gate."]
+                if require_binding
+                else []
+            )
+        gate = await app.state.digital_twin_gateway.gate(twin_id)
+        facts = gate.get("gate_facts") or {}
+        errors: list[str] = []
+        if gate.get("data_mode") != "real_core":
+            errors.append("Digital Twin gate is not backed by the real execution-agent core.")
+        if expected_decision_version is not None and int(facts.get("decision_version") or 0) != int(
+            expected_decision_version
+        ):
+            errors.append("Digital Twin decision version changed; reload the gate before execution.")
+        if expected_gate_hash and gate.get("gate_hash") != expected_gate_hash:
+            errors.append("Digital Twin gate facts changed; reload before execution.")
+        if bundle_hash and str(facts.get("bundle_hash") or "") != str(bundle_hash):
+            errors.append("Selected bundle hash does not match the Namespace Digital Twin.")
+        if str(facts.get("target_namespace") or "") != target_namespace:
+            errors.append("Selected target namespace does not match the Namespace Digital Twin.")
+        if facts.get("decision_is_final") is not True and not allow_provisional_dry_run:
+            errors.append("Namespace Digital Twin decision is not final.")
+        if str(facts.get("freshness") or "") in {
+            "expired",
+            "superseded",
+            "stale",
+            "drifted",
+        }:
+            errors.append("Namespace Digital Twin is stale, expired, superseded, or drifted.")
+        if str(facts.get("drift") or "") in {
+            "major",
+            "material",
+            "material_drift",
+            "drifted",
+            "stale",
+        }:
+            errors.append("Material drift requires Namespace Digital Twin regeneration.")
+        if str(gate.get("policy") or "") in {"deny", "blocked"}:
+            errors.append("Namespace Digital Twin policy blocks execution.")
+        if allow_provisional_dry_run:
+            if phase not in {"validation", "dry_run"}:
+                errors.append("A provisional Namespace Digital Twin may authorize only validation and dry-run.")
+        else:
+            if str(facts.get("dry_run") or "") != "passed":
+                errors.append("Namespace Digital Twin authoritative dry-run is not passed.")
+            decision = str(facts.get("decision") or "pending")
+            if decision == "red":
+                errors.append("Red Namespace Digital Twin decisions cannot execute.")
+            elif decision == "green":
+                if (gate.get("actions") or {}).get("start_execution", {}).get("enabled") is not True:
+                    errors.append("Green twin is not currently eligible to start execution.")
+                elif phase == "mutation" and not approval_accepted:
+                    errors.append(
+                        "Green twin requires baseline human approval before mutation."
+                    )
+            elif decision == "amber":
+                approval_enabled = (
+                    (gate.get("actions") or {}).get("request_approval", {}).get("enabled") is True
+                )
+                if not approval_enabled:
+                    errors.append("Amber twin is not eligible for bounded human approval.")
+                elif phase == "mutation" and not approval_accepted:
+                    errors.append("Amber twin requires a valid human approval before mutation.")
+            else:
+                errors.append("Namespace Digital Twin decision is not execution eligible.")
+        expected_fingerprint_hash = str(facts.get("command_fingerprint_hash") or "")
+        if phase in {"approval", "mutation"} and expected_fingerprint_hash:
+            supplied = sorted(str(item).strip() for item in (command_fingerprints or []) if str(item).strip())
+            if not supplied:
+                errors.append("Current dry-run command fingerprints are unavailable.")
+            supplied_hash = hashlib.sha256(
+                json.dumps(supplied, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            canonical_fingerprints = sorted(
+                str(item).strip()
+                for item in (facts.get("command_fingerprints") or [])
+                if str(item).strip()
+            )
+            canonical_hash = hashlib.sha256(
+                json.dumps(canonical_fingerprints, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if supplied and supplied_hash not in {expected_fingerprint_hash, canonical_hash}:
+                errors.append(
+                    "Current dry-run command fingerprints do not match the Namespace Digital Twin."
+                )
+        snapshot = {
+            "schema_version": gate.get("schema_version"),
+            "data_mode": gate.get("data_mode"),
+            "module_mode": gate.get("module_mode"),
+            "gate_hash": gate.get("gate_hash"),
+            **facts,
+            "risk": gate.get("risk"),
+            "policy": gate.get("policy"),
+            "evidence": gate.get("evidence"),
+            "decision_projection": gate.get("decision_projection"),
+            "reasons": gate.get("reasons") or [],
+            "actions": gate.get("actions") or {},
+            "verified_phase": phase,
+            "verified_at": datetime.now(UTC).isoformat(),
+        }
+        return snapshot, errors
     async def _run_mop_execution_phase_f(
         *,
         principal: SessionPrincipal,
@@ -4212,6 +4457,9 @@ def create_app() -> FastAPI:
         correlation_id: str | None,
         execution_mode: str,
         model_profile: str | None,
+        twin_id: str | None = None,
+        twin_decision_version: int | None = None,
+        twin_gate_hash: str | None = None,
     ) -> dict:
         preflight = mop_execution_preflight.preflight_bytes(
             content=content,
@@ -4225,6 +4473,7 @@ def create_app() -> FastAPI:
             "source_type": source_type,
             "filename": filename or "mop-bundle.zip",
             "sha256": (preflight.get("bundle") or {}).get("sha256"),
+            "canonical_sha256": (preflight.get("bundle") or {}).get("canonical_sha256"),
             "size_bytes": len(content),
             "run_id": source_metadata.get("run_id"),
             "artifact_id": source_metadata.get("artifact_id"),
@@ -4258,6 +4507,47 @@ def create_app() -> FastAPI:
                 "events": repository.list_events(run_id),
             }
 
+        require_twin_gate = (
+            settings.digital_twin_backend_mode == "real_core"
+            and execution_mode in {"approved_mutation", "dry_run_then_approval"}
+        )
+        twin_gate, twin_gate_errors = await _verify_transactional_twin_gate(
+            twin_id=twin_id,
+            expected_decision_version=twin_decision_version,
+            expected_gate_hash=twin_gate_hash,
+            bundle_hash=(preflight.get("bundle") or {}).get("canonical_sha256"),
+            target_namespace=target_namespace,
+            phase="validation",
+            require_binding=require_twin_gate,
+            allow_provisional_dry_run=execution_mode == "dry_run_only" and bool(twin_id),
+        )
+        if twin_gate or twin_gate_errors:
+            mop_execution_store.record_twin_gate(
+                run_id=run_id,
+                gate=twin_gate,
+                phase="validation",
+                valid=not twin_gate_errors,
+                errors=twin_gate_errors,
+            )
+        if twin_gate_errors:
+            reason = "Namespace Digital Twin execution gate blocked this request."
+            mop_execution_store.mark_failed(
+                run_id=run_id,
+                reason=reason,
+                payload={"twin_gate": twin_gate, "errors": twin_gate_errors},
+            )
+            return {
+                "valid": False,
+                "status": "twin_gate_blocked",
+                "run_id": run_id,
+                "correlation_id": correlation,
+                "summary": reason,
+                "preflight": preflight,
+                "twin_gate": twin_gate,
+                "failures": twin_gate_errors,
+                "warnings": preflight.get("warnings") or [],
+                "events": repository.list_events(run_id),
+            }
         agent = app.state.mop_execution_agent
         try:
             health_response = await agent.health()
@@ -4367,6 +4657,7 @@ def create_app() -> FastAPI:
                 "bundle_id": bundle_id,
                 "correlation_id": correlation,
                 "target_namespace": target_namespace,
+                "twin_gate": twin_gate,
                 "summary": summary,
                 "preflight": preflight,
                 "agent_health": health_response.audit_payload(),
@@ -4438,6 +4729,9 @@ def create_app() -> FastAPI:
             correlation_id=request.correlation_id,
             execution_mode=request.execution_mode,
             model_profile=request.model_profile,
+            twin_id=request.twin_id,
+            twin_decision_version=request.twin_decision_version,
+            twin_gate_hash=request.twin_gate_hash,
         )
 
     @app.post("/api/mop-execution/validate/upload", tags=["workflows"])
@@ -4446,6 +4740,9 @@ def create_app() -> FastAPI:
         correlation_id: str | None = Form(None),
         execution_mode: str = Form("dry_run_then_approval"),
         model_profile: str | None = Form(None),
+        twin_id: str | None = Form(None),
+        twin_decision_version: int | None = Form(None),
+        twin_gate_hash: str | None = Form(None),
         file: UploadFile = File(...),
         principal: SessionPrincipal = Depends(get_current_user),
     ) -> dict:
@@ -4472,6 +4769,9 @@ def create_app() -> FastAPI:
             correlation_id=correlation_id,
             execution_mode=execution_mode,
             model_profile=model_profile,
+            twin_id=twin_id,
+            twin_decision_version=twin_decision_version,
+            twin_gate_hash=twin_gate_hash,
         )
     @app.post("/api/mop-execution/dry-run", tags=["workflows"])
     async def start_mop_execution_dry_run(
@@ -4507,6 +4807,49 @@ def create_app() -> FastAPI:
             or metadata.get("correlation_id")
             or f"{settings.mop_execution_generated_name_prefix}-{target_namespace}-execution-{uuid4().hex[:10]}"
         )
+        gate_binding = metadata.get("twin_gate") or {}
+        require_twin_gate = (
+            settings.digital_twin_backend_mode == "real_core"
+            and request.execution_mode in {
+                "approved_mutation",
+                "dry_run_then_approval",
+            }
+        )
+        gate_snapshot, gate_errors = await _verify_transactional_twin_gate(
+            twin_id=request.twin_id or gate_binding.get("twin_id"),
+            expected_decision_version=(
+                request.twin_decision_version
+                if request.twin_decision_version is not None
+                else gate_binding.get("decision_version")
+            ),
+            expected_gate_hash=request.twin_gate_hash or gate_binding.get("gate_hash"),
+            bundle_hash=str((metadata.get("bundle_source") or {}).get("canonical_sha256") or "") or None,
+            target_namespace=target_namespace,
+            phase="dry_run",
+            require_binding=require_twin_gate,
+            allow_provisional_dry_run=(
+                request.execution_mode == "dry_run_only"
+                and bool(request.twin_id or gate_binding.get("twin_id"))
+            ),
+        )
+        if gate_snapshot or gate_errors:
+            mop_execution_store.record_twin_gate(
+                run_id=request.run_id,
+                gate=gate_snapshot,
+                phase="dry_run",
+                valid=not gate_errors,
+                errors=gate_errors,
+            )
+        if gate_errors:
+            return {
+                "valid": False,
+                "status": "dry_run_blocked_by_twin_gate",
+                "run_id": request.run_id,
+                "twin_gate": gate_snapshot,
+                "errors": gate_errors,
+                "mutation_controls_enabled": False,
+                "events": repository.list_events(request.run_id),
+            }
         return await _run_mop_execution_dry_run(
             run_id=request.run_id,
             bundle_id=str(bundle_id),
@@ -4838,6 +5181,44 @@ def create_app() -> FastAPI:
                 "mutation_controls_enabled": False,
                 "events": repository.list_events(request.run_id),
             }
+        gate_binding = metadata.get("twin_gate") or {}
+        binding_twin_id = request.twin_id or gate_binding.get("twin_id")
+        gate_snapshot, gate_errors = await _verify_transactional_twin_gate(
+            twin_id=binding_twin_id,
+            expected_decision_version=(
+                request.twin_decision_version
+                if request.twin_decision_version is not None
+                else gate_binding.get("decision_version")
+            ),
+            expected_gate_hash=request.twin_gate_hash or gate_binding.get("gate_hash"),
+            bundle_hash=str((metadata.get("bundle_source") or {}).get("canonical_sha256") or "") or None,
+            target_namespace=str(
+                metadata.get("target_namespace")
+                or settings.mop_execution_default_target_namespace
+            ),
+            phase="approval",
+            require_binding=settings.digital_twin_backend_mode == "real_core",
+            command_fingerprints=request.command_fingerprints,
+        )
+        mop_execution_store.record_twin_gate(
+            run_id=request.run_id,
+            gate=gate_snapshot,
+            phase="approval",
+            valid=not gate_errors,
+            errors=gate_errors,
+        )
+        if gate_errors:
+            return {
+                "valid": False,
+                "accepted": False,
+                "status": "approval_blocked_by_twin_gate",
+                "run_id": request.run_id,
+                "dry_run_job_id": str(job_id),
+                "twin_gate": gate_snapshot,
+                "errors": gate_errors,
+                "mutation_controls_enabled": False,
+                "events": repository.list_events(request.run_id),
+            }
         target_namespace = str(metadata.get("target_namespace") or settings.mop_execution_default_target_namespace)
         issued_at = datetime.now(UTC)
         expires_at = issued_at + timedelta(minutes=request.expires_minutes)
@@ -4851,6 +5232,21 @@ def create_app() -> FastAPI:
             approval_scope["operation"] = "approved_mutation"
         if not str(approval_scope.get("dry_run_job_id") or "").strip():
             approval_scope["dry_run_job_id"] = str(job_id)
+        approval_scope.update(
+            {
+                "twin_id": gate_snapshot.get("twin_id"),
+                "twin_decision_version": gate_snapshot.get("decision_version"),
+                "twin_gate_hash": gate_snapshot.get("gate_hash"),
+                "bundle_hash": gate_snapshot.get("bundle_hash"),
+                "input_hash": gate_snapshot.get("input_hash"),
+                "policy_version": gate_snapshot.get("policy_version"),
+                "risk_rule_version": gate_snapshot.get("risk_rule_version"),
+                "authoritative_dry_run_job_id": gate_snapshot.get("dry_run_job_id"),
+                "authoritative_command_fingerprint_hash": gate_snapshot.get(
+                    "command_fingerprint_hash"
+                ),
+            }
+        )
         approval_payload = {
             "approval_id": f"mopx_appr_{uuid4().hex}",
             "job_id": str(job_id),
@@ -4873,6 +5269,35 @@ def create_app() -> FastAPI:
             "requires_approval": True,
         }
         command_fingerprints = approval_payload["command_fingerprints"]
+        approved_phase_ids: list[str] = []
+        approved_step_ids: list[str] = []
+        try:
+            plan_response = await app.state.mop_execution_agent.get_plan(str(job_id))
+            plan_body = _agent_response_dict(plan_response.payload)
+            plan = _agent_find_key(plan_body, "plan")
+            if isinstance(plan, dict):
+                for phase in plan.get("phases") or []:
+                    if not isinstance(phase, dict):
+                        continue
+                    phase_id = str(phase.get("phase_id") or "").strip()
+                    if phase_id:
+                        approved_phase_ids.append(phase_id)
+                    for step in phase.get("steps") or []:
+                        if not isinstance(step, dict):
+                            continue
+                        step_id = str(step.get("step_id") or "").strip()
+                        if step_id:
+                            approved_step_ids.append(step_id)
+        except Exception as exc:
+            logger.warning(
+                "mop_execution_approval_plan_scope_unavailable run_id=%s error=%s",
+                request.run_id,
+                exc,
+            )
+        if approved_phase_ids:
+            approval_scope["approved_phase_ids"] = approved_phase_ids
+        if approved_step_ids:
+            approval_scope["approved_step_ids"] = approved_step_ids
         agent_approval_payload = {
             "approval_id": approval_payload["approval_id"],
             "approver_id": principal.user_id or principal.username,
@@ -4885,6 +5310,10 @@ def create_app() -> FastAPI:
         }
         if len(command_fingerprints) == 1:
             agent_approval_payload["command_fingerprint"] = command_fingerprints[0]
+        if approved_phase_ids:
+            agent_approval_payload["approved_phase_ids"] = approved_phase_ids
+        if approved_step_ids:
+            agent_approval_payload["approved_step_ids"] = approved_step_ids
         try:
             approval_response = await app.state.mop_execution_agent.submit_approval(str(job_id), agent_approval_payload)
             agent_payload = approval_response.audit_payload()
@@ -4995,6 +5424,49 @@ def create_app() -> FastAPI:
                 "status": "mutation_blocked_by_approval",
                 "run_id": request.run_id,
                 "errors": approval_errors or ["Run is not approved for mutation."],
+                "mutation_succeeded": False,
+                "rollback_required": False,
+                "events": repository.list_events(request.run_id),
+            }
+        gate_binding = metadata.get("twin_gate") or {}
+        accepted_approval = _latest_accepted_approval(metadata) or {}
+        accepted_approval_payload = accepted_approval.get("approval") or {}
+        current_fingerprints = list(
+            accepted_approval_payload.get("command_fingerprints")
+            or (_latest_reports(metadata).get("command_fingerprints") or [])
+        )
+        gate_snapshot, gate_errors = await _verify_transactional_twin_gate(
+            twin_id=request.twin_id or gate_binding.get("twin_id"),
+            expected_decision_version=(
+                request.twin_decision_version
+                if request.twin_decision_version is not None
+                else gate_binding.get("decision_version")
+            ),
+            expected_gate_hash=request.twin_gate_hash or gate_binding.get("gate_hash"),
+            bundle_hash=str((metadata.get("bundle_source") or {}).get("canonical_sha256") or "") or None,
+            target_namespace=str(
+                metadata.get("target_namespace")
+                or settings.mop_execution_default_target_namespace
+            ),
+            phase="mutation",
+            require_binding=settings.digital_twin_backend_mode == "real_core",
+            approval_accepted=True,
+            command_fingerprints=current_fingerprints,
+        )
+        mop_execution_store.record_twin_gate(
+            run_id=request.run_id,
+            gate=gate_snapshot,
+            phase="mutation",
+            valid=not gate_errors,
+            errors=gate_errors,
+        )
+        if gate_errors:
+            return {
+                "valid": False,
+                "status": "mutation_blocked_by_twin_gate",
+                "run_id": request.run_id,
+                "twin_gate": gate_snapshot,
+                "errors": gate_errors,
                 "mutation_succeeded": False,
                 "rollback_required": False,
                 "events": repository.list_events(request.run_id),

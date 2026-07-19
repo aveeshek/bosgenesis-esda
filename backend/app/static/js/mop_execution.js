@@ -18,6 +18,12 @@ const repoFolderInput = $("mop_execution_repo_folder");
 const bundleFileGroup = $("mop_execution_bundle_file_group");
 const bundleFileInput = $("mop_execution_bundle_file");
 const bundleMetadataPanel = $("mop-execution-bundle-metadata");
+const twinGatePanel = $("namespace-twin-gate");
+const twinGateTitle = $("namespace-twin-gate-title");
+const twinGateDecision = $("namespace-twin-gate-decision");
+const twinGateFacts = $("namespace-twin-gate-facts");
+const twinGateReasons = $("namespace-twin-gate-reasons");
+const twinGateActions = $("namespace-twin-gate-actions");
 const targetNamespaceSelect = $("mop_execution_target_namespace");
 const correlationInput = $("mop_execution_correlation_id");
 const progressPanel = $("mop-progress-panel");
@@ -83,6 +89,8 @@ const autoHideMs = 30000;
 let events = [], activeRunId = null, es = null, lastSeq = 0, pinned = false, autoHideTimer = null, viewGeneration = 0;
 let approvalHydrationInFlight = new Set();
 let bundleCandidates = [];
+let selectedTwinGate = null;
+let requestedTwinIdConsumed = false;
 let workingOrder = 0, workingKeys = new Set();
 const seen = new Set();
 const defs = [
@@ -467,6 +475,7 @@ function buildApprovalPayload() {
     command_fingerprints: fingerprints,
     correlation_id: valueOf("mop_execution_correlation_id"),
     model_profile: valueOf("model_profile"),
+    ...twinGateRequestFields(),
   };
   const errors = validateApprovalPayload(payload);
   if (!payload.run_id) errors.push("No active MoP Execution run is selected.");
@@ -575,6 +584,7 @@ async function startMutation() {
       strategy: approvedMutationMode() ? "continue_existing" : (mutationStrategy?.value || "continue_existing"),
       correlation_id: valueOf("mop_execution_correlation_id"),
       model_profile: valueOf("model_profile"),
+      ...twinGateRequestFields(),
     };
     const response = await fetch("/api/mop-execution/mutation", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
     const result = await response.json();
@@ -934,7 +944,7 @@ async function copyText(text) { if (navigator.clipboard?.writeText) return navig
 function titleFromPhase(phase) { return String(phase || "Agent").split("_").map((part) => part ? part[0].toUpperCase() + part.slice(1) : part).join(" "); }
 function stageForEvent(e) {
   const phase = String(e?.payload?.phase || e?.payload?.current_phase || "").toLowerCase();
-  const map = {run_started: "intake", preflight_completed: "preflight", agent_health_checked: "agent_health", agent_readiness_checked: "agent_health", agent_capabilities_checked: "agent_health", bundle_validated: "bundle_validate", bundle_validation_completed: "bundle_validate", dry_run_job_created: "dry_run_job", dry_run_started: "dry_run", observations_received: "observations", job_observation: "observations", decision_required: "decision", dry_run_report_created: "dry_run_report", approval_submitted: "approval", mutation_job_created: "mutation_job", mutation_started: "mutation", validation_completed: "validation", reports_created: "reports", reports_updated: (e?.payload?.reports?.phase === "post_mutation" ? "reports" : "dry_run_report"), artifact_publish_completed: "reports", artifact_publish_failed: "reports", rollback_cleanup_updated: "rollback_cleanup", rollback_started: "rollback_cleanup", cleanup_started: "rollback_cleanup", run_completed: "complete", run_failed: "complete"};
+  const map = {run_started: "intake", preflight_completed: "preflight", digital_twin_gate_bound: "preflight", digital_twin_gate_revalidated: "preflight", agent_health_checked: "agent_health", agent_readiness_checked: "agent_health", agent_capabilities_checked: "agent_health", bundle_validated: "bundle_validate", bundle_validation_completed: "bundle_validate", dry_run_job_created: "dry_run_job", dry_run_started: "dry_run", observations_received: "observations", job_observation: "observations", decision_required: "decision", dry_run_report_created: "dry_run_report", approval_submitted: "approval", mutation_job_created: "mutation_job", mutation_started: "mutation", validation_completed: "validation", reports_created: "reports", reports_updated: (e?.payload?.reports?.phase === "post_mutation" ? "reports" : "dry_run_report"), artifact_publish_completed: "reports", artifact_publish_failed: "reports", rollback_cleanup_updated: "rollback_cleanup", rollback_started: "rollback_cleanup", cleanup_started: "rollback_cleanup", run_completed: "complete", run_failed: "complete"};
   return map[e?.event_type] || (defs.some(([id]) => id === phase) ? phase : null);
 }
 function stageNoteLabel(stageId) { if (stageId === "creating_plan") return "00 / Creating Plan"; const n = String(stageNumbers[stageId] || 99).padStart(2, "0"); return `${n} / ${stageLabels[stageId] || titleFromPhase(stageId)}`; }
@@ -1022,6 +1032,7 @@ function processEvent(e, opt = {}) {
   if (opt.live !== false && stage) addStageWorking(stage, e.message || summarize(e), e.payload?.detail || e.payload?.reasoning_summary || "", `event:${e.event_id || e.sequence || e.event_type}:${stage}`);
   addTimeline(e);
   if (stage) mark(stage, stageStatusForEvent(e), summarize(e));
+  if (["digital_twin_gate_bound", "digital_twin_gate_revalidated"].includes(e.event_type) && e.payload?.twin_gate) renderTwinGate(e.payload.twin_gate);
   renderActivity();
   if (opt.reveal !== false && stage) revealRail(summarize(e));
   const mapped = {run_started: "running", run_failed: "failed", rollback_cleanup_updated: e.payload?.state?.cleanup_status}[e.event_type] || (e.event_type === "run_completed" ? (e.payload?.status || "completed") : null);
@@ -1126,7 +1137,7 @@ function renderBundleMetadata(candidate = selectedCandidate()) {
       `Source namespace: ${candidate.source_namespace || "unknown"}`,
       `Generated: ${compactTime(candidate.generated_at)}`,
       `Bundle: ${candidate.filename || "mop-bundle.zip"} (${formatBytes(candidate.size_bytes)})`,
-      `SHA-256: ${shortHash(candidate.sha256)}`,
+      `Bundle identity: ${shortHash(candidate.canonical_sha256 || candidate.sha256)}`,
       `Publish folder: ${candidate.publish_folder || "not published"}`,
     ];
   } else if (source === "artifact_repo_folder") {
@@ -1138,6 +1149,105 @@ function renderBundleMetadata(candidate = selectedCandidate()) {
     lines = ["No MoP bundle selected."];
   }
   bundleMetadataPanel.innerHTML = `<div class="working-note-label">Bundle Metadata</div><p>${escapeHtml(lines.join("\n"))}</p>`;
+}
+function gateValue(value) {
+  if (value == null || value === "") return "not available";
+  if (typeof value === "object") return value.classification || value.level || value.status || value.score || "available";
+  return String(value).replaceAll("_", " ");
+}
+function twinGateRequestFields() {
+  const facts = selectedTwinGate?.gate_facts || {};
+  return selectedTwinGate ? {
+    twin_id: facts.twin_id,
+    twin_decision_version: facts.decision_version,
+    twin_gate_hash: selectedTwinGate.gate_hash,
+  } : {};
+}
+function updateExecutionGateControl() {
+  const submit = $("mop-execution-submit");
+  if (!submit) return;
+  const requiresGate = ["approved_mutation", "dry_run_then_approval"].includes(valueOf("mop_execution_mode"));
+  const decision = selectedTwinGate?.gate_facts?.decision;
+  const actions = selectedTwinGate?.actions || {};
+  const eligible = decision === "green"
+    ? actions.start_execution?.enabled === true
+    : decision === "amber" && actions.request_approval?.enabled === true;
+  submit.disabled = Boolean(requiresGate && !eligible);
+  if (requiresGate && !selectedTwinGate) setText(formStatus, "Select a bundle with a final authoritative Namespace Twin before approved execution.");
+}
+function renderTwinGate(gate, message = "") {
+  selectedTwinGate = gate || null;
+  if (!twinGatePanel) return;
+  twinGatePanel.className = "namespace-twin-gate mb-3";
+  if (!gate) {
+    twinGatePanel.classList.add("is-empty");
+    setText(twinGateTitle, message || "No matching authoritative twin");
+    setText(twinGateDecision, "not bound");
+    twinGateDecision.className = "badge text-bg-secondary";
+    if (twinGateFacts) twinGateFacts.innerHTML = "";
+    if (twinGateReasons) twinGateReasons.innerHTML = "";
+    if (twinGateActions) twinGateActions.innerHTML = '<a class="btn btn-sm btn-outline-light" href="/digital-twins">Open Digital Twins</a>';
+    updateExecutionGateControl();
+    return;
+  }
+  const facts = gate.gate_facts || {};
+  const decision = facts.decision || "pending";
+  twinGatePanel.classList.add(`is-${decision}`);
+  setText(twinGateTitle, `${facts.twin_id} · decision v${facts.decision_version}`);
+  setText(twinGateDecision, decision);
+  twinGateDecision.className = `badge ${decision === "green" ? "text-bg-success" : decision === "amber" ? "text-bg-warning" : "text-bg-danger"}`;
+  const matrix = [
+    ["Risk", gateValue(gate.risk)], ["Policy", gateValue(gate.policy)], ["Evidence", gateValue(gate.evidence)],
+    ["Freshness", gateValue(facts.freshness)], ["Dry-run", gateValue(facts.dry_run)], ["Rollback", gateValue(facts.rollback)],
+    ["Drift", gateValue(facts.drift)], ["Approval", gateValue(facts.approval)], ["Gate", shortHash(gate.gate_hash)],
+  ];
+  if (twinGateFacts) twinGateFacts.innerHTML = matrix.map(([label, value]) => `<span><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></span>`).join("");
+  if (twinGateReasons) twinGateReasons.innerHTML = (gate.reasons || []).slice(0, 3).map((reason) => `<li>${escapeHtml(reason.summary || reason.message || reason.code || String(reason))}</li>`).join("") || "<li>No additional blocking reasons.</li>";
+  const action = (code, label) => {
+    const contract = gate.actions?.[code] || {};
+    return `<button class="btn btn-sm btn-outline-light" type="button" disabled title="${escapeHtml(contract.enabled ? `${label} is enabled by the canonical gate.` : contract.disabled_reason || `${label} is disabled by the canonical gate.`)}">${escapeHtml(label)}: ${contract.enabled ? "enabled" : "disabled"}</button>`;
+  };
+  if (twinGateActions) twinGateActions.innerHTML = `<a class="btn btn-sm btn-outline-light" href="/digital-twins/${encodeURIComponent(facts.twin_id)}?tab=overview">View Full Twin</a>${action("start_execution", "Start")}${action("request_approval", "Approval")}${action("regenerate_twin", "Regenerate")}`;
+  updateExecutionGateControl();
+}
+async function loadTwinGate() {
+  const candidate = selectedCandidate();
+  const target = valueOf("mop_execution_target_namespace") || "agent-testing";
+  const params = new URLSearchParams(window.location.search);
+  const requestedTwinId = requestedTwinIdConsumed ? null : params.get("twin_id");
+  requestedTwinIdConsumed = requestedTwinIdConsumed || Boolean(requestedTwinId);
+  const requestedBundleHash = params.get("bundle_hash");
+  if (requestedBundleHash && activityRunSelect) {
+    const match = bundleCandidates.find((item) => (item.canonical_sha256 || item.sha256) === requestedBundleHash);
+    if (match) activityRunSelect.value = match.run_id;
+  }
+  const activeCandidate = selectedCandidate() || candidate;
+  const bundleHash = activeCandidate?.canonical_sha256 || activeCandidate?.sha256 || requestedBundleHash;
+  if (!bundleHash && !requestedTwinId) {
+    renderTwinGate(null, "Select a persisted MoP bundle to match its twin.");
+    return;
+  }
+  twinGatePanel?.classList.add("is-loading");
+  setText(twinGateTitle, "Matching authoritative twin...");
+  try {
+    let twinId = requestedTwinId;
+    if (!twinId) {
+      const response = await fetch(`/api/digital-twins?namespace=${encodeURIComponent(target)}&limit=100`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const listing = await response.json();
+      const match = (listing.items || []).find((item) => (item.bundle_hash || item.bundle?.bundle_hash) === bundleHash && (item.target_namespace || item.target?.namespace) === target);
+      twinId = match?.twin_id;
+    }
+    if (!twinId) {
+      renderTwinGate(null, "No final Namespace Twin matches this bundle hash and target.");
+      return;
+    }
+    const response = await fetch(`/api/digital-twins/${encodeURIComponent(twinId)}/gate`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    renderTwinGate(await response.json());
+  } catch (error) {
+    renderTwinGate(null, `Twin gate unavailable: ${error.message}`);
+  }
 }
 function updateSourceVisibility() {
   const source = valueOf("mop_execution_bundle_source") || "activity_run";
@@ -1249,6 +1359,7 @@ async function runAgentValidation(preflightResult) {
     correlation_id: valueOf("mop_execution_correlation_id") || preflightResult?.correlation_id,
     execution_mode: valueOf("mop_execution_mode") || "approved_mutation",
     model_profile: valueOf("model_profile"),
+    ...twinGateRequestFields(),
   };
   if (source === "upload_bundle") {
     const file = bundleFileInput?.files?.[0];
@@ -1338,6 +1449,7 @@ async function runDryRun(validationResult) {
     correlation_id: validationResult.correlation_id || valueOf("mop_execution_correlation_id"),
     execution_mode: valueOf("mop_execution_mode") || "approved_mutation",
     model_profile: valueOf("model_profile"),
+    ...twinGateRequestFields(),
   };
   const response = await fetch("/api/mop-execution/dry-run", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
   if (!response.ok) throw new Error(await response.text());
@@ -1917,6 +2029,7 @@ async function boot() {
   stampCorrelationId();
   updateSourceVisibility();
   await loadBundleCandidates();
+  await loadTwinGate();
   resetView("No MoP execution run yet.");
   setStatus("Idle");
   setVisual("idle");
@@ -1929,12 +2042,13 @@ async function boot() {
   if (runId) await openRun(runId);
 }
 bundleSource?.addEventListener("change", () => { updateSourceVisibility(); stampCorrelationId(); });
-activityRunSelect?.addEventListener("change", () => renderBundleMetadata());
+activityRunSelect?.addEventListener("change", () => { renderBundleMetadata(); void loadTwinGate(); });
 repoFolderInput?.addEventListener("input", () => renderBundleMetadata());
 bundleFileInput?.addEventListener("change", () => renderBundleMetadata());
-targetNamespaceSelect?.addEventListener("change", () => { stampCorrelationId(); renderBundleMetadata(); });
+targetNamespaceSelect?.addEventListener("change", () => { stampCorrelationId(); renderBundleMetadata(); void loadTwinGate(); });
 copyProgressButton?.addEventListener("click", async () => { try { await copyText(timelineText()); setText(copyProgressStatus, "Progress copied."); } catch (err) { setText(copyProgressStatus, `Copy failed: ${err.message}`); } });
 copyLogsButton?.addEventListener("click", async () => { try { await copyText(logsText()); setText(copyProgressStatus, "Logs copied."); } catch (err) { setText(copyProgressStatus, `Copy failed: ${err.message}`); } });
+$("mop_execution_mode")?.addEventListener("change", updateExecutionGateControl);
 startNewButton?.addEventListener("click", startNewRun);
 autonomyMaximize?.addEventListener("click", updateAutonomyModal);
 autonomyModal?.addEventListener("shown.bs.modal", updateAutonomyModal);

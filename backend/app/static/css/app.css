@@ -3473,3 +3473,28 @@ body:has(#mop-autonomy-modal.show) .modal-backdrop.show {
   overflow-x: auto;
   padding: 0.36rem 0.48rem;
 }
+
+/* Phase 6: compact authoritative Namespace Twin execution gate */
+.namespace-twin-gate {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(42, 31, 91, 0.34);
+  backdrop-filter: blur(14px) saturate(115%);
+  padding: 0.7rem;
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.08);
+}
+.namespace-twin-gate.is-green { border-color: rgba(116, 225, 176, 0.58); }
+.namespace-twin-gate.is-amber { border-color: rgba(255, 200, 112, 0.68); }
+.namespace-twin-gate.is-red { border-color: rgba(255, 113, 126, 0.7); }
+.namespace-twin-gate-header,
+.namespace-twin-gate-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; }
+.namespace-twin-gate-header strong { font-size: 0.78rem; overflow-wrap: anywhere; }
+.namespace-twin-gate-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.35rem; margin-top: 0.55rem; }
+.namespace-twin-gate-facts span { min-width: 0; padding: 0.35rem; background: rgba(21, 18, 64, 0.26); border: 1px solid rgba(255, 255, 255, 0.1); }
+.namespace-twin-gate-facts small,
+.namespace-twin-gate-facts strong { display: block; overflow-wrap: anywhere; }
+.namespace-twin-gate-facts small { color: rgba(255, 255, 255, 0.68); font-size: 0.6rem; text-transform: uppercase; }
+.namespace-twin-gate-facts strong { font-size: 0.68rem; margin-top: 0.1rem; }
+.namespace-twin-gate-reasons { margin: 0.5rem 0; padding-left: 1rem; font-size: 0.68rem; color: rgba(255, 255, 255, 0.82); }
+.namespace-twin-gate-actions { justify-content: flex-start; }
+.namespace-twin-gate-actions .btn { font-size: 0.62rem; padding: 0.25rem 0.4rem; }
+@media (max-width: 575.98px) { .namespace-twin-gate-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

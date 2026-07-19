@@ -72,6 +72,21 @@ class FakeMopExecutionDryRunAgent(FakeMopExecutionAgent):
             {"job_id": job_id, "reason_code": "NEEDS_OPERATOR_SCOPE", "phase": "dry_run"},
         )
 
+
+    async def get_dry_run_evidence(self, job_id: str) -> MopExecutionAgentResponse:
+        self.calls.append("get_dry_run_evidence")
+        return self._response(
+            "GET",
+            f"http://agent/v1/execution-jobs/{job_id}/dry-run-evidence",
+            {
+                "data": {
+                    "dry_run_evidence": {
+                        "command_fingerprints": ["fp-helm-template-001", "fp-kubectl-dry-run-002"],
+                        "command_fingerprint_hash": "authoritative-fingerprint-hash",
+                    }
+                }
+            },
+        )
     async def list_reports(self, job_id: str) -> MopExecutionAgentResponse:
         self.calls.append("list_reports")
         return self._response(

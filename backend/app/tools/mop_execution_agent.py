@@ -328,6 +328,20 @@ class MopExecutionAgentClient:
             extra_headers={"x-esda-actor": actor_id} if actor_id else None,
         )
 
+    async def record_namespace_twin_execution_link(
+        self,
+        twin_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_id: str | None = None,
+    ) -> MopExecutionAgentResponse:
+        return await self._request(
+            "POST",
+            f"v1/namespace-twins/{quote(twin_id, safe='')}/execution-links",
+            json_body=payload,
+            extra_headers={"x-esda-actor": actor_id} if actor_id else None,
+        )
+
     async def get_namespace_twin_actions(self, twin_id: str) -> MopExecutionAgentResponse:
         return await self._request("GET", f"v1/namespace-twins/{quote(twin_id, safe='')}/actions")
 
@@ -442,6 +456,11 @@ class MopExecutionAgentClient:
 
     async def get_plan(self, job_id: str) -> MopExecutionAgentResponse:
         return await self._request("GET", f"v1/execution-jobs/{quote(job_id, safe='')}/plan")
+
+    async def get_dry_run_evidence(self, job_id: str) -> MopExecutionAgentResponse:
+        return await self._request(
+            "GET", f"v1/execution-jobs/{quote(job_id, safe='')}/dry-run-evidence"
+        )
 
     async def get_observations(
         self, job_id: str, params: dict[str, Any] | None = None

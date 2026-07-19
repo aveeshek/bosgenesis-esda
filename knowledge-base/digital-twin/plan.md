@@ -634,43 +634,43 @@ Approval note: the three unchecked items are human sign-offs and are intentional
 
 ### Compact Gate Integration
 
-- [ ] Replace the Bundle Execution mock gate with real summary data.
-- [ ] Show Twin ID, decision/version, risk, three decision axes, top reasons, freshness, dry-run, rollback, drift, and approval requirement.
-- [ ] Add **View Full Twin** to the canonical detail route.
-- [ ] Add Regenerate only for authorized stale/superseded states.
-- [ ] Add Request Approval only for eligible states.
-- [ ] Keep baseline Green approval-gated.
-- [ ] Keep Red, failed, stale, expired, superseded, or mismatched states blocked.
-- [ ] Verify compact and full views are fact-identical.
+- [x] Replace the Bundle Execution mock gate with real summary data.
+- [x] Show Twin ID, decision/version, risk, three decision axes, top reasons, freshness, dry-run, rollback, drift, and approval requirement.
+- [x] Add **View Full Twin** to the canonical detail route.
+- [x] Add Regenerate only for authorized stale/superseded states.
+- [x] Add Request Approval only for eligible states.
+- [x] Keep baseline Green approval-gated.
+- [x] Keep Red, failed, stale, expired, superseded, or mismatched states blocked.
+- [x] Verify compact and full views are fact-identical.
 
 ### Transactional Execution Gate
 
-- [ ] Verify twin ID and decision version.
-- [ ] Verify bundle and input hash.
-- [ ] Verify target cluster and namespace.
-- [ ] Verify dry-run job and command fingerprint hash.
-- [ ] Verify policy and risk-rule versions.
-- [ ] Verify freshness, drift, expiry, and supersession.
-- [ ] Verify approval identity, scope, rationale, and expiry.
-- [ ] Verify namespace lock and idempotency key.
-- [ ] Reject every mismatch server-side even if the UI control is stale.
+- [x] Verify twin ID and decision version.
+- [x] Verify bundle and input hash.
+- [x] Verify target cluster and namespace.
+- [x] Verify dry-run job and command fingerprint hash.
+- [x] Verify policy and risk-rule versions.
+- [x] Verify freshness, drift, expiry, and supersession.
+- [x] Verify approval identity, scope, rationale, and expiry.
+- [x] Verify namespace lock and idempotency key.
+- [x] Reject every mismatch server-side even if the UI control is stale.
 
 ### Post-Execution Linkage
 
-- [ ] Link mutation, validation, reports, rollback, and cleanup to the twin.
-- [ ] Show execution relationship in the detail header and audit timeline.
-- [ ] Compare observed outcome with planned resources.
-- [ ] Preserve final execution evidence for later calibration.
-- [ ] Never rewrite the pre-execution decision after the fact.
+- [x] Link mutation, validation, reports, rollback, and cleanup to the twin.
+- [x] Show execution relationship in the detail header and audit timeline.
+- [x] Compare observed outcome with planned resources.
+- [x] Preserve final execution evidence for later calibration.
+- [x] Never rewrite the pre-execution decision after the fact.
 
 ### Phase 6 Acceptance
 
-- [ ] Green follows baseline approval policy.
-- [ ] Amber requires valid human approval where policy permits continuation.
-- [ ] Red always blocks mutation.
-- [ ] Stale/materially drifted twin requires regeneration.
-- [ ] UI and backend gate outcomes match exactly.
-- [ ] Full Bundle Generation -> Digital Twin -> Approval -> Bundle Execution journey passes.
+- [x] Green follows baseline approval policy.
+- [x] Amber requires valid human approval where policy permits continuation.
+- [x] Red always blocks mutation.
+- [x] Stale/materially drifted twin requires regeneration.
+- [x] UI and backend gate outcomes match exactly.
+- [x] Full Bundle Generation -> Digital Twin -> Approval -> Bundle Execution journey passes.
 
 ---
 

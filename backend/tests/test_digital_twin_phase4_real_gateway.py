@@ -1786,3 +1786,63 @@ def test_slice5k_mop_replay_is_optional_isolated_and_summarized_only_after_facts
     assert explanation_logs[-1].safe_output_json == explanation
     assert "No Run Replay control is exposed" in detail_script
     assert "does not prove production success" in detail_script
+
+
+def test_phase6_execution_gate_is_canonical_hash_bound_and_versioned(
+    tmp_path, monkeypatch
+) -> None:
+    twin_id = CORE_TWIN["twin_id"]
+    with build_client(tmp_path, monkeypatch) as client:
+        login(client)
+        fake = client.app.state.digital_twin_gateway.client
+        fake.twin.update(
+            {
+                "decision": "amber",
+                "decision_is_final": True,
+                "lifecycle_status": "succeeded",
+                "policy_version": "namespace-twin-policy-2026.07.1",
+                "risk_rule_version": "namespace-twin-risk-1.0.0",
+                "actions": [
+                    {
+                        "code": "request_approval",
+                        "label": "Request Approval",
+                        "visible": True,
+                        "enabled": True,
+                    },
+                    {
+                        "code": "start_execution",
+                        "label": "Start Execution",
+                        "visible": True,
+                        "enabled": False,
+                    },
+                    {
+                        "code": "regenerate_twin",
+                        "label": "Regenerate Twin",
+                        "visible": True,
+                        "enabled": False,
+                    },
+                ],
+            }
+        )
+        first = client.get(f"/api/digital-twins/{twin_id}/gate")
+        second = client.get(f"/api/digital-twins/{twin_id}/gate")
+        fake.twin["decision_version"] = 2
+        changed = client.get(f"/api/digital-twins/{twin_id}/gate")
+
+    assert first.status_code == 200
+    assert first.json() == second.json()
+    gate = first.json()
+    assert gate["module_mode"] == "authoritative_execution_gate"
+    assert gate["model_authority"] is False
+    assert gate["gate_facts"]["decision"] == "amber"
+    assert gate["gate_facts"]["decision_is_final"] is True
+    assert gate["gate_facts"]["dry_run"] == "passed"
+    assert gate["gate_facts"]["policy_version"] == (
+        "namespace-twin-policy-2026.07.1"
+    )
+    assert gate["gate_facts"]["risk_rule_version"] == (
+        "namespace-twin-risk-1.0.0"
+    )
+    assert gate["actions"]["request_approval"]["enabled"] is True
+    assert gate["actions"]["start_execution"]["enabled"] is False
+    assert changed.json()["gate_hash"] != gate["gate_hash"]

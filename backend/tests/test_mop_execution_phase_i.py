@@ -12,6 +12,21 @@ class FakeMopExecutionApprovalAgent(FakeMopExecutionDryRunAgent):
         super().__init__(states=["succeeded"])
         self.accepted = accepted
         self.approval_request: dict[str, Any] | None = None
+    async def get_plan(self, job_id: str) -> MopExecutionAgentResponse:
+        self.calls.append("get_plan")
+        return self._response(
+            "GET",
+            f"http://agent/v1/execution-jobs/{job_id}/plan",
+            {
+                "ok": True,
+                "data": {
+                    "plan": {
+                        "phases": [{"phase_id": "apply", "steps": [{"step_id": "apply-config"}]}]
+                    }
+                },
+            },
+        )
+
 
     async def submit_approval(self, job_id: str, payload: dict[str, Any]) -> MopExecutionAgentResponse:
         self.calls.append("submit_approval")
@@ -83,6 +98,7 @@ def test_mop_execution_phase_i_collects_dry_run_reports_after_success(tmp_path, 
         assert "get_report_metadata" in fake_agent.calls
         assert result["reports"]["summary"] == "Dry-run would create one ConfigMap and one Service."
         assert result["reports"]["command_fingerprints"] == ["fp-helm-template-001", "fp-kubectl-dry-run-002"]
+        assert result["reports"]["command_fingerprint_hash"] == "authoritative-fingerprint-hash"
         assert result["reports"]["reports"][0]["downloads"]
         assert result["approval_gate"]["status"] == "waiting_for_human_approval"
         event_types = [event["event_type"] for event in result["events"]]
@@ -151,6 +167,8 @@ def test_mop_execution_phase_i_submits_approval_with_scope_and_fingerprints(tmp_
         assert fake_agent.approval_request["statement"] == "Dry-run evidence, policy gates, and command fingerprints have been reviewed."
         assert fake_agent.approval_request["approver_role"] == "operator"
         assert "expires_at" in fake_agent.approval_request
+        assert fake_agent.approval_request["approved_phase_ids"] == ["apply"]
+        assert fake_agent.approval_request["approved_step_ids"] == ["apply-config"]
         assert "command_fingerprint" not in fake_agent.approval_request
         assert "operator" not in fake_agent.approval_request
         assert "approved_by" not in fake_agent.approval_request

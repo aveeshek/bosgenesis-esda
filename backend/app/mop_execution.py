@@ -110,6 +110,35 @@ class MopExecutionRunStore:
             "event": event,
         }
 
+    def record_twin_gate(
+        self,
+        *,
+        run_id: str,
+        gate: dict[str, Any],
+        phase: str,
+        valid: bool,
+        errors: list[str] | None = None,
+    ) -> dict[str, Any]:
+        event_type = (
+            "digital_twin_gate_bound"
+            if phase == "validation"
+            else "digital_twin_gate_revalidated"
+        )
+        return self._record(
+            run_id,
+            event_type,
+            f"Namespace Digital Twin gate {phase} check completed",
+            {
+                "phase": phase,
+                "valid": valid,
+                "errors": errors or [],
+                "twin_gate": gate,
+                "twin_id": gate.get("twin_id"),
+                "twin_decision_version": gate.get("decision_version"),
+                "twin_gate_hash": gate.get("gate_hash"),
+            },
+            status="running" if valid else "failed",
+        )
     def record_preflight(self, *, run_id: str, passed: bool, checks: dict[str, Any]) -> dict[str, Any]:
         return self._record(
             run_id,
@@ -351,14 +380,22 @@ class MopExecutionRunStore:
             "policy_decisions": [],
             "rollback_cleanup": [],
             "safe_summaries": [],
+            "twin_gate": None,
+            "bundle_source": {},
+            "execution_mode": None,
         }
         for event in events:
             payload = event.get("payload") or {}
+            if event.get("event_type") == "run_started":
+                metadata["bundle_source"] = payload.get("bundle_source") or {}
+                metadata["execution_mode"] = payload.get("execution_mode")
             for key in ("bundle_id", "dry_run_job_id", "mutation_job_id", "target_namespace", "correlation_id", "current_state", "current_phase"):
                 value = self._find_key(payload, key)
                 if value:
                     metadata[key] = value
-            if event.get("event_type") == "reports_updated":
+            if event.get("event_type") in {"digital_twin_gate_bound", "digital_twin_gate_revalidated"}:
+                metadata["twin_gate"] = payload.get("twin_gate") or payload
+            elif event.get("event_type") == "reports_updated":
                 metadata["reports"].append(payload.get("reports") or payload)
             elif event.get("event_type") == "approval_submitted":
                 metadata["approvals"].append(payload)
@@ -466,6 +503,11 @@ class MopExecutionPreflightService:
             metadata = bundle.get("metadata") or {}
             publish_state = self._publish_state(events)
             bytes_result = self._read_bundle_artifact(bundle)
+            canonical_sha256 = (
+                self._canonical_zip_sha256(bytes_result[0])
+                if bytes_result[0] is not None
+                else None
+            )
             candidates.append(
                 {
                     "source_type": "activity_run",
@@ -481,6 +523,7 @@ class MopExecutionPreflightService:
                     "filename": self._artifact_filename(bundle),
                     "size_bytes": len(bytes_result[0]) if bytes_result[0] is not None else None,
                     "sha256": self._sha256(bytes_result[0]) if bytes_result[0] is not None else None,
+                    "canonical_sha256": canonical_sha256,
                     "local_available": bytes_result[0] is not None,
                     "local_error": bytes_result[1],
                     "publish_folder": publish_state.get("folder_name"),
@@ -631,6 +674,7 @@ class MopExecutionPreflightService:
             "filename": filename or "mop-bundle.zip",
             "size_bytes": len(content),
             "sha256": self._sha256(content),
+            "canonical_sha256": None,
             "source_type": source_type,
             **{k: v for k, v in source_metadata.items() if k in {"run_id", "artifact_id", "folder_name"}},
         }
@@ -643,6 +687,7 @@ class MopExecutionPreflightService:
         with zipfile.ZipFile(BytesIO(content)) as archive:
             infos = [info for info in archive.infolist() if not info.is_dir()]
             names = [self._norm(info.filename) for info in infos]
+            bundle["canonical_sha256"] = self._canonical_archive_sha256(archive)
             name_set = set(names)
             required = self._required_file_status(name_set)
             for check_id, label in self.REQUIRED_FILE_CHECKS.items():
@@ -943,6 +988,28 @@ class MopExecutionPreflightService:
     @staticmethod
     def _sha256(content: bytes | None) -> str | None:
         return hashlib.sha256(content).hexdigest() if content is not None else None
+
+    @classmethod
+    def _canonical_zip_sha256(cls, content: bytes | None) -> str | None:
+        if content is None or not zipfile.is_zipfile(BytesIO(content)):
+            return None
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            return cls._canonical_archive_sha256(archive)
+
+    @classmethod
+    def _canonical_archive_sha256(cls, archive: zipfile.ZipFile) -> str:
+        """Hash extracted bundle paths and bytes exactly as the twin service does."""
+        digest = hashlib.sha256()
+        members = sorted(
+            (info for info in archive.infolist() if not info.is_dir()),
+            key=lambda info: tuple(cls._norm(info.filename).split("/")),
+        )
+        for info in members:
+            digest.update(cls._norm(info.filename).encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(archive.read(info))
+            digest.update(b"\0")
+        return digest.hexdigest()
 
     @staticmethod
     def _norm(name: str) -> str:

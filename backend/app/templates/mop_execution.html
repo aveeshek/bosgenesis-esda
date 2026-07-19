@@ -33,6 +33,18 @@
             <div class="working-note-label">Bundle Metadata</div>
             <p>No MoP bundle selected.</p>
           </div>
+          <section id="namespace-twin-gate" class="namespace-twin-gate mb-3 is-loading" aria-live="polite">
+            <div class="namespace-twin-gate-header">
+              <div>
+                <div class="working-note-label">Namespace Twin Gate</div>
+                <strong id="namespace-twin-gate-title">Matching authoritative twin...</strong>
+              </div>
+              <span id="namespace-twin-gate-decision" class="badge text-bg-secondary">pending</span>
+            </div>
+            <div id="namespace-twin-gate-facts" class="namespace-twin-gate-facts"></div>
+            <ol id="namespace-twin-gate-reasons" class="namespace-twin-gate-reasons"></ol>
+            <div id="namespace-twin-gate-actions" class="namespace-twin-gate-actions"></div>
+          </section>
           <div class="mb-3">
             <label class="form-label" for="mop_execution_target_namespace">Target Namespace</label>
             <select class="form-select" id="mop_execution_target_namespace" required>
@@ -281,5 +293,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/js/mop_execution.js"></script>
+<script src="/static/js/mop_execution.js?v=phase6-twin-gate-1"></script>
 {% endblock %}

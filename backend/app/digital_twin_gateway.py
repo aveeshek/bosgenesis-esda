@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
@@ -181,6 +181,117 @@ class DigitalTwinGatewayService:
 
     async def get(self, twin_id: str) -> dict[str, Any]:
         return self.project(self._unwrap(await self.client.get_namespace_twin(twin_id)))
+
+    async def gate(self, twin_id: str) -> dict[str, Any]:
+        """Return the canonical, hash-bound execution gate for one persisted twin."""
+        twin = await self.get(twin_id)
+        policy = self._unwrap(await self.client.get_namespace_twin_policy(twin_id, None))
+        policy_data = policy.get("data") or {}
+        dry_run = self._unwrap(await self.client.get_namespace_twin_dry_run(twin_id, None))
+        dry_run_data = dry_run.get("data") or {}
+        dry_run_availability = dry_run.get("availability") or {}
+        rollback = self._unwrap(await self.client.get_namespace_twin_rollback(twin_id))
+        rollback_data = rollback.get("data") or {}
+        drift = self._unwrap(await self.client.get_namespace_twin_drift(twin_id))
+        drift_data = drift.get("data") or {}
+        projection = policy_data.get("decision_projection") or {}
+
+        def action(code: str) -> dict[str, Any]:
+            return next(
+                (item for item in (twin.get("actions") or []) if item.get("code") == code),
+                {},
+            )
+
+        start_action = action("start_execution")
+        approval_action = action("request_approval")
+        regenerate_action = action("regenerate_twin")
+        gate_facts = {
+            "twin_id": twin["twin_id"],
+            "decision_version": twin["decision_version"],
+            "decision": twin["decision"],
+            "decision_is_final": bool(twin.get("decision_is_final")),
+            "lifecycle_status": twin["lifecycle_status"],
+            "bundle_hash": twin["bundle_hash"],
+            "input_hash": twin["input_hash"],
+            "target_cluster": twin["target_cluster"],
+            "target_namespace": twin["target_namespace"],
+            "policy_version": twin.get("policy_version")
+            or policy_data.get("policy_version")
+            or "unknown",
+            "risk_rule_version": twin.get("risk_rule_version")
+            or (policy_data.get("risk_axis") or {}).get("rules_version")
+            or "unknown",
+            "freshness": (twin.get("freshness") or {}).get("status"),
+            "dry_run_job_id": dry_run_data.get("dry_run_job_id"),
+            "dry_run": dry_run_data.get("qualification_status")
+            or dry_run_data.get("status")
+            or dry_run_availability.get("state")
+            or "not_available",
+            "command_fingerprints": list(dry_run_data.get("command_fingerprints") or []),
+            "command_fingerprint_hash": (
+                (twin.get("foundation_facts") or {}).get("command_fingerprint_hash")
+                or dry_run_data.get("command_fingerprint_hash")
+            ),
+            "rollback": rollback_data.get("confidence") or "not_available",
+            "drift": drift_data.get("status") or "not_available",
+            "approval": (
+                "required"
+                if policy_data.get("verdict") in {"allow_with_approval", "approval_required"}
+                or projection.get("approval_required") is True
+                else "not_required"
+            ),
+            "start_execution_enabled": start_action.get("enabled") is True,
+            "request_approval_enabled": approval_action.get("enabled") is True,
+            "regenerate_enabled": regenerate_action.get("enabled") is True,
+        }
+        gate_hash = hashlib.sha256(
+            json.dumps(
+                gate_facts,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            "schema_version": "1.0.0",
+            "data_mode": DATA_MODE,
+            "module_mode": "authoritative_execution_gate",
+            "gate_hash": gate_hash,
+            "gate_facts": gate_facts,
+            "twin": twin,
+            "decision": twin["decision"],
+            "risk": policy_data.get("risk_axis") or twin["risk"],
+            "policy": policy_data.get("verdict") or "not_available",
+            "evidence": policy_data.get("evidence_axis")
+            or {"classification": "unavailable"},
+            "decision_projection": projection,
+            "freshness": twin["freshness"],
+            "dry_run": gate_facts["dry_run"],
+            "rollback": gate_facts["rollback"],
+            "drift": gate_facts["drift"],
+            "reasons": twin["top_reasons"],
+            "approval": gate_facts["approval"],
+            "actions": {
+                "start_execution": start_action,
+                "request_approval": approval_action,
+                "regenerate_twin": regenerate_action,
+            },
+            "model_authority": False,
+        }
+    async def record_execution_link(
+        self,
+        twin_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        return self._unwrap(
+            await self.client.record_namespace_twin_execution_link(
+                twin_id,
+                payload,
+                actor_id=actor_id,
+            )
+        )
 
     async def cancel(self, twin_id: str) -> dict[str, Any]:
         return self.project(self._unwrap(await self.client.cancel_namespace_twin(twin_id)))
@@ -2517,42 +2628,7 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
     @router.get("/{twin_id}/gate")
     async def gate(twin_id: str, response: Response) -> dict[str, Any]:
         _response_headers(response)
-        twin = await service.get(twin_id)
-        policy = service._unwrap(await service.client.get_namespace_twin_policy(twin_id, None))
-        policy_data = policy.get("data") or {}
-        dry_run = service._unwrap(await service.client.get_namespace_twin_dry_run(twin_id, None))
-        dry_run_data = dry_run.get("data") or {}
-        dry_run_availability = dry_run.get("availability") or {}
-        rollback = service._unwrap(await service.client.get_namespace_twin_rollback(twin_id))
-        rollback_data = rollback.get("data") or {}
-        drift = service._unwrap(await service.client.get_namespace_twin_drift(twin_id))
-        drift_data = drift.get("data") or {}
-        return {
-            "schema_version": "1.0.0",
-            "data_mode": DATA_MODE,
-            "module_mode": "mixed_authoritative_policy_and_dry_run",
-            "twin": twin,
-            "decision": twin["decision"],
-            "risk": policy_data.get("risk_axis") or twin["risk"],
-            "policy": policy_data.get("verdict") or "not_available",
-            "evidence": policy_data.get("evidence_axis") or {"classification": "unavailable"},
-            "decision_projection": policy_data.get("decision_projection"),
-            "freshness": twin["freshness"],
-            "dry_run": dry_run_data.get("qualification_status")
-            or dry_run_data.get("status")
-            or dry_run_availability.get("state")
-            or "not_available",
-            "rollback": rollback_data.get("confidence") or "not_available",
-            "drift": drift_data.get("status") or "not_available",
-            "reasons": twin["top_reasons"],
-            "approval": (
-                "required"
-                if policy_data.get("verdict") == "allow_with_approval"
-                else "not_required"
-            ),
-            "model_authority": False,
-        }
-
+        return await service.gate(twin_id)
     for endpoint, slug in TAB_ENDPOINTS.items():
 
         async def named_tab(twin_id: str, response: Response, _slug: str = slug) -> dict[str, Any]:
