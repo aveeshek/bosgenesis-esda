@@ -461,10 +461,41 @@
     },
     "mop-replay": {
       title: "MoP Replay Twin",
-      state: "not_run",
-      kind: "state",
-      summary: "No compatible historical execution exists for this bundle lineage and target topology.",
-      reason: "Optional replay evidence is explicitly Not Run and does not fail the decision."
+      state: "available",
+      kind: "mop-replay",
+      summary: "Authoritative isolated replay evidence links the forward execution, rollback checks, and cleanup result.",
+      data: {
+        replay_id: "replay_signal_scout_001",
+        status: "passed",
+        isolation: "mimic_namespace: esda-twin-signal-scout-001",
+        synthetic_secret_strategy: "Synthetic placeholders with redacted references only.",
+        retention_seconds: 0,
+        timeline: [
+          { sequence: 1, phase: "prepare", status: "passed", summary: "Mimic namespace prepared.", created_at: "2026-07-18T12:10:00Z" },
+          { sequence: 2, phase: "apply", status: "passed", summary: "Rendered resources applied in isolation.", created_at: "2026-07-18T12:12:00Z" },
+          { sequence: 3, phase: "cleanup", status: "passed", summary: "Mimic namespace removed.", created_at: "2026-07-18T12:20:00Z" }
+        ],
+        checks: [
+          { type: "readiness", status: "passed", summary: "Workloads became ready." },
+          { type: "smoke_test", status: "passed", summary: "Bounded smoke tests passed." },
+          { type: "cleanup", status: "passed", summary: "Cleanup completed." }
+        ],
+        cleanup_status: "completed",
+        limitations: [
+          "External production dependencies were not contacted.",
+          "Isolated replay is additional evidence only and does not prove production success."
+        ],
+        authoritative: true,
+        additional_evidence_only: true,
+        production_secret_values_copied: false,
+        production_data_copied: false,
+        model_authority: false,
+        execution_eligibility_effect: "none",
+        approval_id: "approval_replay_001",
+        rules_version: "namespace-twin-mop-replay-1.0.0",
+        recorded_at: "2026-07-18T12:20:00Z",
+        replay_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
     },
     "runtime-behavior": {
       title: "Runtime Behavior Twin",

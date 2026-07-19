@@ -37,7 +37,8 @@
       sort: search.get("sort") || "created_at",
       direction: search.get("direction") || "desc",
       cursor: search.get("cursor") || null,
-      limit: 25,
+      // Real-core query contract remains limit: 25; fixtures use six rows to exercise pagination.
+      limit: realCore ? 25 : 6,
       mock_state: search.get("mock_state") || adapter.getResponseMode()
     };
   }

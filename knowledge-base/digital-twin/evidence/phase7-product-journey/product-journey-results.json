@@ -1,0 +1,165 @@
+{
+  "suite": "Phase 7 Product Journey E2E",
+  "generated_at": "2026-07-19T14:07:26.617Z",
+  "browser": "chromium",
+  "steps": [
+    {
+      "name": "list search, filters, sorting, pagination",
+      "status": "passed",
+      "duration_ms": 6840,
+      "details": {
+        "fixture_rows": 13,
+        "page_size": 6
+      }
+    },
+    {
+      "name": "direct detail and selected-tab deep links survive refresh and reopen",
+      "status": "passed",
+      "duration_ms": 6449,
+      "details": {
+        "twin_id": "twin_signal_scout_001",
+        "tab": "rollback"
+      }
+    },
+    {
+      "name": "progressive availability and old-run reopening",
+      "status": "passed",
+      "duration_ms": 14312,
+      "details": {
+        "generated_twin_id": "twin_mock_1784470063446",
+        "terminal_decision": "green"
+      }
+    },
+    {
+      "name": "Green gate reaches execution with no approval override",
+      "status": "passed",
+      "duration_ms": 2363,
+      "details": {
+        "decision": "green",
+        "approval": "not_required",
+        "execution_handoff": "prepared"
+      }
+    },
+    {
+      "name": "Amber approval, return, and execution",
+      "status": "passed",
+      "duration_ms": 5778,
+      "details": {
+        "decision": "amber",
+        "approval": "approved",
+        "return_path": "preserved"
+      }
+    },
+    {
+      "name": "Red block, corrected bundle, and regeneration",
+      "status": "passed",
+      "duration_ms": 6660,
+      "details": {
+        "prior": "red",
+        "corrected_bundle": "gateway-9.3-mop-bundle-corrected.zip",
+        "regenerated": "green"
+      }
+    },
+    {
+      "name": "stale and material drift require regeneration",
+      "status": "passed",
+      "duration_ms": 6605,
+      "details": {
+        "regenerated": [
+          "stale",
+          "material_drift"
+        ]
+      }
+    },
+    {
+      "name": "rollback, cleanup, and execution linkage",
+      "status": "passed",
+      "duration_ms": 2958,
+      "details": {
+        "execution_id": "mopx_7f4a",
+        "rollback_linkage": "available",
+        "cleanup_status": "completed"
+      }
+    },
+    {
+      "name": "browser Back and Forward across list, detail, and tabs",
+      "status": "passed",
+      "duration_ms": 2829,
+      "details": {
+        "pages": [
+          "list",
+          "detail"
+        ],
+        "tabs": [
+          "overview",
+          "policy"
+        ]
+      }
+    },
+    {
+      "name": "desktop, laptop, tablet, and mobile screenshots",
+      "status": "passed",
+      "duration_ms": 15855,
+      "details": {
+        "viewports": [
+          {
+            "name": "desktop",
+            "width": 1440,
+            "height": 1000
+          },
+          {
+            "name": "laptop",
+            "width": 1280,
+            "height": 800
+          },
+          {
+            "name": "tablet",
+            "width": 820,
+            "height": 1180
+          },
+          {
+            "name": "mobile",
+            "width": 390,
+            "height": 844
+          }
+        ]
+      }
+    },
+    {
+      "name": "keyboard, focus, labels, status text, and reduced motion",
+      "status": "passed",
+      "duration_ms": 3287,
+      "details": {
+        "keyboard_rows": true,
+        "keyboard_tabs": [
+          "ArrowRight",
+          "Home",
+          "End"
+        ],
+        "visible_focus": {
+          "style": "solid",
+          "width": "3px"
+        },
+        "color_independent_badges": 6,
+        "reduced_motion": {
+          "animationDuration": "1e-05s",
+          "transitionDuration": "1e-05s"
+        }
+      }
+    }
+  ],
+  "screenshots": [
+    "knowledge-base/digital-twin/evidence/phase7-product-journey/digital-twins-desktop.png",
+    "knowledge-base/digital-twin/evidence/phase7-product-journey/digital-twin-detail-desktop.png",
+    "knowledge-base/digital-twin/evidence/phase7-product-journey/digital-twins-laptop.png",
+    "knowledge-base/digital-twin/evidence/phase7-product-journey/digital-twin-detail-laptop.png",
+    "knowledge-base/digital-twin/evidence/phase7-product-journey/digital-twins-tablet.png",
+    "knowledge-base/digital-twin/evidence/phase7-product-journey/digital-twin-detail-tablet.png",
+    "knowledge-base/digital-twin/evidence/phase7-product-journey/digital-twins-mobile.png",
+    "knowledge-base/digital-twin/evidence/phase7-product-journey/digital-twin-detail-mobile.png"
+  ],
+  "base_url": "http://127.0.0.1:51662/digital-twin",
+  "completed_at": "2026-07-19T14:08:42.870Z",
+  "passed": 11,
+  "failed": 0
+}

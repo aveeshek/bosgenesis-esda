@@ -638,6 +638,53 @@ class FakeNamespaceTwinClient:
                 "fidelity_limitations": [
                     "Server-side dry-run cannot prove controller convergence."
                 ],
+                "fidelity_contract": {
+                    "version": "1.0.0",
+                    "classification": "fidelity_limitation",
+                    "dry_run_scope": "api_admission_and_static_validation",
+                    "runtime_success_predicted": False,
+                    "runtime_validation_required": True,
+                    "case_count": 5,
+                    "summary": (
+                        "A successful dry-run is not a prediction of runtime success."
+                    ),
+                },
+                "fidelity_demonstrations": [
+                    {
+                        "case_id": f"{mode}_after_admission",
+                        "failure_mode": mode,
+                        "title": mode.replace("_", " ").title(),
+                        "runtime_signal": f"{mode} runtime signal",
+                        "why_not_proven": (
+                            "API admission does not prove post-admission runtime convergence."
+                        ),
+                        "runtime_validation_required": (
+                            "Collect post-creation Kubernetes runtime evidence."
+                        ),
+                        "classification": "fidelity_limitation",
+                        "demonstration_type": "deterministic_counterexample",
+                        "sequence": [
+                            {
+                                "stage": "authoritative_dry_run",
+                                "outcome": "accepted",
+                            },
+                            {
+                                "stage": "post_admission_runtime",
+                                "outcome": "failure_possible",
+                            },
+                        ],
+                        "runtime_success_prediction": "not_predicted",
+                        "observed_in_current_run": False,
+                        "safe_conclusion": "Runtime success remains unknown.",
+                    }
+                    for mode in (
+                        "image_pull_failure",
+                        "scheduling_failure",
+                        "pvc_binding_failure",
+                        "readiness_probe_failure",
+                        "controller_or_webhook_failure",
+                    )
+                ],
                 "artifacts": [
                     {
                         "artifact_id": "report_phase5e",
@@ -1444,6 +1491,23 @@ def test_dry_run_diff_twin_is_authoritative_filterable_and_non_mutating(
     assert data["automatic_mutation_retry"] is False
     assert data["model_authority"] is False
     explanation = payload["safe_explanation"]
+    assert data["fidelity_contract"]["runtime_success_predicted"] is False
+    assert data["fidelity_contract"]["case_count"] == 5
+    assert {
+        item["failure_mode"] for item in data["fidelity_demonstrations"]
+    } == {
+        "image_pull_failure",
+        "scheduling_failure",
+        "pvc_binding_failure",
+        "readiness_probe_failure",
+        "controller_or_webhook_failure",
+    }
+    assert all(
+        item["classification"] == "fidelity_limitation"
+        and item["runtime_success_prediction"] == "not_predicted"
+        and item["observed_in_current_run"] is False
+        for item in data["fidelity_demonstrations"]
+    )
     assert explanation["prompt_version"] == "namespace_twin_dry_run_explanation_v1"
     assert explanation["chain_of_thought_included"] is False
     assert explanation["automatic_instruction_submission"] is False
@@ -1456,6 +1520,9 @@ def test_dry_run_diff_twin_is_authoritative_filterable_and_non_mutating(
     assert "data-copy-fingerprints" in detail_script
     assert "cannot submit instructions, retry a mutation" in detail_script
     assert ".dry-run-identity-grid" in detail_css
+    assert "Post-admission Fidelity Demonstrations" in detail_script
+    assert "not failures observed in this run" in detail_script
+    assert "data.fidelity_demonstrations" in detail_script
 
 
 def test_rollback_twin_is_authoritative_and_distinguishes_defined_from_proven(

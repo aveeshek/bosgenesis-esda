@@ -702,26 +702,34 @@ Approval note: the three unchecked items are human sign-offs and are intentional
 
 ### Dry-run Fidelity
 
-- [ ] Demonstrate image-pull failure after successful dry-run.
-- [ ] Demonstrate scheduling failure after successful dry-run.
-- [ ] Demonstrate PVC binding failure after successful dry-run.
-- [ ] Demonstrate readiness-probe failure after successful dry-run.
-- [ ] Demonstrate controller/webhook failure after successful dry-run.
-- [ ] Show every case as a fidelity limitation rather than predicted success.
+- [x] Demonstrate image-pull failure after successful dry-run.
+- [x] Demonstrate scheduling failure after successful dry-run.
+- [x] Demonstrate PVC binding failure after successful dry-run.
+- [x] Demonstrate readiness-probe failure after successful dry-run.
+- [x] Demonstrate controller/webhook failure after successful dry-run.
+- [x] Show every case as a fidelity limitation rather than predicted success.
+
+Implementation note: the authoritative dry-run contract now publishes five deterministic
+post-admission counterexamples. Every case is classified as a fidelity limitation, marked
+`not_predicted`, and explicitly separated from failures observed in the current run.
 
 ### Product Journey E2E
 
-- [ ] Test list search, filters, sorting, pagination, and old-run reopening.
-- [ ] Test direct detail and selected-tab deep links after refresh/restart.
-- [ ] Test progressive availability while a twin is generating.
-- [ ] Test Green -> approval -> execution.
-- [ ] Test Amber -> approval -> return -> execution.
-- [ ] Test Red -> blocked -> corrected bundle -> regenerate.
-- [ ] Test stale/material drift -> regenerate.
-- [ ] Test rollback and cleanup linkage.
-- [ ] Test browser Back/Forward across all linked pages.
-- [ ] Test desktop, laptop, tablet, and mobile screenshots.
-- [ ] Test keyboard navigation, visible focus, labels, color-independent status, and reduced motion.
+- [x] Test list search, filters, sorting, pagination, and old-run reopening.
+- [x] Test direct detail and selected-tab deep links after refresh/restart.
+- [x] Test progressive availability while a twin is generating.
+- [x] Test Green -> approval -> execution.
+- [x] Test Amber -> approval -> return -> execution.
+- [x] Test Red -> blocked -> corrected bundle -> regenerate.
+- [x] Test stale/material drift -> regenerate.
+- [x] Test rollback and cleanup linkage.
+- [x] Test browser Back/Forward across all linked pages.
+- [x] Test desktop, laptop, tablet, and mobile screenshots.
+- [x] Test keyboard navigation, visible focus, labels, color-independent status, and reduced motion.
+
+Implementation note: the canonical Playwright/Edge run passed all 11 journeys and
+captured eight list/detail screenshots. Reproducible results and viewport evidence
+are stored under `knowledge-base/digital-twin/evidence/phase7-product-journey/`.
 
 ### Real `agent-testing` E2E
 

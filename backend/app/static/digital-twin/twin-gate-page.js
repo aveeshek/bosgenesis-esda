@@ -48,6 +48,13 @@
 
   function renderContext(twin) {
     contextHost.innerHTML = '<p class="eyebrow">Bundle Execution</p><h2>Execution Context</h2><div class="field"><label>Bundle Source</label><select><option>Digital Twin fixture</option></select></div><div class="field"><label>Selected Twin</label><select id="gate-twin-select">' + allRows.map(function (item) { return '<option value="' + ui.escapeHtml(item.twin_id) + '"' + (item.twin_id === twin.twin_id ? " selected" : "") + '>' + ui.escapeHtml(item.display_name) + "</option>"; }).join("") + '</select></div><div class="content-block"><span class="fact-label">Bundle Metadata</span><p class="muted">' + ui.escapeHtml(twin.bundle.bundle_name) + '<br>Release: ' + ui.escapeHtml(twin.bundle.release_version) + '<br>SHA-256: ' + ui.escapeHtml(twin.bundle.bundle_hash.slice(0, 18)) + '...</p></div><div class="field"><label>Target Namespace</label><input value="' + ui.escapeHtml(twin.target.namespace) + '" readonly></div><div class="field"><label>Execution Mode</label><select><option>Approved mutation</option></select></div><div class="field"><label>Approval Rationale</label><textarea>Reviewed Digital Twin decision and evidence.</textarea></div><button class="btn primary" type="button" data-gate-action="prepare">Prepare Execution</button><p class="compact-footer">Server-side mock Twin Gate · no real integrations</p>';
+    Array.prototype.forEach.call(contextHost.querySelectorAll(".field"), function (field, index) {
+      var label = field.querySelector("label");
+      var control = field.querySelector("input, select, textarea");
+      if (!label || !control) return;
+      if (!control.id) control.id = "gate-context-field-" + index;
+      label.setAttribute("for", control.id);
+    });
   }
 
   function renderGate(gate) {

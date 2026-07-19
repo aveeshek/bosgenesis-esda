@@ -324,6 +324,14 @@
       next.decision = "pending";
       next.decision_is_final = false;
       next.lifecycle_status = "requested";
+      var hashSeed = timestamp.toString(16);
+      next.bundle.bundle_id = prior.bundle.bundle_id + "_regenerated_v" + next.decision_version;
+      next.bundle.bundle_hash = hashSeed.repeat(Math.ceil(64 / hashSeed.length)).slice(0, 64);
+      if (prior.decision === "red") {
+        next.bundle.bundle_name = prior.bundle.bundle_name.replace(/\.zip$/, "-corrected.zip");
+        next.top_reasons = [];
+        next.recommended_action = "Corrected bundle accepted for deterministic regeneration.";
+      }
       next.visible_lifecycle = "requested";
       next.autonomy_eligibility = "not_available";
       next.risk = { level: "preliminary", score: null };

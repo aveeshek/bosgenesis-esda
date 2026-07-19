@@ -381,6 +381,19 @@
     var fidelity = (data.fidelity_limitations || []).map(function (item) {
       return '<li>' + ui.escapeHtml(item) + '</li>';
     }).join("") || '<li>No fidelity statement was returned.</li>';
+    var fidelityContract = data.fidelity_contract || {};
+    var fidelityRows = (data.fidelity_demonstrations || []).map(function (item) {
+      var prediction = item.runtime_success_prediction || "not_predicted";
+      return '<tr><td><strong>' + ui.escapeHtml(item.title || ui.label(item.failure_mode)) + '</strong><small>' + ui.escapeHtml(item.runtime_signal || "Runtime failure signal") + '</small></td>'
+        + '<td>' + ui.badge("green", "accepted") + '</td>'
+        + '<td>' + ui.badge("amber", "failure possible") + '</td>'
+        + '<td>' + ui.badge("info", prediction) + '</td>'
+        + '<td>' + ui.escapeHtml(item.why_not_proven || "Dry-run cannot prove runtime convergence.") + '</td>'
+        + '<td>' + ui.escapeHtml(item.runtime_validation_required || "Collect post-creation runtime evidence.") + '</td></tr>';
+    }).join("") || '<tr><td colspan="6" class="empty-inline">No post-admission fidelity demonstrations were returned.</td></tr>';
+    var fidelityNotice = fidelityContract.summary
+      ? '<div class="notice amber">' + ui.escapeHtml(fidelityContract.summary) + '</div>'
+      : "";
     return '<div class="notice dry-run-authority">Execution-agent evidence only. Job status, validation outcomes, observations, hashes, and fingerprints are rendered without browser inference.</div>'
       + metricCards(tab.metrics || [])
       + '<div class="dry-run-identity-grid"><article><span>Dry-run job</span><strong>' + ui.escapeHtml(data.dry_run_job_id || "Not attached") + '</strong></article><article><span>Qualification</span><strong>' + ui.escapeHtml(ui.label(data.qualification_status || data.status || "unknown")) + '</strong></article><article><span>Target</span><strong>' + ui.escapeHtml(data.target_namespace || "Unknown") + '</strong></article><article><span>Snapshot</span><strong>' + ui.escapeHtml(snapshot.snapshot_id || "Unknown") + '</strong><small>' + ui.escapeHtml(snapshot.captured_at ? ui.formatDate(snapshot.captured_at) : "No timestamp") + '</small></article></div>'
@@ -389,6 +402,7 @@
       + '<div class="content-grid"><article class="content-block span-12"><h3>Kubernetes and Helm Validation</h3><div class="table-scroll"><table><thead><tr><th>Validation</th><th>Status</th><th>Authoritative summary</th></tr></thead><tbody>' + validationRows + '</tbody></table></div></article>'
       + '<article class="content-block span-12"><div class="tab-toolbar"><h3>Redacted Agent Observations</h3><button class="btn" type="button" data-copy-tab>Copy safe facts</button></div><div class="table-scroll"><table class="dry-run-observation-table"><thead><tr><th>Outcome</th><th>Phase / Step</th><th>Tool</th><th>Resource / Safe log</th><th>Evidence</th></tr></thead><tbody>' + observationRows + '</tbody></table></div></article>'
       + '<article class="content-block span-12"><h3>Structured Dry-run Diff</h3><div class="table-scroll"><table class="dry-run-diff-table"><thead><tr><th>Resource</th><th>Action</th><th>Risk</th><th>Current</th><th>Planned</th><th>Reason</th></tr></thead><tbody>' + diffTableRows + '</tbody></table></div></article>'
+      + '<article class="content-block span-12"><h3>Post-admission Fidelity Demonstrations</h3>' + fidelityNotice + '<div class="table-scroll"><table class="dry-run-fidelity-table"><thead><tr><th>Counterexample</th><th>Dry-run</th><th>Runtime</th><th>Prediction</th><th>Why dry-run cannot prove it</th><th>Required runtime validation</th></tr></thead><tbody>' + fidelityRows + '</tbody></table></div><p class="muted">These are deterministic fidelity limitations, not failures observed in this run and not predictions of runtime success.</p></article>'
       + '<article class="content-block span-7"><div class="tab-toolbar"><h3>Command Fingerprints</h3><button class="btn" type="button" data-copy-fingerprints>Copy fingerprints</button></div><p class="muted">Canonical hash: <code>' + ui.escapeHtml(data.command_fingerprint_hash || "Not available") + '</code></p><ol class="fingerprint-list">' + (fingerprints.map(function (item) { return '<li><code>' + ui.escapeHtml(item) + '</code></li>'; }).join("") || '<li>No command fingerprints were returned.</li>') + '</ol></article>'
       + '<article class="content-block span-5"><h3>Reports</h3><ul class="artifact-list">' + artifactLinks + '</ul><h3>Fidelity Limits</h3><ul class="list-clean dry-run-fidelity">' + fidelity + '</ul></article></div>';
   }
@@ -639,6 +653,7 @@
 
   function renderTwin(item) {
     var previousDecisionVersion = twin && twin.decision_version;
+    var previousLifecycle = twin && twin.lifecycle_status;
     twin = item;
     summary.hidden = false;
     preview.hidden = false;
@@ -649,7 +664,10 @@
     var activePanel = document.getElementById("panel-" + selectedTab);
     var decisionVersionChanged = previousDecisionVersion != null
       && previousDecisionVersion !== item.decision_version;
-    if (decisionVersionChanged || (!activePanel._tabData && activePanel.dataset.loading !== "true")) {
+    var lifecycleChanged = previousLifecycle != null
+      && previousLifecycle !== item.lifecycle_status;
+    if (decisionVersionChanged || lifecycleChanged || (!activePanel._tabData && activePanel.dataset.loading !== "true")) {
+      if (decisionVersionChanged || lifecycleChanged) adapter.invalidateCache(item.twin_id);
       activateTab(selectedTab, true);
     }
     setupProgress(item);
@@ -681,6 +699,18 @@
 
   tabs.forEach(function (tab) {
     tab.addEventListener("click", function () { if (twin) activateTab(tabSlug(tab), false); });
+    tab.addEventListener("keydown", function (event) {
+      if (!twin || ["ArrowLeft", "ArrowRight", "Home", "End"].indexOf(event.key) < 0) return;
+      event.preventDefault();
+      var currentIndex = tabs.indexOf(tab);
+      var nextIndex = event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? tabs.length - 1
+          : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[nextIndex].focus();
+      activateTab(tabSlug(tabs[nextIndex]), false);
+    });
   });
 
   document.addEventListener("click", function (event) {
@@ -954,16 +984,17 @@
   });
   window.addEventListener("popstate", function () {
     var requestedTwinId = ui.params().get("twin_id");
+    var slug = ui.params().get("tab") || "overview";
     if (!requestedTwinId) {
       twin = null;
       noSelection();
       return;
     }
     if (!twin || twin.twin_id !== requestedTwinId) {
+      selectedTab = slug;
       adapter.getTwin(requestedTwinId).then(renderTwin).catch(noSelection);
       return;
     }
-    var slug = ui.params().get("tab") || "overview";
     graphFilters.resource = ui.params().get("resource") || "";
     activateTab(slug, true);
   });

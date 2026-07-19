@@ -1760,6 +1760,25 @@ class DigitalTwinGatewayService:
                 if item.get("outcome") in {"rejected", "warning"}
             ][:30],
             "fidelity_limitations": list(data.get("fidelity_limitations") or []),
+            "fidelity_contract": dict(data.get("fidelity_contract") or {}),
+            "fidelity_demonstrations": [
+                {
+                    "failure_mode": item.get("failure_mode"),
+                    "title": item.get("title"),
+                    "classification": item.get("classification"),
+                    "demonstration_type": item.get("demonstration_type"),
+                    "runtime_signal": item.get("runtime_signal"),
+                    "why_not_proven": item.get("why_not_proven"),
+                    "runtime_validation_required": item.get(
+                        "runtime_validation_required"
+                    ),
+                    "runtime_success_prediction": item.get(
+                        "runtime_success_prediction"
+                    ),
+                    "observed_in_current_run": item.get("observed_in_current_run"),
+                }
+                for item in (data.get("fidelity_demonstrations") or [])
+            ][:10],
             "model_authority": False,
             "automatic_instruction_submission": False,
             "automatic_mutation_retry": False,
@@ -1770,17 +1789,27 @@ class DigitalTwinGatewayService:
             "Explain authoritative Namespace Digital Twin dry-run facts for an operator. "
             "Return JSON with only a concise summary string. For failures, explain the supplied "
             "rejections and safe investigation steps. For success, summarize accepted evidence "
-            "and fidelity limits. Do not invent facts, submit instructions, trigger tools, retry "
+            "and fidelity limits. Fidelity demonstrations are deterministic counterexamples: "
+            "they are not failures observed in the current run and they never predict runtime "
+            "success. Preserve that distinction explicitly. Do not invent facts, submit "
+            "instructions, trigger tools, retry "
             "dry-run or mutation, bypass approval, or expose hidden chain-of-thought."
         )
         prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
         rejected = len(fact_envelope["rejected_observations"])
+        fidelity_count = len(fact_envelope["fidelity_demonstrations"])
         deterministic_summary = (
             f"Authoritative dry-run status is {fact_envelope['status']} for "
             f"{fact_envelope['target_namespace']}; {rejected} rejected or warning "
             "observation(s) require operator review. No instruction or mutation retry was "
             "submitted automatically."
         )
+        if fidelity_count:
+            deterministic_summary += (
+                f" {fidelity_count} post-admission failure case(s) are shown as fidelity "
+                "limitations only; runtime success is not predicted and the cases were not "
+                "observed in this run."
+            )
         fallback = {
             "summary": deterministic_summary,
             "model_profile": model_profile or "azure_gpt5_pro",
