@@ -672,6 +672,38 @@ Approval note: the three unchecked items are human sign-offs and are intentional
 - [x] UI and backend gate outcomes match exactly.
 - [x] Full Bundle Generation -> Digital Twin -> Approval -> Bundle Execution journey passes.
 
+### On-Demand Full Digital Simulation
+
+- [x] Add one primary **Run Digital Simulation** action to the Digital Twins workspace.
+- [x] Load eligible completed MoP bundles and allowed target namespaces from the authenticated server session.
+- [x] Present bundle, target namespace, and target cluster in a responsive matte-glass launch dialog.
+- [x] Resolve the selected user-owned published bundle to an execution-agent source on the server; never accept an arbitrary artifact URL from the browser.
+- [x] Submit an idempotency key with every on-demand simulation request.
+- [x] Create the real provisional Namespace Twin through the MoP Execution Agent.
+- [x] Open the canonical twin detail page immediately and use the existing bounded lifecycle polling for real-time progress.
+- [x] Keep browser-fixture and server-mock generation behavior unchanged for deterministic UX testing.
+- [x] Show explicit loading, no-eligible-bundle, validation, gateway, and retryable failure states.
+- [x] Load the launch catalog with batched PostgreSQL metadata queries; do not reread every ZIP merely to render the selector.
+- [x] Create and link one authoritative dry-run-only execution job through the shared MoP Execution runtime; persist the job identity, reconcile progress on normal twin reads, and finalize the deterministic decision without a second browser action.
+- [x] Prove restart recovery and idempotent replay: the linked job survives service recreation, polling attaches terminal evidence exactly once, and repeated launch requests do not create duplicate jobs.
+- [x] Keep on-demand simulation non-mutating; mutation_performed remains false and runtime-convergence limitations remain explicit even after a successful authoritative dry-run.
+- [x] Complete a real local ESDA-to-execution-agent launch for `agent-testing`, reconcile the linked dry-run to a final Red decision, verify eight ordered audit events, render the authoritative evidence tab, and confirm mutation remained disabled.
+- [x] Reuse audit-safe SIGMA explanations from PostgreSQL only when twin ID, decision version, prompt identity, authoritative fact hash, and model profile match exactly.
+- [x] Cache loaded evidence tabs in the browser by twin, tab, decision version, model, and filter query; invalidate them whenever the twin lifecycle or decision version changes.
+- [x] Verify real tab latency improved from approximately 18.9 seconds to 1.5-2.7 seconds on first render, while same-page tab revisits render in under 0.4 seconds without another API request.
+- [ ] Complete a real `agent-testing` launch against the deployed MoP Execution Agent and retain evidence under the Phase 7 real E2E section.
+
+Implementation note: the on-demand route now owns the complete safe simulation lifecycle. The
+execution agent registers and validates the selected bundle, seeds and starts its existing durable
+dry_run_only worker, persists the twin/job relationship, and reconciles terminal evidence into
+Green/Amber/Red during ordinary detail/event polling. It does not introduce a second dry-run
+engine and it never enables mutation.
+
+Local E2E evidence (2026-07-19): twin `twin_218bb0e5fb054a658a153d52ffe6c6e0`
+linked exactly one `dry_run_only` job, reached `completed_with_findings`, and persisted a final
+Red decision because a bundle Helm step used a non-repository-qualified chart reference. The
+result is expected fail-safe behavior, not a simulation infrastructure failure.
+
 ---
 
 ## 9. Phase 7: Hardening and Real E2E Validation

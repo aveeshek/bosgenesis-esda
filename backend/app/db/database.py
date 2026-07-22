@@ -462,21 +462,126 @@ class RunRepository:
                     return serialized[index + 1 :]
         return serialized
 
-    def get_run_snapshot(self, run_id: str) -> dict | None:
-        run = self.get_run(run_id)
-        if not run:
-            return None
-        events = self.list_events(run_id)
-        artifacts = self.list_artifacts(run_id)
-        tool_calls = self.list_tool_calls(run_id)
-        return {
-            "run": self._run_to_dict(run),
-            "events": events,
-            "artifacts": artifacts,
-            "tool_calls": tool_calls,
-            "last_event_id": events[-1]["event_id"] if events else None,
-            "last_event_sequence": events[-1]["sequence"] if events else 0,
-        }
+    def get_run_snapshot(self, run_id: str, *, compact: bool = False) -> dict | None:
+        # Keep restoration on one checked-out connection. PostgreSQL may be remote
+        # during local development, so opening four independent sessions here made
+        # history selection unnecessarily slow and prone to partial timeouts.
+        with self.database.session() as db:
+            run = db.get(AgentRun, run_id)
+            if not run:
+                return None
+            if compact:
+                # Historical execution events can contain repeated multi-megabyte
+                # observations. Select metadata only so opening the history drawer
+                # does not download and decode hundreds of megabytes of JSON.
+                event_rows = db.execute(
+                    select(
+                        RunEvent.event_id,
+                        RunEvent.run_id,
+                        RunEvent.event_type,
+                        RunEvent.message,
+                        RunEvent.created_at,
+                    )
+                    .where(RunEvent.run_id == run_id)
+                    .order_by(RunEvent.created_at, RunEvent.event_id)
+                ).all()
+                events = [
+                    {
+                        "event_id": row.event_id,
+                        "run_id": row.run_id,
+                        "sequence": index,
+                        "event_type": row.event_type,
+                        "message": row.message,
+                        "payload": {"payload_omitted": True},
+                        "created_at": row.created_at.isoformat(),
+                    }
+                    for index, row in enumerate(event_rows, start=1)
+                ]
+                artifact_rows = db.execute(
+                    select(
+                        Artifact.artifact_id,
+                        Artifact.run_id,
+                        Artifact.user_id,
+                        Artifact.artifact_type,
+                        Artifact.title,
+                        Artifact.mime_type,
+                        Artifact.storage_path,
+                        Artifact.created_at,
+                    )
+                    .where(Artifact.run_id == run_id)
+                    .order_by(Artifact.created_at)
+                ).all()
+                artifacts = [
+                    {
+                        "artifact_id": row.artifact_id,
+                        "run_id": row.run_id,
+                        "user_id": row.user_id,
+                        "artifact_type": row.artifact_type,
+                        "title": row.title,
+                        "mime_type": row.mime_type,
+                        "storage_path": row.storage_path,
+                        "metadata": {"payload_omitted": True},
+                        "created_at": row.created_at.isoformat(),
+                    }
+                    for row in artifact_rows
+                ]
+                tool_rows = db.execute(
+                    select(
+                        ToolCall.tool_call_id,
+                        ToolCall.run_id,
+                        ToolCall.tool_name,
+                        ToolCall.status,
+                        ToolCall.created_at,
+                    )
+                    .where(ToolCall.run_id == run_id)
+                    .order_by(ToolCall.created_at, ToolCall.tool_call_id)
+                ).all()
+                tool_calls = [
+                    {
+                        "tool_call_id": row.tool_call_id,
+                        "run_id": row.run_id,
+                        "tool_name": row.tool_name,
+                        "status": row.status,
+                        "request": {"payload_omitted": True},
+                        "response": {"payload_omitted": True},
+                        "created_at": row.created_at.isoformat(),
+                    }
+                    for row in tool_rows
+                ]
+            else:
+                event_models = db.scalars(
+                    select(RunEvent)
+                    .where(RunEvent.run_id == run_id)
+                    .order_by(RunEvent.created_at, RunEvent.event_id)
+                ).all()
+                events = [
+                    self._event_to_dict(event, sequence=index)
+                    for index, event in enumerate(event_models, start=1)
+                ]
+                artifacts = [
+                    self._artifact_to_dict(artifact)
+                    for artifact in db.scalars(
+                        select(Artifact)
+                        .where(Artifact.run_id == run_id)
+                        .order_by(Artifact.created_at)
+                    ).all()
+                ]
+                tool_calls = [
+                    self._tool_call_to_dict(call)
+                    for call in db.scalars(
+                        select(ToolCall)
+                        .where(ToolCall.run_id == run_id)
+                        .order_by(ToolCall.created_at, ToolCall.tool_call_id)
+                    ).all()
+                ]
+            return {
+                "run": self._run_to_dict(run),
+                "events": events,
+                "artifacts": artifacts,
+                "tool_calls": tool_calls,
+                "last_event_id": events[-1]["event_id"] if events else None,
+                "last_event_sequence": events[-1]["sequence"] if events else 0,
+            }
 
     def list_transactions(self, *, user_id: str, include_hidden: bool = False, limit: int = 50) -> list[dict]:
         with self.database.session() as db:
@@ -486,18 +591,38 @@ class RunRepository:
                 .order_by(AgentRun.updated_at.desc(), AgentRun.created_at.desc())
                 .limit(limit)
             ).all()
+            if not runs:
+                return []
+            run_ids = [run.run_id for run in runs]
+            views = db.scalars(
+                select(UserRunView).where(
+                    UserRunView.user_id == user_id,
+                    UserRunView.run_id.in_(run_ids),
+                )
+            ).all()
+            views_by_run = {view.run_id: view for view in views}
+            artifact_counts = {
+                run_id: int(count)
+                for run_id, count in db.execute(
+                    select(Artifact.run_id, func.count())
+                    .where(Artifact.run_id.in_(run_ids))
+                    .group_by(Artifact.run_id)
+                ).all()
+            }
+            event_counts = {
+                run_id: int(count)
+                for run_id, count in db.execute(
+                    select(RunEvent.run_id, func.count())
+                    .where(RunEvent.run_id.in_(run_ids))
+                    .group_by(RunEvent.run_id)
+                ).all()
+            }
             result = []
             for run in runs:
-                view = db.get(UserRunView, {"user_id": user_id, "run_id": run.run_id})
+                view = views_by_run.get(run.run_id)
                 hidden_at = view.hidden_at if view else None
                 if hidden_at and not include_hidden:
                     continue
-                artifact_count = int(
-                    db.scalar(select(func.count()).select_from(Artifact).where(Artifact.run_id == run.run_id)) or 0
-                )
-                event_count = int(
-                    db.scalar(select(func.count()).select_from(RunEvent).where(RunEvent.run_id == run.run_id)) or 0
-                )
                 result.append(
                     {
                         "run_id": run.run_id,
@@ -508,8 +633,8 @@ class RunRepository:
                         "status": run.status,
                         "target_url": run.target_url,
                         "namespace": run.namespace,
-                        "artifact_count": artifact_count,
-                        "last_event_sequence": event_count,
+                        "artifact_count": artifact_counts.get(run.run_id, 0),
+                        "last_event_sequence": event_counts.get(run.run_id, 0),
                         "hidden_at": hidden_at.isoformat() if hidden_at else None,
                         "created_at": run.created_at.isoformat(),
                         "updated_at": run.updated_at.isoformat(),
@@ -517,6 +642,79 @@ class RunRepository:
                 )
             return result
 
+    def list_completed_run_sources(
+        self,
+        *,
+        user_id: str,
+        workflow_type: str,
+        status: str = "completed",
+        include_hidden: bool = False,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return runs, artifacts, and publish events with three bounded queries."""
+        with self.database.session() as db:
+            runs = db.scalars(
+                select(AgentRun)
+                .where(
+                    AgentRun.user_id == user_id,
+                    AgentRun.workflow_type == workflow_type,
+                    AgentRun.status == status,
+                )
+                .order_by(AgentRun.updated_at.desc(), AgentRun.created_at.desc())
+                .limit(limit)
+            ).all()
+            if not runs:
+                return []
+            run_ids = [run.run_id for run in runs]
+            hidden_ids: set[str] = set()
+            if not include_hidden:
+                views = db.scalars(
+                    select(UserRunView).where(
+                        UserRunView.user_id == user_id,
+                        UserRunView.run_id.in_(run_ids),
+                    )
+                ).all()
+                hidden_ids = {view.run_id for view in views if view.hidden_at is not None}
+            visible_runs = [run for run in runs if run.run_id not in hidden_ids]
+            if not visible_runs:
+                return []
+            visible_ids = [run.run_id for run in visible_runs]
+            artifacts = db.scalars(
+                select(Artifact)
+                .where(Artifact.run_id.in_(visible_ids))
+                .order_by(Artifact.created_at, Artifact.artifact_id)
+            ).all()
+            events = db.scalars(
+                select(RunEvent)
+                .where(
+                    RunEvent.run_id.in_(visible_ids),
+                    RunEvent.event_type == "artifact_publish_completed",
+                )
+                .order_by(RunEvent.created_at, RunEvent.event_id)
+            ).all()
+            artifacts_by_run: dict[str, list[dict]] = {run_id: [] for run_id in visible_ids}
+            for artifact in artifacts:
+                artifacts_by_run.setdefault(artifact.run_id, []).append(
+                    self._artifact_to_dict(artifact)
+                )
+            events_by_run: dict[str, list[dict]] = {run_id: [] for run_id in visible_ids}
+            event_sequences: dict[str, int] = {}
+            for event in events:
+                event_sequences[event.run_id] = event_sequences.get(event.run_id, 0) + 1
+                events_by_run.setdefault(event.run_id, []).append(
+                    self._event_to_dict(event, sequence=event_sequences[event.run_id])
+                )
+            return [
+                {
+                    "run": {
+                        **self._run_to_dict(run),
+                        "title": self._generate_session_name(run),
+                    },
+                    "artifacts": artifacts_by_run.get(run.run_id, []),
+                    "events": events_by_run.get(run.run_id, []),
+                }
+                for run in visible_runs
+            ]
     def list_activity_snapshots(
         self,
         *,

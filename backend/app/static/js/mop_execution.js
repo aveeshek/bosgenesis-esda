@@ -19,6 +19,7 @@ const bundleFileGroup = $("mop_execution_bundle_file_group");
 const bundleFileInput = $("mop_execution_bundle_file");
 const bundleMetadataPanel = $("mop-execution-bundle-metadata");
 const twinGatePanel = $("namespace-twin-gate");
+const twinGateRequired = twinGatePanel?.dataset.required === "true";
 const twinGateTitle = $("namespace-twin-gate-title");
 const twinGateDecision = $("namespace-twin-gate-decision");
 const twinGateFacts = $("namespace-twin-gate-facts");
@@ -91,6 +92,10 @@ let approvalHydrationInFlight = new Set();
 let bundleCandidates = [];
 let selectedTwinGate = null;
 let requestedTwinIdConsumed = false;
+let twinGateLoadVersion = 0;
+let twinGateAbortController = null;
+let twinGenerationPollTimer = 0;
+let twinGenerationInFlight = false;
 let workingOrder = 0, workingKeys = new Set();
 const seen = new Set();
 const defs = [
@@ -1065,7 +1070,9 @@ function renderTransactions(list) {
   if (!list.length) { txStatus.textContent = "No MoP execution transactions yet."; return; }
   txStatus.textContent = `${list.length} MoP execution transaction${list.length === 1 ? "" : "s"}`;
   list.forEach((tx) => {
-    const card = document.createElement("button"); card.type = "button"; card.className = `transaction-card${tx.run_id === activeRunId ? " is-active" : ""}`;
+    const card = document.createElement("article"); card.className = `transaction-card${tx.run_id === activeRunId ? " is-active" : ""}`;
+    card.tabIndex = 0; card.setAttribute("role", "button"); card.dataset.runId = tx.run_id;
+    card.setAttribute("aria-label", `Open ${tx.title || tx.goal || tx.run_id}`);
     const row = document.createElement("div"); row.className = "transaction-card-row";
     const st = document.createElement("span"); st.className = "transaction-status-pill"; st.textContent = tx.status || "unknown";
     const clear = document.createElement("button"); clear.type = "button"; clear.className = "transaction-clear"; clear.textContent = "Clear";
@@ -1074,7 +1081,12 @@ function renderTransactions(list) {
     const title = document.createElement("div"); title.className = "transaction-card-title"; title.textContent = tx.title || tx.goal || tx.run_id;
     const sub = document.createElement("div"); sub.className = "transaction-card-subtitle"; sub.textContent = tx.namespace || tx.target_url || "mop_execution";
     const meta = document.createElement("div"); meta.className = "transaction-card-meta"; const artifacts = Number(tx.artifact_count || 0); meta.textContent = `${time(tx.updated_at)} | ${artifacts} artifact${artifacts === 1 ? "" : "s"}`;
-    card.append(row, title, sub, meta); card.addEventListener("click", () => openRun(tx.run_id, {closeSidebar: true})); txList.appendChild(card);
+    const restore = () => void openRun(tx.run_id, {closeSidebar: true});
+    card.append(row, title, sub, meta); card.addEventListener("click", restore);
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); restore(); }
+    });
+    txList.appendChild(card);
   });
 }
 async function loadTransactions() { try { const r = await fetch("/api/transactions?workflow_type=mop_execution"); if (!r.ok) throw new Error(`HTTP ${r.status}`); const data = await r.json(); renderTransactions(data.transactions || []); return data.transactions || []; } catch (err) { if (txStatus) txStatus.textContent = `Could not load transactions: ${err.message}`; return []; } }
@@ -1083,10 +1095,16 @@ async function clearAllTransactions() { if (txClearAll) txClearAll.disabled = tr
 function bindSidebar() { txToggle?.addEventListener("click", () => setSidebar(true)); txClose?.addEventListener("click", () => setSidebar(false)); txBackdrop?.addEventListener("click", () => setSidebar(false)); txClearAll?.addEventListener("click", clearAllTransactions); document.addEventListener("keydown", (e) => { if (e.key === "Escape") setSidebar(false); }); }
 function bindRail() { try { pinned = localStorage.getItem(pinKey) === "true"; } catch (_e) { pinned = false; } rail?.classList.toggle("is-pinned", pinned); controls(); railToggle?.addEventListener("click", () => rail?.classList.contains("is-collapsed") ? revealRail("Activity feed opened.") : collapseRail(true)); railPin?.addEventListener("click", () => { pinned = !pinned; try { localStorage.setItem(pinKey, String(pinned)); } catch (_e) {} rail?.classList.toggle("is-pinned", pinned); if (pinned) revealRail("Activity feed pinned open."); controls(); }); }
 async function openRun(runId, opt = {}) {
+  if (!runId) return;
+  const generation = ++viewGeneration;
   if (es) { es.close(); es = null; }
-  resetTimeline(); setActive(runId); if (opt.closeSidebar) setSidebar(false);
+  approvalHydrationInFlight.clear(); resetTimeline(); setActive(runId); if (opt.closeSidebar) setSidebar(false);
+  setStatus("loading"); setVisual("working");
+  if (finalReport) finalReport.textContent = "Loading persisted execution state...";
+  setText(copyProgressStatus, "Restoring selected execution...");
   try {
-    const r = await fetch(`/api/runs/${runId}/snapshot`); if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const r = await fetch(`/api/runs/${encodeURIComponent(runId)}/snapshot?compact=true`); if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (generation !== viewGeneration || runId !== activeRunId) return;
     const snap = await r.json(); const run = snap.run || {};
     applyRunStatus(run.status || "Idle");
     const restoredEvents = snap.events || [];
@@ -1100,7 +1118,11 @@ async function openRun(runId, opt = {}) {
     const restoredState = run.status || latestEventValue("current_state");
     if (isApprovalReadyState(restoredState) || isApprovalReadyState(latestEventValue("current_state"))) void ensureApprovalGateForRun(runId, {state: restoredState, force: true});
     if (!terminal(run.status)) connect(runId);
-  } catch (err) { resetView(`Could not restore MoP execution run: ${err.message}`); setActive(null); setStatus("failed"); setVisual("failed"); }
+    setText(copyProgressStatus, "Selected execution restored.");
+  } catch (err) {
+    if (generation !== viewGeneration || runId !== activeRunId) return;
+    resetView(`Could not restore MoP execution run: ${err.message}`); setActive(null); setStatus("failed"); setVisual("failed");
+  }
   await loadTransactions();
 }
 function connect(runId) { if (es) es.close(); es = new EventSource(`/api/runs/${runId}/events${lastSeq ? `?after_sequence=${lastSeq}` : ""}`); es.onmessage = async (msg) => { const event = JSON.parse(msg.data); processEvent(event, {live: true}); if (["run_completed", "run_failed"].includes(event.event_type)) { es?.close(); es = null; await loadTransactions(); } }; es.onerror = () => setText(copyProgressStatus, "Live event stream temporarily disconnected."); }
@@ -1156,6 +1178,7 @@ function gateValue(value) {
   return String(value).replaceAll("_", " ");
 }
 function twinGateRequestFields() {
+  if (!twinGateRequired) return {};
   const facts = selectedTwinGate?.gate_facts || {};
   return selectedTwinGate ? {
     twin_id: facts.twin_id,
@@ -1166,14 +1189,24 @@ function twinGateRequestFields() {
 function updateExecutionGateControl() {
   const submit = $("mop-execution-submit");
   if (!submit) return;
-  const requiresGate = ["approved_mutation", "dry_run_then_approval"].includes(valueOf("mop_execution_mode"));
+  const executionModeNeedsGate = ["approved_mutation", "dry_run_then_approval"].includes(valueOf("mop_execution_mode"));
+  const requiresGate = twinGateRequired && executionModeNeedsGate;
   const decision = selectedTwinGate?.gate_facts?.decision;
   const actions = selectedTwinGate?.actions || {};
   const eligible = decision === "green"
     ? actions.start_execution?.enabled === true
     : decision === "amber" && actions.request_approval?.enabled === true;
   submit.disabled = Boolean(requiresGate && !eligible);
-  if (requiresGate && !selectedTwinGate) setText(formStatus, "Select a bundle with a final authoritative Namespace Twin before approved execution.");
+  if (!twinGateRequired && executionModeNeedsGate) {
+    setText(
+      formStatus,
+      selectedTwinGate
+        ? "Namespace Twin evidence is advisory. Standard preflight, dry-run, and human approval gates remain authoritative."
+        : "Namespace Twin is optional. Execution will use standard preflight, dry-run, and human approval gates."
+    );
+  } else if (requiresGate && !selectedTwinGate) {
+    setText(formStatus, "Select a bundle with a final authoritative Namespace Twin before approved execution.");
+  }
 }
 function renderTwinGate(gate, message = "") {
   selectedTwinGate = gate || null;
@@ -1182,22 +1215,30 @@ function renderTwinGate(gate, message = "") {
   if (!gate) {
     twinGatePanel.classList.add("is-empty");
     setText(twinGateTitle, message || "No matching authoritative twin");
-    setText(twinGateDecision, "not bound");
+    setText(twinGateDecision, twinGateRequired ? "not bound" : "optional");
     twinGateDecision.className = "badge text-bg-secondary";
     if (twinGateFacts) twinGateFacts.innerHTML = "";
     if (twinGateReasons) twinGateReasons.innerHTML = "";
-    if (twinGateActions) twinGateActions.innerHTML = '<a class="btn btn-sm btn-outline-light" href="/digital-twins">Open Digital Twins</a>';
+    if (twinGateActions) {
+      twinGateActions.innerHTML = [
+        '<button class="btn btn-sm btn-primary" type="button" data-twin-gate-generate>Run Digital Simulation</button>',
+        '<button class="btn btn-sm btn-outline-light" type="button" data-twin-gate-retry>Retry matching</button>',
+        '<a class="btn btn-sm btn-outline-light" href="/digital-twins">Open Digital Twins</a>',
+      ].join("");
+      wireTwinGenerationButton();
+      twinGateActions.querySelector("[data-twin-gate-retry]")?.addEventListener("click", () => void loadTwinGate());
+    }
     updateExecutionGateControl();
     return;
   }
   const facts = gate.gate_facts || {};
   const decision = facts.decision || "pending";
   twinGatePanel.classList.add(`is-${decision}`);
-  setText(twinGateTitle, `${facts.twin_id} · decision v${facts.decision_version}`);
+  setText(twinGateTitle, `${facts.twin_id} - decision v${facts.decision_version}`);
   setText(twinGateDecision, decision);
   twinGateDecision.className = `badge ${decision === "green" ? "text-bg-success" : decision === "amber" ? "text-bg-warning" : "text-bg-danger"}`;
   const matrix = [
-    ["Risk", gateValue(gate.risk)], ["Policy", gateValue(gate.policy)], ["Evidence", gateValue(gate.evidence)],
+    ["Risk", twinRiskLabel(gate.risk)], ["Policy", gateValue(gate.policy)], ["Evidence", gateValue(gate.evidence)],
     ["Freshness", gateValue(facts.freshness)], ["Dry-run", gateValue(facts.dry_run)], ["Rollback", gateValue(facts.rollback)],
     ["Drift", gateValue(facts.drift)], ["Approval", gateValue(facts.approval)], ["Gate", shortHash(gate.gate_hash)],
   ];
@@ -1207,10 +1248,160 @@ function renderTwinGate(gate, message = "") {
     const contract = gate.actions?.[code] || {};
     return `<button class="btn btn-sm btn-outline-light" type="button" disabled title="${escapeHtml(contract.enabled ? `${label} is enabled by the canonical gate.` : contract.disabled_reason || `${label} is disabled by the canonical gate.`)}">${escapeHtml(label)}: ${contract.enabled ? "enabled" : "disabled"}</button>`;
   };
-  if (twinGateActions) twinGateActions.innerHTML = `<a class="btn btn-sm btn-outline-light" href="/digital-twins/${encodeURIComponent(facts.twin_id)}?tab=overview">View Full Twin</a>${action("start_execution", "Start")}${action("request_approval", "Approval")}${action("regenerate_twin", "Regenerate")}`;
+  if (twinGateActions) {
+    twinGateActions.innerHTML = [
+      `<a class="btn btn-sm btn-outline-light" href="/digital-twins/${encodeURIComponent(facts.twin_id)}?tab=overview">View Full Twin</a>`,
+      '<button class="btn btn-sm btn-outline-light" type="button" data-twin-gate-generate>Run Again</button>',
+      action("start_execution", "Start"),
+      action("request_approval", "Approval"),
+      action("regenerate_twin", "Regenerate"),
+    ].join("");
+    wireTwinGenerationButton();
+  }
+  updateExecutionGateControl();
+}
+function twinRiskLabel(risk) {
+  if (!risk || typeof risk !== "object") return gateValue(risk);
+  const score = risk.score;
+  const level = risk.level || risk.classification || risk.status;
+  if (score != null && level) return `${score} (${String(level).replaceAll("_", " ")})`;
+  if (score != null) return String(score);
+  return gateValue(risk);
+}
+function twinLaunchToken() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+async function twinApiError(response, fallback) {
+  try {
+    const payload = await response.json();
+    return payload?.error?.message || payload?.detail || fallback || `HTTP ${response.status}`;
+  } catch (_error) {
+    return fallback || `HTTP ${response.status}`;
+  }
+}
+function clearTwinGenerationPolling() {
+  window.clearTimeout(twinGenerationPollTimer);
+  twinGenerationPollTimer = 0;
+}
+function wireTwinGenerationButton() {
+  const button = twinGateActions?.querySelector("[data-twin-gate-generate]");
+  if (!button) return;
+  const available = valueOf("mop_execution_bundle_source") === "activity_run" && Boolean(selectedCandidate());
+  button.disabled = twinGenerationInFlight || !available;
+  if (twinGenerationInFlight) button.textContent = "Simulation running...";
+  button.title = available
+    ? "Run a new server-side Namespace Twin for the selected bundle and target namespace."
+    : "Select a persisted Activity-run MoP bundle first.";
+  button.addEventListener("click", () => void runSelectedTwinSimulation());
+}
+async function pollGeneratedTwin(twinId, attempt = 0) {
+  if (!twinGenerationInFlight) return;
+  try {
+    const response = await fetch(`/api/digital-twins/${encodeURIComponent(twinId)}/gate`);
+    if (response.ok) {
+      const gate = await response.json();
+      renderTwinGate(gate);
+      if (gate?.gate_facts?.decision_is_final) {
+        twinGenerationInFlight = false;
+        clearTwinGenerationPolling();
+        wireTwinGenerationButton();
+        setText(formStatus, "Digital simulation completed. The matching Namespace Twin score is shown above.");
+        return;
+      }
+      setText(twinGateTitle, `${twinId} - simulation in progress`);
+    } else if (![404, 409, 425].includes(response.status)) {
+      throw new Error(await twinApiError(response, "Could not read the generated twin."));
+    }
+  } catch (error) {
+    if (attempt >= 120) {
+      twinGenerationInFlight = false;
+      renderTwinGate(null, `Digital simulation status could not be restored: ${error.message}`);
+      return;
+    }
+  }
+  if (attempt >= 120) {
+    twinGenerationInFlight = false;
+    renderTwinGate(null, "Digital simulation is still running. Use Retry matching to restore it.");
+    return;
+  }
+  twinGenerationPollTimer = window.setTimeout(() => void pollGeneratedTwin(twinId, attempt + 1), 2500);
+}
+async function runSelectedTwinSimulation() {
+  if (twinGenerationInFlight) return;
+  const source = valueOf("mop_execution_bundle_source") || "activity_run";
+  const candidate = selectedCandidate();
+  const targetNamespace = valueOf("mop_execution_target_namespace") || "agent-testing";
+  if (source !== "activity_run" || !candidate) {
+    renderTwinGate(null, "Select a persisted Activity-run MoP bundle before running a Digital Twin.");
+    return;
+  }
+  twinGenerationInFlight = true;
+  clearTwinGenerationPolling();
+  renderTwinGateLoading("Loading the Digital Twin simulation contract...");
+  try {
+    const catalogResponse = await fetch("/api/digital-twins/sources");
+    if (!catalogResponse.ok) {
+      const fallback = catalogResponse.status === 404
+        ? "The real Digital Twin backend is not active. Restart ESDA with DIGITAL_TWIN_BACKEND_MODE=real_core."
+        : "Digital Twin sources could not be loaded.";
+      throw new Error(await twinApiError(catalogResponse, fallback));
+    }
+    const catalog = await catalogResponse.json();
+    const sourceBundle = (catalog.bundles || []).find((item) =>
+      item.run_id === candidate.run_id && (!candidate.artifact_id || item.artifact_id === candidate.artifact_id)
+    );
+    if (!sourceBundle) throw new Error("The selected bundle is not available in the authenticated Digital Twin catalog.");
+    if (!sourceBundle.eligible) throw new Error(sourceBundle.eligibility_message || "Publish this MoP bundle before simulation.");
+    if (!(catalog.target_namespaces || []).includes(targetNamespace)) {
+      throw new Error(`Target namespace ${targetNamespace} is outside the Digital Twin policy boundary.`);
+    }
+    renderTwinGateLoading("Starting the full server-side Digital Twin simulation...");
+    const response = await fetch("/api/digital-twins", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        bundle_run_id: candidate.run_id,
+        bundle_artifact_id: candidate.artifact_id,
+        target_namespace: targetNamespace,
+        target_cluster: catalog.default_target_cluster || "configured-cluster",
+        run_authoritative_dry_run: true,
+        idempotency_key: (`esda-execution-twin-${candidate.run_id}-${targetNamespace}-${twinLaunchToken()}`).slice(0, 200),
+      }),
+    });
+    if (!response.ok) throw new Error(await twinApiError(response, "Digital simulation could not be started."));
+    const twin = await response.json();
+    if (!twin.twin_id) throw new Error("Digital Twin service did not return a twin ID.");
+    setText(formStatus, "Digital simulation started. ESDA is restoring the decision and risk score here.");
+    renderTwinGateLoading(`${twin.twin_id} - calculating authoritative decision...`);
+    void pollGeneratedTwin(twin.twin_id);
+  } catch (error) {
+    twinGenerationInFlight = false;
+    clearTwinGenerationPolling();
+    renderTwinGate(null, `Digital simulation unavailable: ${error.message}`);
+  }
+}
+function renderTwinGateLoading(message = "Matching authoritative twin...") {
+  selectedTwinGate = null;
+  if (!twinGatePanel) return;
+  twinGatePanel.className = "namespace-twin-gate mb-3 is-loading";
+  setText(twinGateTitle, message);
+  setText(twinGateDecision, "matching");
+  twinGateDecision.className = "badge text-bg-secondary";
+  if (twinGateFacts) twinGateFacts.innerHTML = '<span><small>Status</small><strong>Checking the selected bundle and namespace</strong></span>';
+  if (twinGateReasons) twinGateReasons.innerHTML = "<li>The authoritative gate will appear when matching completes.</li>";
+  if (twinGateActions) twinGateActions.innerHTML = '<a class="btn btn-sm btn-outline-light" href="/digital-twins">Open Digital Twins</a>';
   updateExecutionGateControl();
 }
 async function loadTwinGate() {
+  const loadVersion = ++twinGateLoadVersion;
+  twinGateAbortController?.abort();
+  twinGenerationInFlight = false;
+  clearTwinGenerationPolling();
+
+  const controller = new AbortController();
+  twinGateAbortController = controller;
+  const source = valueOf("mop_execution_bundle_source") || "activity_run";
   const candidate = selectedCandidate();
   const target = valueOf("mop_execution_target_namespace") || "agent-testing";
   const params = new URLSearchParams(window.location.search);
@@ -1223,30 +1414,45 @@ async function loadTwinGate() {
   }
   const activeCandidate = selectedCandidate() || candidate;
   const bundleHash = activeCandidate?.canonical_sha256 || activeCandidate?.sha256 || requestedBundleHash;
+  const selectedRunId = activeCandidate?.run_id || "";
+  const selectionIsCurrent = () => {
+    if (loadVersion !== twinGateLoadVersion || controller.signal.aborted) return false;
+    if ((valueOf("mop_execution_bundle_source") || "activity_run") !== source) return false;
+    if ((valueOf("mop_execution_target_namespace") || "agent-testing") !== target) return false;
+    return source !== "activity_run" || (selectedCandidate()?.run_id || "") === selectedRunId;
+  };
+  if (source !== "activity_run" && !requestedTwinId) {
+    renderTwinGate(null, "Namespace Twin matching is available for persisted Activity-run bundles.");
+    return;
+  }
   if (!bundleHash && !requestedTwinId) {
     renderTwinGate(null, "Select a persisted MoP bundle to match its twin.");
     return;
   }
-  twinGatePanel?.classList.add("is-loading");
-  setText(twinGateTitle, "Matching authoritative twin...");
+  renderTwinGateLoading();
   try {
     let twinId = requestedTwinId;
     if (!twinId) {
-      const response = await fetch(`/api/digital-twins?namespace=${encodeURIComponent(target)}&limit=100`);
+      const response = await fetch(`/api/digital-twins?namespace=${encodeURIComponent(target)}&limit=100`, {signal: controller.signal});
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const listing = await response.json();
+      if (!selectionIsCurrent()) return;
       const match = (listing.items || []).find((item) => (item.bundle_hash || item.bundle?.bundle_hash) === bundleHash && (item.target_namespace || item.target?.namespace) === target);
       twinId = match?.twin_id;
     }
+    if (!selectionIsCurrent()) return;
     if (!twinId) {
       renderTwinGate(null, "No final Namespace Twin matches this bundle hash and target.");
       return;
     }
-    const response = await fetch(`/api/digital-twins/${encodeURIComponent(twinId)}/gate`);
+    const response = await fetch(`/api/digital-twins/${encodeURIComponent(twinId)}/gate`, {signal: controller.signal});
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    renderTwinGate(await response.json());
+    const gate = await response.json();
+    if (selectionIsCurrent()) renderTwinGate(gate);
   } catch (error) {
-    renderTwinGate(null, `Twin gate unavailable: ${error.message}`);
+    if (error.name !== "AbortError" && selectionIsCurrent()) renderTwinGate(null, `Twin gate unavailable: ${error.message}`);
+  } finally {
+    if (loadVersion === twinGateLoadVersion) twinGateAbortController = null;
   }
 }
 function updateSourceVisibility() {
@@ -2041,7 +2247,7 @@ async function boot() {
   normalizeFreshExecutionMode();
   if (runId) await openRun(runId);
 }
-bundleSource?.addEventListener("change", () => { updateSourceVisibility(); stampCorrelationId(); });
+bundleSource?.addEventListener("change", () => { updateSourceVisibility(); stampCorrelationId(); void loadTwinGate(); });
 activityRunSelect?.addEventListener("change", () => { renderBundleMetadata(); void loadTwinGate(); });
 repoFolderInput?.addEventListener("input", () => renderBundleMetadata());
 bundleFileInput?.addEventListener("change", () => renderBundleMetadata());

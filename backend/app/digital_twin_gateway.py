@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import json
 import re
@@ -13,6 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from backend.app.auth.security import SessionPrincipal
 from backend.app.db.database import Database
@@ -50,11 +52,14 @@ class DigitalTwinGatewayError(Exception):
 
 class RealTwinCreateRequest(BaseModel):
     source: dict[str, Any] | None = None
+    bundle_run_id: str | None = Field(default=None, max_length=200)
+    bundle_artifact_id: str | None = Field(default=None, max_length=200)
     target_namespace: str | None = Field(default=None, max_length=253)
     target_cluster: str = Field(default="configured-cluster", max_length=253)
     idempotency_key: str | None = Field(default=None, max_length=200)
     supersedes_twin_id: str | None = Field(default=None, max_length=200)
     scenario_id: str | None = Field(default=None, max_length=100)
+    run_authoritative_dry_run: bool = True
 
 
 class RealTwinDryRunEvidenceRequest(BaseModel):
@@ -82,6 +87,8 @@ class DigitalTwinGatewayService:
         client: MopExecutionAgentClient | None = None,
         llm: AzureGpt5Service | None = None,
         database: Database | None = None,
+        bundle_source_catalog: Callable[..., dict[str, Any]] | None = None,
+        bundle_source_resolver: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         base_url = settings.digital_twin_execution_agent_url or None
         self.client = client or MopExecutionAgentClient(settings, base_url_override=base_url)
@@ -89,22 +96,62 @@ class DigitalTwinGatewayService:
 
         self.llm = llm
         self.database = database
+        self.bundle_source_catalog = bundle_source_catalog
+        self.bundle_source_resolver = bundle_source_resolver
 
-    async def create(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if not payload.get("source") or not payload.get("target_namespace"):
+    def generation_sources(self, *, user_id: str) -> dict[str, Any]:
+        if not self.bundle_source_catalog:
+            raise DigitalTwinGatewayError(
+                503,
+                "twin_source_catalog_unavailable",
+                "The persisted MoP bundle catalog is unavailable.",
+            )
+        return self.bundle_source_catalog(user_id=user_id)
+
+    async def create(self, payload: dict[str, Any], *, user_id: str | None = None) -> dict[str, Any]:
+        request = dict(payload)
+        bundle_run_id = str(request.get("bundle_run_id") or "").strip()
+        if request.get("source") and self.bundle_source_resolver:
+            raise DigitalTwinGatewayError(
+                422,
+                "twin_bundle_selection_required",
+                "Select a persisted MoP bundle. Direct artifact locations are not accepted by the ESDA browser API.",
+            )
+        if not request.get("source") and bundle_run_id:
+            if not user_id or not self.bundle_source_resolver:
+                raise DigitalTwinGatewayError(
+                    503,
+                    "twin_bundle_resolver_unavailable",
+                    "The authenticated bundle resolver is unavailable.",
+                )
+            resolved = self.bundle_source_resolver(
+                user_id=user_id,
+                run_id=bundle_run_id,
+                artifact_id=request.get("bundle_artifact_id"),
+            )
+            if not resolved.get("ok"):
+                raise DigitalTwinGatewayError(
+                    409,
+                    str(resolved.get("code") or "twin_bundle_unavailable"),
+                    str(resolved.get("message") or "The selected MoP bundle is unavailable."),
+                )
+            request["source"] = resolved["source"]
+        if not request.get("source") or not request.get("target_namespace"):
             raise DigitalTwinGatewayError(
                 409,
                 "real_bundle_required",
-                "Real twin generation requires a bundle source and target namespace. "
-                "Browser scenarios remain preview-only.",
+                "Real twin generation requires a persisted bundle selection and target namespace.",
             )
         response = await self.client.create_namespace_twin(
             {
-                "source": payload["source"],
-                "target_namespace": payload["target_namespace"],
-                "target_cluster": payload.get("target_cluster") or "configured-cluster",
-                "idempotency_key": payload.get("idempotency_key"),
-                "supersedes_twin_id": payload.get("supersedes_twin_id"),
+                "source": request["source"],
+                "target_namespace": request["target_namespace"],
+                "target_cluster": request.get("target_cluster") or "configured-cluster",
+                "idempotency_key": request.get("idempotency_key"),
+                "supersedes_twin_id": request.get("supersedes_twin_id"),
+                "run_authoritative_dry_run": bool(
+                    request.get("run_authoritative_dry_run", True)
+                ),
             }
         )
         return self.project(self._unwrap(response))
@@ -596,6 +643,9 @@ class DigitalTwinGatewayService:
         return projected
 
     async def list(self, query: dict[str, Any]) -> dict[str, Any]:
+        sort_field = str(query.get("sort") or "created_at").strip()
+        if sort_field == "risk":
+            sort_field = "risk_score"
         response = await self.client.list_namespace_twins(
             {
                 "q": query.get("q") or query.get("search") or None,
@@ -608,7 +658,7 @@ class DigitalTwinGatewayService:
                 "created_from": query.get("created_from") or None,
                 "created_to": query.get("created_to") or None,
                 "linked_execution": query.get("linked_execution") or None,
-                "sort": query.get("sort") or "created_at",
+                "sort": sort_field,
                 "direction": query.get("direction") or "desc",
                 "cursor": query.get("cursor") or None,
                 "limit": max(1, min(int(query.get("limit") or 25), 100)),
@@ -642,16 +692,25 @@ class DigitalTwinGatewayService:
         model_profile: str | None = None,
         query: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        query = query or {}
+        include_explanation = str(query.get("include_explanation", "true")).lower() not in {
+            "0",
+            "false",
+            "no",
+        }
         if slug == "overview":
             overview = self._unwrap(await self.client.get_namespace_twin_overview(twin["twin_id"]))
             overview["data_mode"] = DATA_MODE
             overview["module_mode"] = "authoritative"
             overview["non_authoritative"] = False
-            overview["safe_explanation"] = await self.safe_explanation(
-                twin,
-                overview,
-                model_profile=model_profile,
-            )
+            if include_explanation:
+                overview["safe_explanation"] = await self.safe_explanation(
+                    twin,
+                    overview,
+                    model_profile=model_profile,
+                )
+            else:
+                overview["explanation_deferred"] = True
             return overview
         if slug == "release-delta":
             query = query or {}
@@ -677,9 +736,12 @@ class DigitalTwinGatewayService:
                     "applied_query": params,
                 }
             )
-            release_delta["safe_explanation"] = await self.release_delta_explanation(
-                twin, release_delta, model_profile=model_profile
-            )
+            if include_explanation:
+                release_delta["safe_explanation"] = await self.release_delta_explanation(
+                    twin, release_delta, model_profile=model_profile
+                )
+            else:
+                release_delta["explanation_deferred"] = True
             return release_delta
         if slug == "dependency-graph":
             query = query or {}
@@ -719,9 +781,12 @@ class DigitalTwinGatewayService:
                     "applied_query": params,
                 }
             )
-            dependency_graph["safe_explanation"] = await self.dependency_graph_explanation(
-                twin, dependency_graph, model_profile=model_profile
-            )
+            if include_explanation:
+                dependency_graph["safe_explanation"] = await self.dependency_graph_explanation(
+                    twin, dependency_graph, model_profile=model_profile
+                )
+            else:
+                dependency_graph["explanation_deferred"] = True
             return dependency_graph
         if slug == "dry-run":
             query = query or {}
@@ -773,12 +838,14 @@ class DigitalTwinGatewayService:
                     ],
                 }
             )
-            if data:
+            if data and include_explanation:
                 dry_run["safe_explanation"] = await self.dry_run_explanation(
                     twin,
                     dry_run,
                     model_profile=model_profile,
                 )
+            elif data:
+                dry_run["explanation_deferred"] = True
             return dry_run
         if slug == "mop-replay":
             replay = self._unwrap(await self.client.get_namespace_twin_mop_replay(twin["twin_id"]))
@@ -825,10 +892,12 @@ class DigitalTwinGatewayService:
                     ],
                 }
             )
-            if data:
+            if data and include_explanation:
                 replay["safe_explanation"] = await self.mop_replay_explanation(
                     twin, replay, model_profile=model_profile
                 )
+            elif data:
+                replay["explanation_deferred"] = True
             return replay
         if slug == "release-note-validation":
             validation = self._unwrap(
@@ -928,10 +997,12 @@ class DigitalTwinGatewayService:
                     ],
                 }
             )
-            if data:
+            if data and include_explanation:
                 runtime["safe_explanation"] = await self.runtime_behavior_explanation(
                     twin, runtime, model_profile=model_profile
                 )
+            elif data:
+                runtime["explanation_deferred"] = True
             return runtime
         if slug == "drift":
             drift = self._unwrap(await self.client.get_namespace_twin_drift(twin["twin_id"]))
@@ -979,10 +1050,12 @@ class DigitalTwinGatewayService:
                     ],
                 }
             )
-            if data.get("material"):
+            if data.get("material") and include_explanation:
                 drift["safe_explanation"] = await self.drift_explanation(
                     twin, drift, model_profile=model_profile
                 )
+            elif data.get("material"):
+                drift["explanation_deferred"] = True
             return drift
         if slug == "rollback":
             rollback = self._unwrap(await self.client.get_namespace_twin_rollback(twin["twin_id"]))
@@ -1033,10 +1106,12 @@ class DigitalTwinGatewayService:
                     ],
                 }
             )
-            if data:
+            if data and include_explanation:
                 rollback["safe_explanation"] = await self.rollback_explanation(
                     twin, rollback, model_profile=model_profile
                 )
+            elif data:
+                rollback["explanation_deferred"] = True
             return rollback
         if slug == "audit":
             query = query or {}
@@ -1080,11 +1155,14 @@ class DigitalTwinGatewayService:
                     "applied_query": params,
                 }
             )
-            audit["safe_explanation"] = await self.audit_executive_summary(
-                twin,
-                report,
-                model_profile=model_profile,
-            )
+            if include_explanation:
+                audit["safe_explanation"] = await self.audit_executive_summary(
+                    twin,
+                    report,
+                    model_profile=model_profile,
+                )
+            else:
+                audit["explanation_deferred"] = True
             return audit
         if slug == "policy":
             query = query or {}
@@ -1113,9 +1191,12 @@ class DigitalTwinGatewayService:
                     "passed_groups": list(data.get("passed_groups") or []),
                 }
             )
-            policy["safe_explanation"] = await self.policy_explanation(
-                twin, policy, model_profile=model_profile
-            )
+            if include_explanation:
+                policy["safe_explanation"] = await self.policy_explanation(
+                    twin, policy, model_profile=model_profile
+                )
+            else:
+                policy["explanation_deferred"] = True
             return policy
         return await self._tab_phase4(twin, slug)
 
@@ -1158,6 +1239,15 @@ class DigitalTwinGatewayService:
             "approve execution, expose Secret values, or reveal hidden chain-of-thought."
         )
         prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        cached = self._cached_explanation(
+            twin=twin,
+            prompt_version=prompt_version,
+            prompt_hash=prompt_hash,
+            input_hash=input_hash,
+            model_profile=model_profile,
+        )
+        if cached is not None:
+            return cached
         failures = sum(
             item.get("status") == "failed"
             for item in [*fact_envelope["timeline"], *fact_envelope["checks"]]
@@ -1277,6 +1367,15 @@ class DigitalTwinGatewayService:
             "claim model authority."
         )
         prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        cached = self._cached_explanation(
+            twin=twin,
+            prompt_version=prompt_version,
+            prompt_hash=prompt_hash,
+            input_hash=input_hash,
+            model_profile=model_profile,
+        )
+        if cached is not None:
+            return cached
         decision = str((report.get("decision") or {}).get("value") or "pending")
         evidence = report.get("evidence_summary") or {}
         deterministic_summary = (
@@ -1373,6 +1472,15 @@ class DigitalTwinGatewayService:
             "recommended actions, or action eligibility. Never provide hidden chain-of-thought."
         )
         prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        cached = self._cached_explanation(
+            twin=twin,
+            prompt_version=prompt_version,
+            prompt_hash=prompt_hash,
+            input_hash=input_hash,
+            model_profile=model_profile,
+        )
+        if cached is not None:
+            return cached
         deterministic_summary = str(
             (overview.get("final_summary") or overview["preliminary_summary"])["headline"]
         )
@@ -1472,6 +1580,15 @@ class DigitalTwinGatewayService:
             "chain-of-thought."
         )
         prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        cached = self._cached_explanation(
+            twin=twin,
+            prompt_version=prompt_version,
+            prompt_hash=prompt_hash,
+            input_hash=input_hash,
+            model_profile=model_profile,
+        )
+        if cached is not None:
+            return cached
         total = int(summary.get("total") or 0)
         deterministic_summary = (
             f"Release Delta contains {total} canonical fact(s): "
@@ -1634,6 +1751,15 @@ class DigitalTwinGatewayService:
             "advice. Never reveal hidden chain-of-thought."
         )
         prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        cached = self._cached_explanation(
+            twin=twin,
+            prompt_version=prompt_version,
+            prompt_hash=prompt_hash,
+            input_hash=input_hash,
+            model_profile=model_profile,
+        )
+        if cached is not None:
+            return cached
         selected_node = selected_fact.get("node") or {}
         if selected_fact.get("found"):
             deterministic_summary = (
@@ -1796,6 +1922,15 @@ class DigitalTwinGatewayService:
             "dry-run or mutation, bypass approval, or expose hidden chain-of-thought."
         )
         prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        cached = self._cached_explanation(
+            twin=twin,
+            prompt_version=prompt_version,
+            prompt_hash=prompt_hash,
+            input_hash=input_hash,
+            model_profile=model_profile,
+        )
+        if cached is not None:
+            return cached
         rejected = len(fact_envelope["rejected_observations"])
         fidelity_count = len(fact_envelope["fidelity_demonstrations"])
         deterministic_summary = (
@@ -1913,6 +2048,15 @@ class DigitalTwinGatewayService:
             "reveal hidden chain-of-thought."
         )
         prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        cached = self._cached_explanation(
+            twin=twin,
+            prompt_version=prompt_version,
+            prompt_hash=prompt_hash,
+            input_hash=input_hash,
+            model_profile=model_profile,
+        )
+        if cached is not None:
+            return cached
         coverage = fact_envelope["coverage"]
         deterministic_summary = (
             f"Rollback confidence is {fact_envelope['confidence']} with "
@@ -2023,6 +2167,15 @@ class DigitalTwinGatewayService:
             "eligibility, mutate resources, bypass policy, or reveal hidden chain-of-thought."
         )
         prompt_hash = hashlib.sha256((system + canonical).encode()).hexdigest()
+        cached = self._cached_explanation(
+            twin=twin,
+            prompt_version=prompt_version,
+            prompt_hash=prompt_hash,
+            input_hash=input_hash,
+            model_profile=model_profile,
+        )
+        if cached is not None:
+            return cached
         deterministic_summary = str(data.get("summary") or "Drift facts are unavailable.")
         fallback = {
             "summary": deterministic_summary,
@@ -2123,6 +2276,15 @@ class DigitalTwinGatewayService:
             "history, bypass policy, or reveal hidden chain-of-thought."
         )
         prompt_hash = hashlib.sha256((system + canonical).encode()).hexdigest()
+        cached = self._cached_explanation(
+            twin=twin,
+            prompt_version=prompt_version,
+            prompt_hash=prompt_hash,
+            input_hash=input_hash,
+            model_profile=model_profile,
+        )
+        if cached is not None:
+            return cached
         deterministic_summary = str(
             data.get("summary") or "Rules-first runtime behavior facts are unavailable."
         )
@@ -2239,6 +2401,15 @@ class DigitalTwinGatewayService:
             "chain-of-thought."
         )
         prompt_hash = hashlib.sha256((system + canonical).encode("utf-8")).hexdigest()
+        cached = self._cached_explanation(
+            twin=twin,
+            prompt_version=prompt_version,
+            prompt_hash=prompt_hash,
+            input_hash=input_hash,
+            model_profile=model_profile,
+        )
+        if cached is not None:
+            return cached
         evidence_axis = fact_envelope["evidence_axis"]
         risk_axis = fact_envelope["risk_axis"]
         projection = fact_envelope["decision_projection"]
@@ -2311,6 +2482,45 @@ class DigitalTwinGatewayService:
         )
         return safe_output
 
+    def _cached_explanation(
+        self,
+        *,
+        twin: dict[str, Any],
+        prompt_version: str,
+        prompt_hash: str,
+        input_hash: str,
+        model_profile: str | None,
+    ) -> dict[str, Any] | None:
+        """Reuse an audit-safe explanation when the authoritative facts are unchanged."""
+        if self.database is None:
+            return None
+        profile = model_profile or "azure_gpt5_pro"
+        try:
+            with self.database.session() as session:
+                record = session.scalar(
+                    select(DigitalTwinExplanationLog)
+                    .where(
+                        DigitalTwinExplanationLog.twin_id == twin["twin_id"],
+                        DigitalTwinExplanationLog.decision_version
+                        == int(twin["decision_version"]),
+                        DigitalTwinExplanationLog.prompt_version == prompt_version,
+                        DigitalTwinExplanationLog.prompt_hash == prompt_hash,
+                        DigitalTwinExplanationLog.input_hash == input_hash,
+                        DigitalTwinExplanationLog.model_profile == profile,
+                    )
+                    .order_by(DigitalTwinExplanationLog.created_at.desc())
+                    .limit(1)
+                )
+                if record is None or not isinstance(record.safe_output_json, dict):
+                    return None
+                cached = deepcopy(record.safe_output_json)
+                cached["cache_hit"] = True
+                cached["cache_source"] = "postgresql"
+                cached["served_at"] = datetime.now(UTC).isoformat()
+                return cached
+        except Exception:
+            # Cache lookup must never hide otherwise valid deterministic twin facts.
+            return None
     def _log_explanation(
         self,
         *,
@@ -2489,6 +2699,14 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
             ),
         }
 
+    @router.get("/sources")
+    async def generation_sources(
+        response: Response,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict[str, Any]:
+        _response_headers(response)
+        return service.generation_sources(user_id=principal.user_id)
+
     @router.get("/scenarios")
     async def scenarios(response: Response) -> list[dict[str, Any]]:
         _response_headers(response)
@@ -2503,9 +2721,16 @@ def build_digital_twin_gateway_router(service: DigitalTwinGatewayService) -> API
         return await service.list(dict(request.query_params))
 
     @router.post("")
-    async def create_twin(payload: RealTwinCreateRequest, response: Response) -> dict[str, Any]:
+    async def create_twin(
+        payload: RealTwinCreateRequest,
+        response: Response,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict[str, Any]:
         _response_headers(response)
-        return await service.create(payload.model_dump(mode="json"))
+        return await service.create(
+            payload.model_dump(mode="json"),
+            user_id=principal.user_id,
+        )
 
     @router.post("/{twin_id}/dry-run-evidence")
     async def attach_dry_run_evidence(
@@ -2698,8 +2923,17 @@ def install_digital_twin_gateway(
     client: MopExecutionAgentClient | None = None,
     llm: AzureGpt5Service | None = None,
     database: Database | None = None,
+    bundle_source_catalog: Callable[..., dict[str, Any]] | None = None,
+    bundle_source_resolver: Callable[..., dict[str, Any]] | None = None,
 ) -> DigitalTwinGatewayService:
-    service = DigitalTwinGatewayService(settings, client=client, llm=llm, database=database)
+    service = DigitalTwinGatewayService(
+        settings,
+        client=client,
+        llm=llm,
+        database=database,
+        bundle_source_catalog=bundle_source_catalog,
+        bundle_source_resolver=bundle_source_resolver,
+    )
     app.state.digital_twin_gateway = service
     app.include_router(build_digital_twin_gateway_router(service))
 

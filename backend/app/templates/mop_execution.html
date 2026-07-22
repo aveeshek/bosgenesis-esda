@@ -33,10 +33,10 @@
             <div class="working-note-label">Bundle Metadata</div>
             <p>No MoP bundle selected.</p>
           </div>
-          <section id="namespace-twin-gate" class="namespace-twin-gate mb-3 is-loading" aria-live="polite">
+          <section id="namespace-twin-gate" class="namespace-twin-gate mb-3 is-loading" data-required="{{ 'true' if digital_twin_execution_gate_required else 'false' }}" aria-live="polite">
             <div class="namespace-twin-gate-header">
               <div>
-                <div class="working-note-label">Namespace Twin Gate</div>
+                <div class="working-note-label">Namespace Twin{% if not digital_twin_execution_gate_required %} (Optional){% else %} Gate{% endif %}</div>
                 <strong id="namespace-twin-gate-title">Matching authoritative twin...</strong>
               </div>
               <span id="namespace-twin-gate-decision" class="badge text-bg-secondary">pending</span>
@@ -293,5 +293,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/js/mop_execution.js?v=phase6-twin-gate-1"></script>
+<script src="/static/js/mop_execution.js?v=twin-direct-launch-1"></script>
 {% endblock %}

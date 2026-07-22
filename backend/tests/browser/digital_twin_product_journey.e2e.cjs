@@ -179,10 +179,10 @@ async function run() {
 
       await page.locator("#reset-filters").click();
       await waitForRows(page, 6);
-      await page.locator("[data-sort='risk']").click();
-      await page.waitForURL(/sort=risk/);
+      await page.locator("[data-sort='risk_score']").click();
+      await page.waitForURL(/sort=risk_score/);
       assert.match(page.url(), /direction=desc/);
-      await page.locator("[data-sort='risk']").click();
+      await page.locator("[data-sort='risk_score']").click();
       await page.waitForURL(/direction=asc/);
 
       await page.locator("#reset-filters").click();

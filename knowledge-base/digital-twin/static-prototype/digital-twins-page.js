@@ -20,6 +20,7 @@
 
   function queryFromUrl() {
     var search = ui.params();
+    var requestedSort = search.get("sort") || "created_at";
     return {
       search: search.get("search") || "",
       decision: search.get("decision") || "all",
@@ -30,7 +31,7 @@
       creator: search.get("creator") || "all",
       date: search.get("date") || "",
       linked_execution: search.get("linked_execution") || "all",
-      sort: search.get("sort") || "created_at",
+      sort: requestedSort === "risk" ? "risk_score" : requestedSort,
       direction: search.get("direction") || "desc",
       cursor: search.get("cursor") || null,
       limit: 6,

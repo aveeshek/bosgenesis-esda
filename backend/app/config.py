@@ -121,8 +121,9 @@ class Settings(BaseSettings):
 
     digital_twin_mock_enabled: bool = True
     digital_twin_mock_delay_ms: int = 120
-    digital_twin_backend_mode: str = "mock_server"
+    digital_twin_backend_mode: str = "real_core"
     digital_twin_execution_agent_url: str = ""
+    digital_twin_execution_gate_required: bool = False
 
     mcp_k8s_inspector_url: str = ""
     mcp_k8s_inspector_api_key: str = ""

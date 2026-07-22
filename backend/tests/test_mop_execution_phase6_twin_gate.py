@@ -173,6 +173,7 @@ def test_real_core_blocks_ineligible_twin_before_agent_invocation(
 
 def test_real_core_rejects_missing_twin_binding(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DIGITAL_TWIN_BACKEND_MODE", "real_core")
+    monkeypatch.setenv("DIGITAL_TWIN_EXECUTION_GATE_REQUIRED", "true")
     monkeypatch.setenv("DIGITAL_TWIN_EXECUTION_AGENT_URL", "http://execution-agent")
     monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
     bundle = _bundle_bytes()
@@ -195,6 +196,34 @@ def test_real_core_rejects_missing_twin_binding(tmp_path, monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "twin_gate_blocked"
     assert fake_agent.calls == []
+
+
+def test_real_core_allows_approved_execution_without_twin_by_default(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DIGITAL_TWIN_BACKEND_MODE", "real_core")
+    monkeypatch.setenv("DIGITAL_TWIN_EXECUTION_GATE_REQUIRED", "false")
+    monkeypatch.setenv("DIGITAL_TWIN_EXECUTION_AGENT_URL", "http://execution-agent")
+    monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
+    bundle = _bundle_bytes()
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        artifact = _seed_bundle_run(client, login.json()["user"]["user_id"], bundle)
+        fake_agent = FakeMopExecutionAgent()
+        client.app.state.mop_execution_agent = fake_agent
+        response = client.post(
+            "/api/mop-execution/validate",
+            json={
+                "source_type": "activity_run",
+                "run_id": "mop_generation_good",
+                "artifact_id": artifact["artifact_id"],
+                "target_namespace": "agent-testing",
+                "execution_mode": "approved_mutation",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is True
+    assert response.json().get("twin_gate") in (None, {})
+    assert "register_bundle" in fake_agent.calls
 
 
 

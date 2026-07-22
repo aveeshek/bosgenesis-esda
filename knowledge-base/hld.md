@@ -1132,3 +1132,17 @@ Local Webpage
 ```
 
 Start with a read-only diagnostic version, then add controlled remediation with approval. This provides Codex-like behavior while keeping the system bounded, auditable, and safe.
+## Appendix A: Namespace Twin Planning Corrections and Technical Debt
+
+The authoritative Namespace Twin planner uses the following resource-selection rules:
+
+- Synthetic graph bookkeeping nodes under `reference.esda/v1` are never treated as Kubernetes custom resources and cannot create inferred `CustomResourceDefinition` dependencies. This prevents false nodes such as `customresourcedefinitions.reference.esda` and `services.reference.esda`.
+- Helm resources already installed in the target namespace remain eligible planning evidence. An absent Helm release remains excluded unless the machine plan explicitly declares a new installation with `helm install` or `helm upgrade --install`.
+- For an explicit new Helm installation, the planner admits safe namespaced resources from the indexed rendered manifest, including the rendered `Service`. Consequently, a simulated `Ingress` and its backend `Service` are evaluated together instead of mixing an ignored chart with a partial Ingress projection.
+- Platform-managed ConfigMaps are excluded from Namespace Twin planning by exact name and prefix. The default properties are `NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_NAMES=kube-root-ca.crt` and `NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_PREFIXES=istio-`.
+
+### Technical Debt and TODO
+
+MoP bundles can still contain platform/controller-generated ConfigMaps because Bundle Generation does not yet carry authoritative ownership provenance for every object. The current name/prefix exclusion is a bounded Twin-planning workaround only: it does not remove files from `mop-bundle.zip`, alter Bundle Execution, or mutate Kubernetes.
+
+TODO: move ownership classification upstream into Bundle Generation using typed provenance, Kubernetes `managedFields`, owner references, and generator metadata. Once bundles mark or omit platform-managed objects authoritatively, replace the name heuristic and retire these exclusion properties.

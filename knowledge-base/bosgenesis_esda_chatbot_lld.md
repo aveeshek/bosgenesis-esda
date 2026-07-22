@@ -2393,3 +2393,20 @@ The system records evidence and audit history.
 ```
 
 This design preserves the Codex-like task loop from the baseline document while adapting it into a login-based UX application with workflow-specific guardrails, Azure GPT-5 configuration, durable artifacts, approval controls, and operational auditability.
+## Appendix A: Namespace Twin Resource Projection and Known Debt
+
+Namespace Twin construction in `bosgenesis-mop-execution-agent` follows this low-level contract:
+
+1. Collect the target namespace snapshot and installed Helm inventory before constructing the planned projection.
+2. Detect explicit new Helm installations only from typed `helm_install` steps or commands matching `helm install` / `helm upgrade --install`.
+3. Keep target-installed Helm releases; exclude absent releases unless they are in the explicit planned-install set.
+4. For each explicit installation, parse only indexed rendered-manifest files, admit the supported namespaced resource kinds, and require their Helm release metadata to match the planned release.
+5. Build dependency edges from the final selected projection, including rendered Helm resources, rather than only from the original manifest references. This ensures an Ingress backend can resolve to the rendered Service for the same planned release.
+6. Mark `reference.esda/v1` nodes as synthetic and exclude them from CRD inference, preventing recursive false CRDs such as `customresourcedefinitions.reference.esda` and `services.reference.esda`.
+7. Exclude Twin-planning ConfigMaps using `NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_NAMES` and `NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_PREFIXES`. Defaults are `kube-root-ca.crt` and `istio-` respectively.
+
+The ConfigMap exclusion is deliberately downstream and read-only. The bundle and execution payload remain unchanged.
+
+### Technical Debt / TODO
+
+Bundle Generation currently cannot reliably distinguish application-owned ConfigMaps from API-server, service-mesh, or controller-generated ConfigMaps. The exact-name/prefix filter is therefore a temporary planning adapter. Add typed object-origin metadata to `artifact-index.json` and generated manifests using source collector identity, `managedFields`, owner references, and generator provenance; then make Twin projection depend on that typed origin and remove the heuristic properties.

@@ -111,6 +111,73 @@ def _mop_debug_json(value: Any, *, max_chars: int = 30_000) -> str:
 
 
 
+def _compact_snapshot_json(
+    value: Any,
+    *,
+    max_depth: int = 14,
+    max_items: int = 250,
+    max_string_chars: int = 40_000,
+    _depth: int = 0,
+    _seen: set[int] | None = None,
+) -> Any:
+    """Return a bounded JSON-safe view for browser history restoration."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        if len(value) <= max_string_chars:
+            return value
+        return value[:max_string_chars] + f"...<truncated {len(value) - max_string_chars} chars>"
+    if _depth >= max_depth:
+        return "<nested evidence truncated>"
+    seen = _seen if _seen is not None else set()
+    if isinstance(value, dict):
+        identity = id(value)
+        if identity in seen:
+            return "<recursive evidence truncated>"
+        seen.add(identity)
+        try:
+            items = list(value.items())
+            compacted = {
+                str(key): _compact_snapshot_json(
+                    child,
+                    max_depth=max_depth,
+                    max_items=max_items,
+                    max_string_chars=max_string_chars,
+                    _depth=_depth + 1,
+                    _seen=seen,
+                )
+                for key, child in items[:max_items]
+            }
+            if len(items) > max_items:
+                compacted["_truncated_items"] = len(items) - max_items
+            return compacted
+        finally:
+            seen.remove(identity)
+    if isinstance(value, (list, tuple)):
+        identity = id(value)
+        if identity in seen:
+            return ["<recursive evidence truncated>"]
+        seen.add(identity)
+        try:
+            compacted = [
+                _compact_snapshot_json(
+                    child,
+                    max_depth=max_depth,
+                    max_items=max_items,
+                    max_string_chars=max_string_chars,
+                    _depth=_depth + 1,
+                    _seen=seen,
+                )
+                for child in value[:max_items]
+            ]
+            if len(value) > max_items:
+                compacted.append({"_truncated_items": len(value) - max_items})
+            return compacted
+        finally:
+            seen.remove(identity)
+    return str(value)
+
+
 def _write_mop_execution_run_log(settings: Any, run_id: str | None, event_type: str, payload: Any) -> None:
     if not run_id:
         return
@@ -493,7 +560,14 @@ def create_app() -> FastAPI:
 
     digital_twin_adapter_mode = "browser_fixture"
     if settings.digital_twin_real_core_enabled:
-        install_digital_twin_gateway(app, settings=settings, llm=llm, database=database)
+        install_digital_twin_gateway(
+            app,
+            settings=settings,
+            llm=llm,
+            database=database,
+            bundle_source_catalog=mop_execution_preflight.digital_twin_generation_sources,
+            bundle_source_resolver=mop_execution_preflight.digital_twin_source_for_activity_run,
+        )
         digital_twin_adapter_mode = "real_core"
     elif settings.digital_twin_mock_effective_enabled:
         install_digital_twin_mock(
@@ -1010,6 +1084,7 @@ def create_app() -> FastAPI:
                 target_namespaces=settings.mop_execution_allowed_target_namespace_list,
                 default_target_namespace=settings.mop_execution_default_target_namespace,
                 generated_name_prefix=settings.mop_execution_generated_name_prefix,
+                digital_twin_execution_gate_required=settings.digital_twin_execution_gate_required,
             ),
         )
 
@@ -4508,7 +4583,8 @@ def create_app() -> FastAPI:
             }
 
         require_twin_gate = (
-            settings.digital_twin_backend_mode == "real_core"
+            settings.digital_twin_execution_gate_required
+            and settings.digital_twin_backend_mode == "real_core"
             and execution_mode in {"approved_mutation", "dry_run_then_approval"}
         )
         twin_gate, twin_gate_errors = await _verify_transactional_twin_gate(
@@ -4809,27 +4885,29 @@ def create_app() -> FastAPI:
         )
         gate_binding = metadata.get("twin_gate") or {}
         require_twin_gate = (
-            settings.digital_twin_backend_mode == "real_core"
+            settings.digital_twin_execution_gate_required
+            and settings.digital_twin_backend_mode == "real_core"
             and request.execution_mode in {
                 "approved_mutation",
                 "dry_run_then_approval",
             }
         )
+        effective_gate_binding = gate_binding if require_twin_gate else {}
         gate_snapshot, gate_errors = await _verify_transactional_twin_gate(
-            twin_id=request.twin_id or gate_binding.get("twin_id"),
+            twin_id=request.twin_id or effective_gate_binding.get("twin_id"),
             expected_decision_version=(
                 request.twin_decision_version
                 if request.twin_decision_version is not None
-                else gate_binding.get("decision_version")
+                else effective_gate_binding.get("decision_version")
             ),
-            expected_gate_hash=request.twin_gate_hash or gate_binding.get("gate_hash"),
+            expected_gate_hash=request.twin_gate_hash or effective_gate_binding.get("gate_hash"),
             bundle_hash=str((metadata.get("bundle_source") or {}).get("canonical_sha256") or "") or None,
             target_namespace=target_namespace,
             phase="dry_run",
             require_binding=require_twin_gate,
             allow_provisional_dry_run=(
                 request.execution_mode == "dry_run_only"
-                and bool(request.twin_id or gate_binding.get("twin_id"))
+                and bool(request.twin_id or effective_gate_binding.get("twin_id"))
             ),
         )
         if gate_snapshot or gate_errors:
@@ -5182,22 +5260,27 @@ def create_app() -> FastAPI:
                 "events": repository.list_events(request.run_id),
             }
         gate_binding = metadata.get("twin_gate") or {}
-        binding_twin_id = request.twin_id or gate_binding.get("twin_id")
+        require_twin_gate = (
+            settings.digital_twin_execution_gate_required
+            and settings.digital_twin_backend_mode == "real_core"
+        )
+        effective_gate_binding = gate_binding if require_twin_gate else {}
+        binding_twin_id = request.twin_id or effective_gate_binding.get("twin_id")
         gate_snapshot, gate_errors = await _verify_transactional_twin_gate(
             twin_id=binding_twin_id,
             expected_decision_version=(
                 request.twin_decision_version
                 if request.twin_decision_version is not None
-                else gate_binding.get("decision_version")
+                else effective_gate_binding.get("decision_version")
             ),
-            expected_gate_hash=request.twin_gate_hash or gate_binding.get("gate_hash"),
+            expected_gate_hash=request.twin_gate_hash or effective_gate_binding.get("gate_hash"),
             bundle_hash=str((metadata.get("bundle_source") or {}).get("canonical_sha256") or "") or None,
             target_namespace=str(
                 metadata.get("target_namespace")
                 or settings.mop_execution_default_target_namespace
             ),
             phase="approval",
-            require_binding=settings.digital_twin_backend_mode == "real_core",
+            require_binding=require_twin_gate,
             command_fingerprints=request.command_fingerprints,
         )
         mop_execution_store.record_twin_gate(
@@ -5429,6 +5512,11 @@ def create_app() -> FastAPI:
                 "events": repository.list_events(request.run_id),
             }
         gate_binding = metadata.get("twin_gate") or {}
+        require_twin_gate = (
+            settings.digital_twin_execution_gate_required
+            and settings.digital_twin_backend_mode == "real_core"
+        )
+        effective_gate_binding = gate_binding if require_twin_gate else {}
         accepted_approval = _latest_accepted_approval(metadata) or {}
         accepted_approval_payload = accepted_approval.get("approval") or {}
         current_fingerprints = list(
@@ -5436,20 +5524,20 @@ def create_app() -> FastAPI:
             or (_latest_reports(metadata).get("command_fingerprints") or [])
         )
         gate_snapshot, gate_errors = await _verify_transactional_twin_gate(
-            twin_id=request.twin_id or gate_binding.get("twin_id"),
+            twin_id=request.twin_id or effective_gate_binding.get("twin_id"),
             expected_decision_version=(
                 request.twin_decision_version
                 if request.twin_decision_version is not None
-                else gate_binding.get("decision_version")
+                else effective_gate_binding.get("decision_version")
             ),
-            expected_gate_hash=request.twin_gate_hash or gate_binding.get("gate_hash"),
+            expected_gate_hash=request.twin_gate_hash or effective_gate_binding.get("gate_hash"),
             bundle_hash=str((metadata.get("bundle_source") or {}).get("canonical_sha256") or "") or None,
             target_namespace=str(
                 metadata.get("target_namespace")
                 or settings.mop_execution_default_target_namespace
             ),
             phase="mutation",
-            require_binding=settings.digital_twin_backend_mode == "real_core",
+            require_binding=require_twin_gate,
             approval_accepted=True,
             command_fingerprints=current_fingerprints,
         )
@@ -6277,16 +6365,18 @@ def create_app() -> FastAPI:
 
     @app.get("/api/runs/{run_id}/snapshot", tags=["runs"])
     def get_run_snapshot(
-        run_id: str, principal: SessionPrincipal = Depends(get_current_user)
+        run_id: str,
+        compact: bool = Query(False),
+        principal: SessionPrincipal = Depends(get_current_user),
     ) -> dict:
         require_run_access(run_id, principal)
-        snapshot = repository.get_run_snapshot(run_id)
+        snapshot = repository.get_run_snapshot(run_id, compact=compact)
         if not snapshot:
             raise HTTPException(status_code=404, detail="Run not found")
         if principal.user_id == snapshot["run"]["user_id"]:
             repository.mark_transaction_opened(user_id=principal.user_id, run_id=run_id)
         snapshot["events_url"] = f"/api/runs/{run_id}/events"
-        return snapshot
+        return _compact_snapshot_json(snapshot) if compact else snapshot
 
     @app.post("/api/runs/{run_id}/stop", tags=["runs"])
     def stop_run(run_id: str, principal: SessionPrincipal = Depends(get_current_user)) -> dict:

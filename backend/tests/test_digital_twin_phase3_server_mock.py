@@ -34,6 +34,7 @@ def build_client(tmp_path: Path, monkeypatch) -> TestClient:
     monkeypatch.setenv("ARTIFACT_STORAGE_DIR", str(tmp_path / "artifacts"))
     monkeypatch.setenv("DIGITAL_TWIN_MOCK_ENABLED", "true")
     monkeypatch.setenv("DIGITAL_TWIN_MOCK_DELAY_MS", "0")
+    monkeypatch.setenv("DIGITAL_TWIN_BACKEND_MODE", "mock_server")
     get_settings.cache_clear()
     import backend.app.main as main_module
 

@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 from typing import Any
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 import zipfile
 
@@ -491,23 +492,23 @@ class MopExecutionPreflightService:
 
     def bundle_candidates(self, *, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
-        transactions = self.repository.list_transactions(user_id=user_id, include_hidden=False, limit=limit)
-        for transaction in transactions:
-            if transaction.get("workflow_type") != "mop_generation" or transaction.get("status") != "completed":
-                continue
-            artifacts = self.repository.list_artifacts(transaction["run_id"])
-            bundle = self._preferred_bundle_artifact(artifacts)
+        records = self.repository.list_completed_run_sources(
+            user_id=user_id,
+            workflow_type="mop_generation",
+            include_hidden=False,
+            limit=limit,
+        )
+        for record in records:
+            transaction = record.get("run") or {}
+            bundle = self._preferred_bundle_artifact(record.get("artifacts") or [])
             if not bundle:
                 continue
-            events = self.repository.list_events(transaction["run_id"])
             metadata = bundle.get("metadata") or {}
-            publish_state = self._publish_state(events)
+            publish_state = self._publish_state(record.get("events") or [])
             bytes_result = self._read_bundle_artifact(bundle)
-            canonical_sha256 = (
-                self._canonical_zip_sha256(bytes_result[0])
-                if bytes_result[0] is not None
-                else None
-            )
+            canonical_sha256 = metadata.get("canonical_sha256")
+            if not canonical_sha256 and bytes_result[0] is not None:
+                canonical_sha256 = self._canonical_zip_sha256(bytes_result[0])
             candidates.append(
                 {
                     "source_type": "activity_run",
@@ -521,8 +522,11 @@ class MopExecutionPreflightService:
                     "artifact_id": bundle.get("artifact_id"),
                     "artifact_type": bundle.get("artifact_type"),
                     "filename": self._artifact_filename(bundle),
-                    "size_bytes": len(bytes_result[0]) if bytes_result[0] is not None else None,
-                    "sha256": self._sha256(bytes_result[0]) if bytes_result[0] is not None else None,
+                    "size_bytes": metadata.get("size_bytes")
+                    or (len(bytes_result[0]) if bytes_result[0] is not None else None),
+                    "sha256": metadata.get("sha256")
+                    or metadata.get("bundle_sha256")
+                    or (self._sha256(bytes_result[0]) if bytes_result[0] is not None else None),
                     "canonical_sha256": canonical_sha256,
                     "local_available": bytes_result[0] is not None,
                     "local_error": bytes_result[1],
@@ -532,6 +536,169 @@ class MopExecutionPreflightService:
                 }
             )
         return candidates
+
+    def _digital_twin_bundle_candidates(
+        self,
+        *,
+        user_id: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        records = self.repository.list_completed_run_sources(
+            user_id=user_id,
+            workflow_type="mop_generation",
+            include_hidden=False,
+            limit=limit,
+        )
+        candidates: list[dict[str, Any]] = []
+        for record in records:
+            run = record.get("run") or {}
+            bundle = self._preferred_bundle_artifact(record.get("artifacts") or [])
+            if not bundle:
+                continue
+            metadata = bundle.get("metadata") or {}
+            publish_state = self._publish_state(record.get("events") or [])
+            candidates.append(
+                {
+                    "source_type": "activity_run",
+                    "run_id": run.get("run_id"),
+                    "title": run.get("title") or run.get("goal") or run.get("run_id"),
+                    "status": run.get("status"),
+                    "source_namespace": metadata.get("namespace") or run.get("namespace"),
+                    "target_namespace_placeholder": metadata.get("target_namespace_placeholder"),
+                    "target_environment": metadata.get("target_environment"),
+                    "generated_at": metadata.get("bundle_timestamp") or run.get("updated_at"),
+                    "artifact_id": bundle.get("artifact_id"),
+                    "artifact_type": bundle.get("artifact_type"),
+                    "filename": self._artifact_filename(bundle),
+                    "size_bytes": metadata.get("size_bytes"),
+                    "sha256": metadata.get("sha256") or metadata.get("bundle_sha256"),
+                    "canonical_sha256": metadata.get("canonical_sha256"),
+                    "publish_folder": publish_state.get("folder_name"),
+                    "publish_branch": publish_state.get("branch"),
+                    "bundle_id": metadata.get("bundle_id"),
+                }
+            )
+        return candidates
+    def digital_twin_generation_sources(self, *, user_id: str) -> dict[str, Any]:
+        bundles: list[dict[str, Any]] = []
+        for candidate in self._digital_twin_bundle_candidates(user_id=user_id, limit=100):
+            published = bool(candidate.get("publish_folder"))
+            bundles.append(
+                {
+                    key: candidate.get(key)
+                    for key in (
+                        "run_id",
+                        "title",
+                        "source_namespace",
+                        "target_namespace_placeholder",
+                        "target_environment",
+                        "generated_at",
+                        "artifact_id",
+                        "filename",
+                        "size_bytes",
+                        "sha256",
+                        "canonical_sha256",
+                        "publish_folder",
+                        "publish_branch",
+                        "bundle_id",
+                    )
+                }
+                | {
+                    "eligible": published,
+                    "eligibility_message": (
+                        "Published bundle is ready for server-side simulation."
+                        if published
+                        else "Publish this MoP bundle before running a real Digital Twin simulation."
+                    ),
+                }
+            )
+        targets = self.settings.mop_execution_allowed_target_namespace_list
+        return {
+            "schema_version": "1.0.0",
+            "bundles": bundles,
+            "target_namespaces": targets,
+            "default_target_namespace": (
+                self.settings.mop_execution_default_target_namespace
+                if self.settings.mop_execution_default_target_namespace in targets
+                else (targets[0] if targets else None)
+            ),
+            "default_target_cluster": "configured-cluster",
+            "source": "authenticated_persisted_mop_runs",
+        }
+
+    def digital_twin_source_for_activity_run(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        artifact_id: str | None = None,
+    ) -> dict[str, Any]:
+        candidate = next(
+            (
+                item
+                for item in self._digital_twin_bundle_candidates(user_id=user_id, limit=100)
+                if item.get("run_id") == run_id
+                and (not artifact_id or item.get("artifact_id") == artifact_id)
+            ),
+            None,
+        )
+        if not candidate:
+            return {
+                "ok": False,
+                "code": "twin_bundle_not_found",
+                "message": "The selected MoP bundle is unavailable for this user.",
+            }
+        folder = str(candidate.get("publish_folder") or "").strip().strip("/")
+        if not folder:
+            return {
+                "ok": False,
+                "code": "twin_bundle_not_published",
+                "message": "Publish the selected MoP bundle before running a real Digital Twin simulation.",
+            }
+        filename = str(candidate.get("filename") or "mop-bundle.zip").strip()
+        branch = str(candidate.get("publish_branch") or self.settings.artifact_git_branch).strip()
+        source_url = self._published_bundle_url(folder=folder, filename=filename, branch=branch)
+        if not source_url:
+            return {
+                "ok": False,
+                "code": "twin_bundle_source_unsupported",
+                "message": "The configured artifact repository cannot provide a trusted bundle URL to the execution agent.",
+            }
+        return {
+            "ok": True,
+            "source": {"type": "object_store", "value": source_url},
+            "bundle": {
+                key: candidate.get(key)
+                for key in (
+                    "run_id",
+                    "artifact_id",
+                    "filename",
+                    "sha256",
+                    "canonical_sha256",
+                    "publish_folder",
+                    "publish_branch",
+                )
+            },
+        }
+
+    def _published_bundle_url(self, *, folder: str, filename: str, branch: str) -> str | None:
+        parsed = urlparse(self.settings.artifact_git_repo_url)
+        if parsed.scheme != "https" or parsed.netloc.lower() != "github.com":
+            return None
+        repository_parts = [part for part in parsed.path.strip("/").split("/") if part]
+        if len(repository_parts) != 2:
+            return None
+        repository_parts[-1] = repository_parts[-1].removesuffix(".git")
+        if filename in {".", ".."} or "/" in filename or "\\" in filename:
+            return None
+        folder_parts = [part for part in folder.split("/") if part]
+        if not folder_parts or any(part in {".", ".."} for part in folder_parts):
+            return None
+        safe_path = "/".join(
+            quote(part, safe="")
+            for part in [*repository_parts, branch, *folder_parts, filename]
+        )
+        return f"https://raw.githubusercontent.com/{safe_path}"
 
     def bundle_content_for_activity_run(
         self,
@@ -594,7 +761,7 @@ class MopExecutionPreflightService:
         folder = folder_name.strip().strip("/")
         if not folder:
             return {"ok": False, "error": "Artifact repo folder is required for this bundle source.", "bundle": {}}
-        for candidate in self.bundle_candidates(user_id=user_id, limit=200):
+        for candidate in self._digital_twin_bundle_candidates(user_id=user_id, limit=100):
             if candidate.get("publish_folder") == folder:
                 resolved = self.bundle_content_for_activity_run(
                     user_id=user_id,

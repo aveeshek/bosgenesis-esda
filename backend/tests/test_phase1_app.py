@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import contextmanager
 import importlib
 from pathlib import Path
 import shutil
@@ -8,6 +9,7 @@ import zipfile
 import pytest
 
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 
 from backend.app.artifact_publisher import ArtifactPublishPayload
 from backend.app.auth.security import SessionPrincipal, create_session_cookie
@@ -56,6 +58,31 @@ def test_phase1_auth_api_rejects_missing_session(tmp_path, monkeypatch) -> None:
     with build_test_client(tmp_path, monkeypatch) as client:
         response = client.get("/api/auth/me")
         assert response.status_code == 401
+
+
+def test_phase1_signed_session_survives_transient_database_outage(tmp_path, monkeypatch) -> None:
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+
+        import backend.app.dependencies as dependencies
+
+        monkeypatch.setattr(dependencies, "_auth_database_retry_after", 0.0)
+
+        @contextmanager
+        def unavailable_database():
+            raise OperationalError("SELECT user", {}, TimeoutError("database offline"))
+            yield
+
+        monkeypatch.setattr(client.app.state.database, "session", unavailable_database)
+
+        page = client.get("/digital-twins")
+        assert page.status_code == 200
+        assert "Digital Twins" in page.text
+
+        authenticated_api = client.get("/api/auth/me")
+        assert authenticated_api.status_code == 200
+        assert authenticated_api.json()["user"]["username"] == "admin"
 
 
 def test_phase1_auth_cookie_normalizes_stale_user_id(tmp_path, monkeypatch) -> None:

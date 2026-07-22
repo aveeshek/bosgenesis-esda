@@ -54,11 +54,16 @@
 .summary-link {
   display: block;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
   border: 0;
   padding: 0;
   background: transparent;
   color: inherit;
   text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
 }
 

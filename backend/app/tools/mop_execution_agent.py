@@ -82,6 +82,13 @@ class MopExecutionAgentClient:
         self.settings = settings
         self.transport = transport
         self.base_url_override = str(base_url_override or "").strip()
+        self._http_client = httpx.AsyncClient(
+            timeout=self._timeout(),
+            transport=self.transport,
+        )
+
+    async def aclose(self) -> None:
+        await self._http_client.aclose()
 
     @property
     def configured(self) -> bool:
@@ -138,10 +145,7 @@ class MopExecutionAgentClient:
         headers = self._headers()
         headers["accept"] = "*/*"
         try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout(), transport=self.transport
-            ) as client:
-                response = await client.get(url, headers=headers)
+            response = await self._http_client.get(url, headers=headers)
             if response.status_code >= 400:
                 raise MopExecutionAgentError(
                     method="GET",
@@ -375,10 +379,7 @@ class MopExecutionAgentClient:
         headers = self._headers()
         headers["accept"] = "text/markdown" if normalized == "markdown" else "application/json"
         try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout(), transport=self.transport
-            ) as client:
-                response = await client.get(url, headers=headers)
+            response = await self._http_client.get(url, headers=headers)
             if response.status_code >= 400:
                 raise MopExecutionAgentError(
                     method="GET",
@@ -645,14 +646,11 @@ class MopExecutionAgentClient:
             _debug_json(redacted_request),
         )
         try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout(), transport=self.transport
-            ) as client:
-                headers = self._headers()
-                headers.update(extra_headers or {})
-                response = await client.request(
-                    method, url, json=json_body, params=params, headers=headers
-                )
+            headers = self._headers()
+            headers.update(extra_headers or {})
+            response = await self._http_client.request(
+                method, url, json=json_body, params=params, headers=headers
+            )
             payload = self._response_payload(response)
             redacted_response = self._redacted_payload(payload)
             logger.debug(
@@ -716,10 +714,9 @@ class MopExecutionAgentClient:
             _debug_json(redacted_request),
         )
         try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout(), transport=self.transport
-            ) as client:
-                response = await client.post(url, json=body, headers=self._headers())
+            response = await self._http_client.post(
+                url, json=body, headers=self._headers()
+            )
             payload = self._response_payload(response)
             logger.debug(
                 "mop_execution_agent_mcp_response tool=%s url=%s status=%s payload=%s",

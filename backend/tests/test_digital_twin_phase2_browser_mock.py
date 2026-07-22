@@ -188,6 +188,8 @@ def test_list_supports_frozen_filters_sort_cursor_url_and_states() -> None:
     assert "next_cursor" in adapter and "previous_cursor" in adapter
     assert "data-page-cursor" in controller
     assert "data-sort" in page and "data-sort" in controller
+    assert 'data-sort="risk_score"' in page
+    assert 'requestedSort === "risk" ? "risk_score"' in controller
     assert "popstate" in controller
     assert "data-twin-row" in controller
     assert "disabled_reason" in controller
@@ -217,6 +219,16 @@ def test_detail_uses_all_frozen_tabs_lazy_cache_and_deep_links() -> None:
     assert "invalidateCache" in adapter
     assert 'ui.params().get("tab")' in controller
     assert "data-summary-target" in controller
+    assert 'title="' in controller
+    summary_css = read("prototype-phase2.css").split(".summary-link {", 1)[1].split("}", 1)[0]
+    for rule in [
+        "max-width: 100%",
+        "min-width: 0",
+        "overflow: hidden",
+        "text-overflow: ellipsis",
+        "white-space: nowrap",
+    ]:
+        assert rule in summary_css
     assert "data-jump-finding" in controller
     assert "data-evidence-modal" in controller
     assert "data-graph-node" in controller

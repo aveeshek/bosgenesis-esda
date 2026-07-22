@@ -89,7 +89,8 @@
       ["Execution", ui.label(item.relationships.execution_status), "execution"]
     ];
     summary.innerHTML = values.map(function (entry) {
-      var content = entry[2] ? '<button class="summary-link" type="button" data-summary-target="' + entry[2] + '">' + ui.escapeHtml(entry[1]) + "</button>" : "<strong>" + ui.escapeHtml(entry[1]) + "</strong>";
+      var fullValue = String(entry[1] == null ? "" : entry[1]);
+      var content = entry[2] ? '<button class="summary-link" type="button" data-summary-target="' + entry[2] + '" title="' + ui.escapeHtml(fullValue) + '">' + ui.escapeHtml(fullValue) + "</button>" : '<strong title="' + ui.escapeHtml(fullValue) + '">' + ui.escapeHtml(fullValue) + "</strong>";
       return '<div class="meta-item"><span>' + ui.escapeHtml(entry[0]) + "</span>" + content + "</div>";
     }).join("");
   }
@@ -608,6 +609,23 @@
     return unavailableView(tab);
   }
 
+  function renderTabPanel(panel, tabData) {
+    panel.innerHTML = '<div class="tab-intro"><div><p class="eyebrow">' + (tabData.non_authoritative ? "Mock / Non-authoritative Module" : "Real Evidence") + ' - ' + ui.escapeHtml(ui.label(tabData.state)) + '</p><h2>' + ui.escapeHtml(tabData.title) + '</h2><p>' + ui.escapeHtml(tabData.summary) + '</p></div>' + ui.badge(tabData.state) + '</div><div data-tab-content>' + renderTab(tabData) + '</div>';
+    panel._tabData = tabData;
+    delete panel.dataset.loading;
+    applyDeepLink(panel);
+  }
+
+  function hydrateTabExplanation(slug, panel, tabQuery, requestTwinId, decisionVersion) {
+    var explanationQuery = Object.assign({}, tabQuery, { include_explanation: "true" });
+    adapter.getTab(requestTwinId, slug, decisionVersion, explanationQuery).then(function (tabData) {
+      if (!twin || twin.twin_id !== requestTwinId || twin.decision_version !== decisionVersion || selectedTab !== slug) return;
+      renderTabPanel(panel, tabData);
+    }).catch(function () {
+      // Authoritative facts remain usable when an optional bounded explanation is unavailable.
+    });
+  }
+
   function activateTab(slug, replace) {
     if (tabSlugs.indexOf(slug) < 0) slug = "overview";
     selectedTab = slug;
@@ -620,6 +638,8 @@
     if (slug !== "audit") { auditCursor = null; auditCursorHistory = []; }
     ui.updateUrl({ tab: slug, twin_id: twin.twin_id }, replace);
     var panel = document.getElementById("panel-" + slug);
+    var requestTwinId = twin.twin_id;
+    var decisionVersion = twin.decision_version;
     panel.dataset.loading = "true";
     panel.innerHTML = ui.stateView("loading", "Loading " + ui.label(slug), "Reading this evidence module through the configured data adapter.", false);
     var tabQuery = {};
@@ -628,12 +648,13 @@
     if (slug === "policy" && policyFilter !== "all") tabQuery = { effect: policyFilter === "block" ? "deny" : "approval_required" };
     if (slug === "dry-run") tabQuery = Object.assign({}, dryRunFilters);
     if (slug === "audit") tabQuery = { cursor: auditCursor, limit: 25 };
-    adapter.getTab(twin.twin_id, slug, twin.decision_version, tabQuery).then(function (tabData) {
-
-      panel.innerHTML = '<div class="tab-intro"><div><p class="eyebrow">' + (tabData.non_authoritative ? "Mock / Non-authoritative Module" : "Real Evidence") + ' - ' + ui.escapeHtml(ui.label(tabData.state)) + '</p><h2>' + ui.escapeHtml(tabData.title) + '</h2><p>' + ui.escapeHtml(tabData.summary) + '</p></div>' + ui.badge(tabData.state) + '</div><div data-tab-content>' + renderTab(tabData) + '</div>';
-      panel._tabData = tabData;
-      delete panel.dataset.loading;
-      applyDeepLink(panel);
+    var factsQuery = Object.assign({}, tabQuery, { include_explanation: "false" });
+    adapter.getTab(requestTwinId, slug, decisionVersion, factsQuery).then(function (tabData) {
+      if (!twin || twin.twin_id !== requestTwinId || selectedTab !== slug) return;
+      renderTabPanel(panel, tabData);
+      if (tabData.explanation_deferred) {
+        hydrateTabExplanation(slug, panel, tabQuery, requestTwinId, decisionVersion);
+      }
     }).catch(function (error) {
       delete panel.dataset.loading;
       panel.innerHTML = ui.stateView("failed", "Evidence unavailable", error.message, error.retryable);

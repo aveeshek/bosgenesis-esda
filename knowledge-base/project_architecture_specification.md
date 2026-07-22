@@ -1350,3 +1350,16 @@ The backend validates and executes tools.
 PostgreSQL records every decision for review.
 Conditional L4 autonomy runs only inside an approved operational design domain.
 ```
+## Appendix A: Namespace Twin Planning Specification and Technical Debt
+
+The Namespace Twin decision path must use one internally consistent planned resource projection:
+
+- Synthetic `reference.esda/v1` nodes are graph-only records. They must not enter CRD discovery or generate synthetic CRDs such as `customresourcedefinitions.reference.esda` or `services.reference.esda`.
+- Target Helm inventory is authoritative for existing releases. Resources associated with an absent release are ignored unless the machine plan explicitly requests `helm install` or `helm upgrade --install` for that release.
+- An explicit new installation authorizes read-only simulation of its indexed rendered, namespaced resources. The rendered `Service` must be included whenever its rendered `Ingress` is included, so dependency evidence is complete and the risk engine does not score an artificial missing backend.
+- Namespace Twin planning excludes platform-managed ConfigMaps using configurable properties. V1 defaults are `NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_NAMES=kube-root-ca.crt` and `NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_PREFIXES=istio-`.
+- These exclusions affect only Twin planning, release delta, dependency graph, and derived risk evidence. They must not modify the bundle, hide Bundle Execution inputs, or delete cluster objects.
+
+### Recorded Technical Debt and TODO
+
+Generated MoP bundles may still contain platform-managed ConfigMaps because upstream Bundle Generation lacks typed ownership provenance. Name/prefix exclusion is accepted as temporary V1 debt. The target design is to classify origin during Bundle Generation from collector identity, Kubernetes `managedFields`, owner references, and generator metadata, persist the classification in the artifact index, and remove heuristic filtering after all supported bundle producers emit that contract.

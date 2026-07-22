@@ -178,8 +178,8 @@
     var sort = query.sort || "created_at";
     var direction = query.direction === "asc" ? 1 : -1;
     items.sort(function (left, right) {
-      var leftValue = sort === "risk" ? left.risk.score : sort === "decision" ? left.decision : left[sort] || left.created_at;
-      var rightValue = sort === "risk" ? right.risk.score : sort === "decision" ? right.decision : right[sort] || right.created_at;
+      var leftValue = ["risk", "risk_score"].indexOf(sort) >= 0 ? left.risk.score : sort === "decision" ? left.decision : left[sort] || left.created_at;
+      var rightValue = ["risk", "risk_score"].indexOf(sort) >= 0 ? right.risk.score : sort === "decision" ? right.decision : right[sort] || right.created_at;
       if (leftValue == null) return 1;
       if (rightValue == null) return -1;
       return leftValue > rightValue ? direction : leftValue < rightValue ? -direction : 0;

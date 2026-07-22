@@ -114,17 +114,20 @@ class FakeNamespaceTwinClient:
     def __init__(self, *args, **kwargs) -> None:
         self.twin = deepcopy(CORE_TWIN)
         self.release_delta_params: dict = {}
+        self.list_params: dict = {}
         self.dependency_graph_params: dict = {}
         self.policy_params: dict = {}
         self.dry_run_params: dict = {}
         self.drift_refreshes = 0
         self.runtime_refreshes = 0
         self.release_note_validation_payload: dict | None = None
+        self.create_payload: dict | None = None
         self.release_note_validation_actor: str | None = None
         self.mop_replay_payload: dict | None = None
         self.mop_replay_actor: str | None = None
 
     async def create_namespace_twin(self, payload: dict) -> MopExecutionAgentResponse:
+        self.create_payload = deepcopy(payload)
         created = deepcopy(self.twin)
         created["target_namespace"] = payload["target_namespace"]
         created["target_cluster"] = payload["target_cluster"]
@@ -137,6 +140,7 @@ class FakeNamespaceTwinClient:
         return _response("POST", "v1/namespace-twins", created)
 
     async def list_namespace_twins(self, params: dict | None = None) -> MopExecutionAgentResponse:
+        self.list_params = deepcopy(params or {})
         return _response(
             "GET",
             "v1/namespace-twins",
@@ -1159,10 +1163,17 @@ def test_real_gateway_requires_auth_and_projects_execution_agent_core(
 ) -> None:
     with build_client(tmp_path, monkeypatch) as client:
         assert client.get("/api/digital-twins").status_code == 401
+        assert client.get("/api/digital-twins/sources").status_code == 401
         login(client)
 
         config = client.get("/api/digital-twins/config")
-        listed = client.get("/api/digital-twins")
+        listed = client.get(
+            "/api/digital-twins",
+            params={"sort": "risk_score", "direction": "asc"},
+        )
+        canonical_sort = deepcopy(client.app.state.digital_twin_gateway.client.list_params)
+        legacy_listed = client.get("/api/digital-twins", params={"sort": "risk"})
+        legacy_sort = deepcopy(client.app.state.digital_twin_gateway.client.list_params)
         detail = client.get(f"/api/digital-twins/{CORE_TWIN['twin_id']}")
         overview = client.get(
             f"/api/digital-twins/{CORE_TWIN['twin_id']}/tabs/overview",
@@ -1177,6 +1188,10 @@ def test_real_gateway_requires_auth_and_projects_execution_agent_core(
         "Real Lifecycle + Overview + Release Delta + Dependency Graph + Policy Twin + Dry-run / Diff Twin + Rollback Twin + MoP Replay Twin + Release Note Validation Twin + Audit Reports"
     )
     assert listed.json()["items"][0]["data_mode"] == "real_core"
+    assert legacy_listed.status_code == 200
+    assert canonical_sort["sort"] == "risk_score"
+    assert canonical_sort["direction"] == "asc"
+    assert legacy_sort["sort"] == "risk_score"
     assert listed.json()["warning"].startswith(
         "Lifecycle, Overview, Release Delta, Dependency Graph, Policy Twin"
     )
@@ -1194,16 +1209,124 @@ def test_real_gateway_requires_auth_and_projects_execution_agent_core(
     assert len(explanation_logs) == 1
 
 
+def test_real_tab_can_return_authoritative_facts_before_llm_explanation(
+    tmp_path, monkeypatch
+) -> None:
+    with build_client(tmp_path, monkeypatch) as client:
+        login(client)
+        url = f"/api/digital-twins/{CORE_TWIN['twin_id']}/tabs/overview"
+
+        deferred = client.get(
+            url,
+            params={
+                "model_profile": "azure_gpt5_pro",
+                "include_explanation": "false",
+            },
+        )
+        with client.app.state.database.session() as session:
+            deferred_logs = list(session.scalars(select(DigitalTwinExplanationLog)))
+
+        hydrated = client.get(
+            url,
+            params={
+                "model_profile": "azure_gpt5_pro",
+                "include_explanation": "true",
+            },
+        )
+
+    assert deferred.status_code == 200
+    assert deferred.json()["state"] == "available"
+    assert deferred.json()["explanation_deferred"] is True
+    assert "safe_explanation" not in deferred.json()
+    assert deferred_logs == []
+    assert hydrated.status_code == 200
+    assert hydrated.json()["safe_explanation"]["status"] == "generated"
+
+
+def test_real_tab_explanations_are_reused_by_exact_fact_hash(
+    tmp_path, monkeypatch
+) -> None:
+    with build_client(tmp_path, monkeypatch) as client:
+        login(client)
+        url = f"/api/digital-twins/{CORE_TWIN['twin_id']}/tabs/overview"
+        params = {"model_profile": "azure_gpt5_pro"}
+
+        first = client.get(url, params=params)
+        second = client.get(url, params=params)
+        with client.app.state.database.session() as session:
+            explanation_logs = list(session.scalars(select(DigitalTwinExplanationLog)))
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_explanation = first.json()["safe_explanation"]
+    cached_explanation = second.json()["safe_explanation"]
+    assert first_explanation.get("cache_hit") is not True
+    assert cached_explanation["cache_hit"] is True
+    assert cached_explanation["cache_source"] == "postgresql"
+    assert cached_explanation["explanation_id"] == first_explanation["explanation_id"]
+    assert cached_explanation["input_hash"] == first_explanation["input_hash"]
+    assert len(explanation_logs) == 1
+
+
+def test_real_browser_adapter_caches_unchanged_tab_payloads() -> None:
+    adapter = (
+        Path(__file__).parents[1]
+        / "app"
+        / "static"
+        / "digital-twin"
+        / "twin-http-adapter.js"
+    ).read_text(encoding="utf-8")
+
+    assert "this.tabCache = new Map()" in adapter
+    assert "this.tabRequests = new Map()" in adapter
+    assert "twinId, slug, decisionVersion" in adapter
+    assert "this.tabCache.has(cacheKey)" in adapter
+    assert "this.tabRequests.has(cacheKey)" in adapter
+    assert "self.tabRequests.delete(cacheKey)" in adapter
+    assert "self.tabCache.delete(key)" in adapter
+
 def test_real_create_events_cancel_and_invalid_browser_scenario_are_typed(
     tmp_path, monkeypatch
 ) -> None:
     with build_client(tmp_path, monkeypatch) as client:
         login(client)
+        service = client.app.state.digital_twin_gateway
+        service.bundle_source_catalog = lambda **_: {
+            "schema_version": "1.0.0",
+            "bundles": [
+                {
+                    "run_id": "mop_generation_001",
+                    "artifact_id": "artifact_bundle_001",
+                    "title": "Published MoP",
+                    "eligible": True,
+                }
+            ],
+            "target_namespaces": ["sample-target"],
+            "default_target_namespace": "sample-target",
+            "default_target_cluster": "contract-cluster",
+        }
+        service.bundle_source_resolver = lambda **_: {
+            "ok": True,
+            "source": {
+                "type": "object_store",
+                "value": "https://raw.githubusercontent.com/aveeshek/bosgenesis-artifacts/main/run/mop-bundle.zip",
+            },
+        }
+
         invalid = client.post("/api/digital-twins", json={"scenario_id": "green-helm"})
+        direct = client.post(
+            "/api/digital-twins",
+            json={
+                "source": {"type": "object_store", "value": "https://example.invalid/bundle.zip"},
+                "target_namespace": "sample-target",
+            },
+        )
+        sources = client.get("/api/digital-twins/sources")
         created = client.post(
             "/api/digital-twins",
             json={
-                "source": {"type": "local_path", "value": "C:/tmp/sample-bundle"},
+                "bundle_run_id": "mop_generation_001",
+                "bundle_artifact_id": "artifact_bundle_001",
                 "target_namespace": "sample-target",
                 "target_cluster": "contract-cluster",
                 "idempotency_key": "phase4-gateway",
@@ -1211,13 +1334,88 @@ def test_real_create_events_cancel_and_invalid_browser_scenario_are_typed(
         )
         events = client.get(f"/api/digital-twins/{CORE_TWIN['twin_id']}/events")
         cancelled = client.post(f"/api/digital-twins/{CORE_TWIN['twin_id']}/cancel")
+        forwarded = deepcopy(service.client.create_payload)
 
     assert invalid.status_code == 409
     assert invalid.json()["error"]["code"] == "real_bundle_required"
+    assert direct.status_code == 422
+    assert direct.json()["error"]["code"] == "twin_bundle_selection_required"
+    assert sources.status_code == 200
+    assert sources.json()["bundles"][0]["eligible"] is True
     assert created.status_code == 200
     assert created.json()["target"]["namespace"] == "sample-target"
+    assert forwarded == {
+        "source": {
+            "type": "object_store",
+            "value": "https://raw.githubusercontent.com/aveeshek/bosgenesis-artifacts/main/run/mop-bundle.zip",
+        },
+        "target_namespace": "sample-target",
+        "target_cluster": "contract-cluster",
+        "idempotency_key": "phase4-gateway",
+        "supersedes_twin_id": None,
+        "run_authoritative_dry_run": True,
+    }
     assert [event["sequence"] for event in events.json()["events"]] == [1, 2]
     assert cancelled.json()["lifecycle_status"] == "cancelled"
+
+
+def test_on_demand_source_catalog_resolves_only_user_owned_published_bundle(
+    tmp_path, monkeypatch
+) -> None:
+    with build_client(tmp_path, monkeypatch) as client:
+        login(client)
+        preflight = client.app.state.mop_execution_preflight
+        preflight._digital_twin_bundle_candidates = lambda **_: [
+            {
+                "run_id": "mop_generation_001",
+                "artifact_id": "artifact_bundle_001",
+                "title": "Published MoP",
+                "source_namespace": "signoz",
+                "generated_at": "2026-07-19T12:00:00Z",
+                "filename": "mop-bundle.zip",
+                "size_bytes": 4096,
+                "sha256": "a" * 64,
+                "canonical_sha256": "b" * 64,
+                "publish_folder": "260719_120000_mop_signoz",
+                "publish_branch": "main",
+                "bundle_id": "bundle_001",
+            },
+            {
+                "run_id": "mop_generation_002",
+                "artifact_id": "artifact_bundle_002",
+                "title": "Local only MoP",
+                "filename": "mop-bundle.zip",
+                "publish_folder": None,
+            },
+        ]
+
+        catalog = preflight.digital_twin_generation_sources(user_id="user_001")
+        resolved = preflight.digital_twin_source_for_activity_run(
+            user_id="user_001",
+            run_id="mop_generation_001",
+            artifact_id="artifact_bundle_001",
+        )
+        unpublished = preflight.digital_twin_source_for_activity_run(
+            user_id="user_001",
+            run_id="mop_generation_002",
+            artifact_id="artifact_bundle_002",
+        )
+        missing = preflight.digital_twin_source_for_activity_run(
+            user_id="user_001",
+            run_id="another_user_run",
+        )
+
+    assert [item["eligible"] for item in catalog["bundles"]] == [True, False]
+    assert "agent-testing" in catalog["target_namespaces"]
+    assert resolved["source"] == {
+        "type": "object_store",
+        "value": (
+            "https://raw.githubusercontent.com/aveeshek/bosgenesis-artifacts/"
+            "main/260719_120000_mop_signoz/mop-bundle.zip"
+        ),
+    }
+    assert unpublished["code"] == "twin_bundle_not_published"
+    assert missing["code"] == "twin_bundle_not_found"
 
 
 def test_remaining_mock_modules_are_labeled_and_cannot_supply_real_actions(
@@ -1242,8 +1440,17 @@ def test_remaining_mock_modules_are_labeled_and_cannot_supply_real_actions(
     assert "return Array.isArray(item.actions)" in detail_script.text
     assert "adapter.getTwin(item.twin_id)" in detail_script.text
     assert "tab.safe_explanation.content" in detail_script.text
+    assert 'include_explanation: "false"' in detail_script.text
+    assert "hydrateTabExplanation" in detail_script.text
     assert "limit: 25" in list_script.text
+    assert "Run Digital Simulation" in list_script.text
+    assert "openRealSimulationLauncher" in list_script.text
+    assert "bundle_run_id" in list_script.text
+    assert "listGenerationSources" in adapter.text
     assert "if (realCore)" in list_script.text
+    assert "controlBand.hidden = true" in list_script.text
+    assert "if (!realCore)" in list_script.text
+    assert "Authoritative Real Core" in list_script.text
     assert "load({ silent: true })" in list_script.text
     assert "adapter.advanceGeneration(item.twin_id)" in list_script.text
 

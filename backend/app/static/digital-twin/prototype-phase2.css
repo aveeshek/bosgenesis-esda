@@ -54,11 +54,16 @@
 .summary-link {
   display: block;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
   border: 0;
   padding: 0;
   background: transparent;
   color: inherit;
   text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -223,6 +228,50 @@
 .mock-modal-body { padding: 18px; }
 .mock-modal h2 { margin: 2px 0 0; }
 
+.mock-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 0 18px 18px;
+}
+
+.simulation-launch-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(180px, .7fr);
+  gap: 14px;
+}
+
+.simulation-bundle-field { grid-column: 1 / -1; }
+
+.simulation-bundle-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+  padding: 12px 0;
+  border-top: 1px solid rgba(255,255,255,.16);
+  border-bottom: 1px solid rgba(255,255,255,.16);
+}
+
+.simulation-bundle-facts span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: rgba(255,255,255,.82);
+  font-size: 11px;
+}
+
+.simulation-bundle-facts strong {
+  display: block;
+  margin-bottom: 3px;
+  color: rgba(255,255,255,.58);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.simulation-contract { margin: 13px 0 0; line-height: 1.55; }
+#simulation-launch-status { margin-top: 13px; }
+
 .prior-evidence {
   margin: 0 0 12px;
   padding: 11px 13px;
@@ -245,6 +294,9 @@
 
 @media (max-width: 640px) {
   .mock-control-band { grid-template-columns: 1fr; }
+  .simulation-launch-grid,
+  .simulation-bundle-facts { grid-template-columns: 1fr; }
+  .simulation-bundle-field { grid-column: auto; }
   .tab-toolbar { align-items: flex-start; flex-direction: column; }
   .mock-graph-canvas { min-height: 270px; }
   .mock-modal-shell { padding: 10px; }

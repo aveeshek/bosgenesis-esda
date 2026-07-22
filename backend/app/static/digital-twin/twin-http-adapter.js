@@ -40,6 +40,9 @@
     this.baseUrl = options.baseUrl || "/api/digital-twins";
     this.responseMode = "success";
     this.controllers = new Map();
+    this.tabCache = new Map();
+    this.tabRequests = new Map();
+    this.maxTabCacheEntries = 48;
     this.maxGetRetries = 1;
   }
 
@@ -140,23 +143,44 @@
   HttpTwinAdapter.prototype.getTwin = function (twinId) { return this._request("GET", "/" + encodeURIComponent(twinId), { key: "twin:" + twinId }); };
   HttpTwinAdapter.prototype.getActiveTwin = function () { return this._request("GET", "/active", { key: "active" }); };
   HttpTwinAdapter.prototype.getTab = function (twinId, slug, decisionVersion, query) {
+    var self = this;
     query = Object.assign({}, query || {}, {
       decision_version: decisionVersion,
       model_profile: selectedModelProfile()
     });
-    return this._request(
+    var stableQuery = Object.keys(query).sort().map(function (key) {
+      return [key, query[key]];
+    });
+    var cacheKey = [twinId, slug, decisionVersion, JSON.stringify(stableQuery)].join(":");
+    if (this.tabCache.has(cacheKey)) return Promise.resolve(this.tabCache.get(cacheKey));
+    if (this.tabRequests.has(cacheKey)) return this.tabRequests.get(cacheKey);
+    var request = this._request(
       "GET",
       "/" + encodeURIComponent(twinId) + "/tabs/" + encodeURIComponent(slug),
       {
         query: query,
-        key: "tab"
+        key: "tab:" + cacheKey
+      }).then(function (payload) {
+        self.tabCache.set(cacheKey, payload);
+        while (self.tabCache.size > self.maxTabCacheEntries) {
+          self.tabCache.delete(self.tabCache.keys().next().value);
+        }
+        return payload;
+      }).finally(function () {
+        self.tabRequests.delete(cacheKey);
       });
+    this.tabRequests.set(cacheKey, request);
+    return request;
   };
   HttpTwinAdapter.prototype.refreshDrift = function (twinId) { return this._request("POST", "/" + encodeURIComponent(twinId) + "/drift/refresh", { body: {}, key: "drift:" + twinId }); };
   HttpTwinAdapter.prototype.refreshRuntimeBehavior = function (twinId) { return this._request("POST", "/" + encodeURIComponent(twinId) + "/runtime-behavior/refresh", { body: {}, key: "runtime:" + twinId }); };
   HttpTwinAdapter.prototype.validateReleaseNote = function (twinId, payload) { payload = Object.assign({}, payload || {}, { model_profile: selectedModelProfile() }); return this._request("POST", "/" + encodeURIComponent(twinId) + "/release-note-validation", { body: payload, key: "release-note-validation:" + twinId }); };
   HttpTwinAdapter.prototype.getActions = function (twinId) { return this._request("GET", "/" + encodeURIComponent(twinId) + "/actions", { key: "actions:" + twinId }); };
-  HttpTwinAdapter.prototype.startGeneration = function (scenarioId) { return this._request("POST", "", { body: { scenario_id: scenarioId }, key: "generate" }); };
+  HttpTwinAdapter.prototype.listGenerationSources = function () { return this._request("GET", "/sources", { key: "generation-sources" }); };
+  HttpTwinAdapter.prototype.startGeneration = function (request) {
+    var body = request && typeof request === "object" ? request : { scenario_id: request };
+    return this._request("POST", "", { body: body, key: "generate" });
+  };
   HttpTwinAdapter.prototype.advanceGeneration = function (twinId) { return this._request("POST", "/" + encodeURIComponent(twinId) + "/advance", { key: "advance:" + twinId }); };
   HttpTwinAdapter.prototype.regenerate = function (twinId) { return this._request("POST", "/" + encodeURIComponent(twinId) + "/regenerate", { key: "regenerate:" + twinId }); };
   HttpTwinAdapter.prototype.cancelGeneration = function (twinId) { return this._request("POST", "/" + encodeURIComponent(twinId) + "/cancel", { key: "cancel:" + twinId }); };
@@ -168,9 +192,13 @@
   HttpTwinAdapter.prototype.clearMockHistory = function () { return this._request("DELETE", "/history", { key: "history" }); };
   HttpTwinAdapter.prototype.invalidateCache = function (twinId) {
     var self = this;
-    Array.from(this.controllers.keys()).forEach(function (key) { if (key.indexOf(twinId) >= 0 || key === "tab") self._cancel(key); });
+    Array.from(this.controllers.keys()).forEach(function (key) {
+      if (key.indexOf(twinId) >= 0 || key === "tab") self._cancel(key);
+    });
+    Array.from(this.tabCache.keys()).forEach(function (key) {
+      if (key.indexOf(twinId + ":") === 0) self.tabCache.delete(key);
+    });
   };
-
   window.ESDATwinData.HttpTwinAdapter = HttpTwinAdapter;
   window.ESDATwinData.HttpTwinAdapterError = HttpTwinAdapterError;
   if (["mock_server", "real_core"].indexOf(adapterMode()) >= 0) {

@@ -72,7 +72,8 @@
       ["Approval", ui.label(item.relationships.approval_status), "approval"]
     ];
     summary.innerHTML = values.map(function (entry) {
-      var content = entry[2] ? '<button class="summary-link" type="button" data-summary-target="' + entry[2] + '">' + ui.escapeHtml(entry[1]) + "</button>" : "<strong>" + ui.escapeHtml(entry[1]) + "</strong>";
+      var fullValue = String(entry[1] == null ? "" : entry[1]);
+      var content = entry[2] ? '<button class="summary-link" type="button" data-summary-target="' + entry[2] + '" title="' + ui.escapeHtml(fullValue) + '">' + ui.escapeHtml(fullValue) + "</button>" : '<strong title="' + ui.escapeHtml(fullValue) + '">' + ui.escapeHtml(fullValue) + "</strong>";
       return '<div class="meta-item"><span>' + ui.escapeHtml(entry[0]) + "</span>" + content + "</div>";
     }).join("");
   }
