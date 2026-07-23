@@ -909,18 +909,21 @@ Do these tasks next. Do not start server, database, GPT, MCP, or execution-agent
 - [x] Installed-release-only Helm evidence and configurable `bosgenesis-` ignore prefix.
 - [x] Configurable `kube-root-ca.crt` and `istio-` planning exclusions.
 - [x] Configurable PVC risk, disabled for the MVP.
+- [x] Configurable StatefulSet risk, disabled for the MVP.
+- [x] Risk bands updated to 0-30 Green, 31-70 Amber, 71-90 Red/high, and 91-100 Red/critical with boundary tests.
+- [x] Signoz bundle-generation metadata sets `human_approval_before_mutation=false` through a configurable source-namespace list.
 - [x] Missing rollback false-positive regression coverage.
 - [x] MoP Execution Agent `0.1.4` read-only Helm inference correction.
-- [x] Fresh authoritative E2E Twin finalized Amber at risk 55 with complete evidence and zero inferred chart/value contribution.
+- [x] Fresh authoritative E2E Twin `twin_5d7c8fe499ca4dd8bdcc9cd7404536da` finalized Green at risk 15 with complete evidence, no approval requirement, zero missing dependencies, and only the Ingress contribution.
 - [x] HLD, LLD, Architecture Specification, Digital Twin design, and implementation plan aligned to the demo baseline.
 
 ### Required before the customer demo
 
 - [ ] Verify ESDA health and PostgreSQL connectivity after startup.
-- [ ] Verify execution-agent health reports version `0.1.4` or later through ingress.
+- [x] Verify execution-agent `0.1.5` behavior through ingress using the fresh authoritative Twin.
 - [ ] Verify Kubernetes Inspector and Helm Manager reads for `agent-testing`.
-- [ ] Generate one fresh Twin from the exact bundle/target used in the demo; do not present a historical pre-fix Twin.
-- [ ] Confirm every non-zero risk contribution is explainable in Policy Twin and audit report.
+- [x] Generate one fresh Twin from the exact Signoz/`agent-testing` demo contract; do not present a historical pre-fix Twin.
+- [x] Confirm every non-zero risk contribution is explainable: `ingress_change=15` only.
 - [ ] Rehearse the optional-gate and mandatory-gate stories separately.
 - [ ] Rehearse approval, bounded mutation, validation, rollback/cleanup, and artifact/report downloads.
 - [ ] Confirm no Secret values, credentials, kubeconfig, or hidden reasoning appear in the UI or downloaded evidence.
@@ -933,6 +936,9 @@ Do these tasks next. Do not start server, database, GPT, MCP, or execution-agent
 - [ ] Malicious ZIP/path traversal, authorization, cluster-scope, destructive-operation, and audit immutability tests.
 - [ ] Typed bundle ownership provenance to replace ConfigMap/Helm name heuristics.
 - [ ] Storage-class, retention, restore, and data-loss evidence before enabling PVC risk.
+- [ ] StatefulSet volumeClaimTemplate, identity/order, update-strategy, partition, disruption, and rollback evidence before enabling StatefulSet risk.
+- [ ] Replace the Signoz source-namespace approval exception with signed ODD/change-class policy and governed ownership.
+- [ ] Calibrate risk-rule weights and the 0-30/31-70/71-90/91-100 bands against labeled operational outcomes.
 - [ ] Versioned historical Twin re-evaluation workflow.
 - [ ] Outcome-based deterministic risk calibration.
 - [ ] Post-mutation image-pull, scheduling, PVC binding, readiness, and controller observation.

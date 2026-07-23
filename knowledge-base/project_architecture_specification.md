@@ -1409,11 +1409,14 @@ NAMESPACE_TWIN_HELM_IGNORE_PREFIXES=bosgenesis-
 NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_NAMES=kube-root-ca.crt
 NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_PREFIXES=istio-
 NAMESPACE_TWIN_PVC_RISK_ENABLED=false
+NAMESPACE_TWIN_STATEFULSET_RISK_ENABLED=false
 NAMESPACE_TWIN_DRY_RUN_MAX_AGE_SECONDS=86400
 NAMESPACE_TWIN_DATABASE_URL=<postgresql-dsn>
 ```
 
-The deployment SHALL configure Kubernetes Inspector and Helm Manager MCP endpoints and SHALL retain one-job-per-namespace locking, startup recovery, dry-run before mutation, human approval, Secret redaction, and namespace-only guardrails.
+Bundle Generation SHALL set `BOSGENESIS_MOP_HUMAN_APPROVAL_EXEMPT_SOURCE_NAMESPACES=signoz` for this demo. A generated Signoz-source bundle SHALL contain `human_approval_before_mutation=false`; non-exempt source namespaces SHALL remain `true`. This metadata SHALL NOT bypass a separate execution policy or approval requirement.
+
+The deployment SHALL configure Kubernetes Inspector and Helm Manager MCP endpoints and SHALL retain one-job-per-namespace locking, startup recovery, dry-run before mutation, policy-governed approval, Secret redaction, and namespace-only guardrails.
 
 ### B.4 Authoritative decision requirements
 
@@ -1427,6 +1430,9 @@ The deployment SHALL configure Kubernetes Inspector and Helm Manager MCP endpoin
 8. Bundle Execution Twin matching SHALL be optional when `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false` and mandatory only when it is `true`.
 9. A ConfigMap or Helm exclusion SHALL affect planning evidence only; it SHALL NOT alter the bundle or Kubernetes execution input.
 10. PVC risk SHALL be described as intentionally disabled while `NAMESPACE_TWIN_PVC_RISK_ENABLED=false`.
+11. StatefulSet risk SHALL be described as intentionally disabled while `NAMESPACE_TWIN_STATEFULSET_RISK_ENABLED=false`.
+12. Risk rules `namespace-twin-risk-1.2.0` SHALL map 0-30 to low/Green, 31-70 to medium/Amber, 71-90 to high/Red, and 91-100 to critical/Red.
+13. A score or toggle change SHALL create a new immutable Twin and SHALL NOT rewrite historical decisions.
 
 ### B.5 Demo acceptance checklist
 
@@ -1443,6 +1449,26 @@ The deployment SHALL configure Kubernetes Inspector and Helm Manager MCP endpoin
 - [ ] No Secret value, hidden chain-of-thought, credential, or kubeconfig appears in UI/log/report output.
 - [ ] The operator rehearses mutation, validation, rollback/cleanup, Git artifact access, and evidence download before the customer demo.
 
+### B.5.1 Validated risk-contract acceptance evidence
+
+The risk-contract acceptance run SHALL be recorded as:
+
+| Field | Validated value |
+|---|---|
+| Twin | `twin_5d7c8fe499ca4dd8bdcc9cd7404536da` |
+| Source / target | `signoz` / `agent-testing` |
+| Decision | final Green |
+| Risk | 15 / low |
+| Rules | `namespace-twin-risk-1.2.0` |
+| Non-zero contributions | `ingress_change=15` only |
+| Approval metadata | `human_approval_before_mutation=false` |
+| Policy approval requirement | none |
+| Feature toggles | PVC false; StatefulSet false |
+| Evidence | complete |
+| Dependency graph | 14/14 nodes present, 20/20 edges valid, zero findings |
+
+This evidence demonstrates the requested deterministic contract and configuration behavior. It does not establish production safety for PVC or StatefulSet changes, predict post-admission runtime convergence, or waive independent execution policy.
+
 ### B.6 Consolidated technical debt and TODO
 
 | ID | Priority | Requirement gap / planned work |
@@ -1455,6 +1481,9 @@ The deployment SHALL configure Kubernetes Inspector and Helm Manager MCP endpoin
 | TD-006 | P1 | Add explicit versioned Twin re-evaluation without rewriting historical decisions. |
 | TD-007 | P1 | Replace ConfigMap and Helm prefix/name heuristics with typed bundle ownership and origin provenance. |
 | TD-008 | P1 | Add storage safety evidence before enabling PVC risk outside the MVP. |
+| TD-023 | P1 | Add StatefulSet volumeClaimTemplate, identity/order, update-strategy, partition, disruption, and rollback evidence before enabling StatefulSet score contribution. |
+| TD-024 | P1 | Replace the Signoz bundle-approval exemption list with signed ODD/change-class policy and governed namespace ownership. |
+| TD-025 | P1 | Calibrate the new 0-30/31-70/71-90/91-100 bands against labeled outcomes before production use. |
 | TD-009 | P1 | Calibrate deterministic risk weights against labeled operational outcomes and publish false-positive/negative metrics. |
 | TD-010 | P1 | Add post-mutation runtime observation/fault injection for image pull, scheduling, binding, readiness, and controller convergence. |
 | TD-011 | P1 | Implement optional MoP Replay only with isolated infrastructure and separate approval. |

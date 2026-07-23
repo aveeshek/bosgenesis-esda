@@ -421,7 +421,10 @@ Start with deterministic rules. Hard blocks are independent of the numeric risk 
 
 ```yaml
 risk_rules:
-  version: "1.0.0"
+  version: "1.2.0"
+  feature_toggles:
+    pvc_risk_enabled: false
+    statefulset_risk_enabled: false
   hard_blocks:
     - secret_values_detected
     - production_data_detected
@@ -449,11 +452,13 @@ risk_rules:
     previous_similar_failure: 20
     drift_detected: 25
 
-  initial_thresholds:
-    green_max: 29
-    amber_min: 30
-    amber_max: 69
-    red_min: 70
+  thresholds:
+    green_max: 30
+    amber_min: 31
+    amber_max: 70
+    red_min: 71
+    red_max: 90
+    critical_min: 91
 ```
 
 Decision precedence:
@@ -2566,6 +2571,8 @@ non_negotiable_controls:
   llm_no_direct_mutation: true
   dry_run_before_mutation: true
   human_approval_before_mutation: true_by_default
+  signoz_bundle_metadata_exception: false_via_configured_source_namespace
+  execution_policy_and_approval_remain_separate: true
   target_namespace_only: true
   no_secret_values: true
   no_production_data: true
@@ -3243,10 +3250,16 @@ NAMESPACE_TWIN_HELM_IGNORE_PREFIXES=bosgenesis-
 NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_NAMES=kube-root-ca.crt
 NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_PREFIXES=istio-
 NAMESPACE_TWIN_PVC_RISK_ENABLED=false
+NAMESPACE_TWIN_STATEFULSET_RISK_ENABLED=false
 NAMESPACE_TWIN_DRY_RUN_MAX_AGE_SECONDS=86400
+
+# MoP Creation Agent
+BOSGENESIS_MOP_HUMAN_APPROVAL_EXEMPT_SOURCE_NAMESPACES=signoz
 ```
 
-The latest verified post-fix authoritative example, `twin_3c9667d6848f4daabebdc270166c7c05`, finalized Amber at risk 55 with complete evidence. The score was StatefulSet +25, ConfigMap +15, and Ingress +15. Read-only Helm validation contributed zero inferred chart/value risk, confirming the `0.1.4` compatibility fix.
+Twin `twin_3c9667d6848f4daabebdc270166c7c05` remains the immutable `1.1.0` reference at Amber/risk 55. Under `namespace-twin-risk-1.2.0`, default PVC and StatefulSet contributions are disabled and the bands are 0-30 low/Green, 31-70 medium/Amber, 71-90 high/Red, and 91-100 critical/Red. A newly generated Signoz-source bundle also records `human_approval_before_mutation=false`; execution policy remains independent.
+
+The authoritative 2026-07-23 validation run is `twin_5d7c8fe499ca4dd8bdcc9cd7404536da`. The fresh Signoz bundle included a rendered Service and StatefulSet so the Ingress backend and selector relationships were represented as planned evidence. The Twin finalized Green at risk 15 with complete evidence, no approval requirement, and only the Ingress change contributing risk. Its graph contains 14 present nodes, 20 valid edges, and no missing/uncertain nodes, cycles, or findings.
 
 ### 31.1 Demo interpretation
 
@@ -3257,6 +3270,8 @@ The latest verified post-fix authoritative example, `twin_3c9667d6848f4daabebdc2
 - Historical decisions are immutable and may retain scores produced by older rules. Generate a new Twin to consume a correction.
 - Installed Helm releases are used as baseline evidence. An absent release is ignored unless the machine plan explicitly requests a new install.
 - PVC scoring is disabled for the MVP, not proven safe.
+- StatefulSet scoring is disabled for the MVP, not proven safe.
+- The Signoz bundle-level approval exception is demo configuration, not a general approval bypass.
 - Platform ConfigMap exclusions are planning heuristics and are recorded technical debt.
 
 ### 31.2 Remaining design debt

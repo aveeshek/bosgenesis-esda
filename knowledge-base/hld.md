@@ -1193,7 +1193,7 @@ Implemented operator behavior:
 - GPT/SIGMA produces bounded explanations from structured redacted facts only. It cannot alter deterministic axes or authorize execution.
 - Historical high-risk twins remain valid audit records. A rule or parser fix affects only a newly generated twin.
 
-The latest verified post-fix E2E example is twin `twin_3c9667d6848f4daabebdc270166c7c05` for the Comet Forge/signoz bundle targeting `agent-testing`. It finalized Amber with risk score 55 and complete evidence. Its non-zero deterministic contributions were StatefulSet change +25, ConfigMap change +15, and Ingress change +15. `inferred_chart_or_value` was false with contribution 0.
+Twin `twin_3c9667d6848f4daabebdc270166c7c05` is the immutable pre-`1.2.0` reference for the Comet Forge/signoz bundle targeting `agent-testing`; it finalized Amber at 55 from StatefulSet +25, ConfigMap +15, and Ingress +15. New Twins use risk rules `namespace-twin-risk-1.2.0`: PVC and StatefulSet scoring are disabled by default, ConfigMap +15 and Ingress +15 remain active, and the bands are Green/low 0-30, Amber/medium 31-70, Red/high 71-90, and Red/critical 91-100. Historical decisions are not rewritten.
 
 ### B.3 Demo safety posture
 
@@ -1211,10 +1211,25 @@ The demo is conditional-L4-oriented but remains approval-gated:
 | Configuration owner | Primary properties |
 |---|---|
 | ESDA `.env` | `DIGITAL_TWIN_BACKEND_MODE`, `DIGITAL_TWIN_EXECUTION_AGENT_URL`, `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED`, model profiles, PostgreSQL, Git publishing, MCP/agent endpoints, allowlists, logging. |
-| Execution-agent environment/Helm values | `NAMESPACE_TWIN_LIVE_COLLECTION_ENABLED`, installed-release filtering, ignored Helm prefixes, planning ConfigMap exclusions, PVC risk toggle, dry-run age, PostgreSQL, MCP endpoints, worker/recovery behavior. |
+| Bundle-generation environment/Helm values | `BOSGENESIS_MOP_HUMAN_APPROVAL_EXEMPT_SOURCE_NAMESPACES=signoz` writes `human_approval_before_mutation: false` only for listed source namespaces. This bundle metadata does not bypass the separate Bundle Execution policy/approval gate. |
+| Execution-agent environment/Helm values | `NAMESPACE_TWIN_LIVE_COLLECTION_ENABLED`, installed-release filtering, ignored Helm prefixes, planning ConfigMap exclusions, PVC and StatefulSet risk toggles, dry-run age, PostgreSQL, MCP endpoints, worker/recovery behavior. |
 | Policy files/versioned code | Deterministic policy groups, risk weights, precedence, ODD, approval, and mutation constraints. Secrets must never be placed in a ConfigMap or committed properties file. |
 
 For the demo, use `DIGITAL_TWIN_BACKEND_MODE=real_core`, point `DIGITAL_TWIN_EXECUTION_AGENT_URL` to the ingress, keep `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false` unless the gated journey is being demonstrated, and disable fixture behavior with `DIGITAL_TWIN_MOCK_ENABLED=false`.
+
+### B.5 Validated demo proof
+
+The 2026-07-23 authoritative proof run is Twin `twin_5d7c8fe499ca4dd8bdcc9cd7404536da`, generated from a fresh Signoz-source bundle for `agent-testing`.
+
+- The machine plan records `human_approval_before_mutation: false`.
+- The Twin is final Green with risk `15` / `low` under `namespace-twin-risk-1.2.0`.
+- The only non-zero contribution is `ingress_change` at `+15`.
+- PVC and StatefulSet risk toggles are both `false`.
+- Evidence is `complete`; the dependency graph has 14 present nodes, 20 valid edges, zero missing or uncertain nodes, zero cycles, and zero findings.
+- The deterministic policy reports no approval requirement for this Twin.
+- The active inclusive bands are 0-30 Green/low, 31-70 Amber/medium, 71-90 Red/high, and 91-100 Red/critical.
+
+This proof supersedes the earlier demo expectation based on immutable pre-`1.2.0` Twin `twin_3c9667d6848f4daabebdc270166c7c05`. It does not rewrite that historical decision.
 
 ## Appendix C: Consolidated Technical Debt and TODO Register
 
@@ -1228,6 +1243,8 @@ For the demo, use `DIGITAL_TWIN_BACKEND_MODE=real_core`, point `DIGITAL_TWIN_EXE
 | P1 | Historical twins | Decisions are immutable and are not automatically recomputed after parser/risk fixes. Add an explicit migration/re-evaluation workflow that creates a new version without overwriting history. | Regenerate a twin after every rules or projection change. |
 | P1 | ConfigMap provenance | `kube-root-ca.crt` and `istio-` exclusions are name heuristics because bundle producers lack typed ownership provenance. Add collector/generator identity, `managedFields`, owner references, and origin metadata to `artifact-index.json`. | Current filter changes Twin planning only; it does not alter the bundle or execution. |
 | P1 | PVC policy | `NAMESPACE_TWIN_PVC_RISK_ENABLED=false` suppresses PVC risk for the MVP. Implement storage-class, retention, data-loss, resize, restore, and destructive-approval evidence before enabling it in production. | PVC is intentionally out of demo risk scope. |
+| P1 | StatefulSet policy | `NAMESPACE_TWIN_STATEFULSET_RISK_ENABLED=false` suppresses the +25 StatefulSet contribution for the MVP. Add volumeClaimTemplate, identity/order, update-strategy, partition, replica, disruption, and rollback evidence before production enablement. | StatefulSet risk is intentionally out of demo score scope, not proven safe. |
+| P1 | Signoz approval metadata | `BOSGENESIS_MOP_HUMAN_APPROVAL_EXEMPT_SOURCE_NAMESPACES=signoz` emits bundle-level `human_approval_before_mutation: false`. Replace this demo namespace list with signed ODD/change-class policy and explicit ownership before multi-user use. | Bundle Execution approval and policy remain separate and must not be bypassed. |
 | P1 | Helm filtering | `NAMESPACE_TWIN_HELM_IGNORE_PREFIXES=bosgenesis-` and installed-release-only filtering are demo configuration. Replace prefix conventions with governed ownership/tenant metadata. | Only installed releases are baseline evidence; explicit planned installs are simulated. |
 | P1 | Risk calibration | Static rule weights and thresholds have not been calibrated against a labeled outcome dataset. Add versioned calibration, false-positive/false-negative metrics, and review approval. | Scores are deterministic and explainable, not probabilistic guarantees. |
 | P1 | Dry-run fidelity | Admission success cannot predict image pull, scheduling, PVC binding, readiness, or controller/webhook convergence. Add post-mutation runtime observation and fault-injection evidence. | UI must retain the fidelity limitation. |

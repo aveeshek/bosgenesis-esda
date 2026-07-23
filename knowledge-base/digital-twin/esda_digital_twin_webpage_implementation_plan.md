@@ -2614,3 +2614,31 @@ The implemented Bundle Execution integration is configurable rather than univers
 - Historical twins remain immutable; a corrected parser, planner, policy, or risk rule requires a new Twin.
 
 The demo properties and technical-debt backlog are controlled by HLD Appendices B/C, LLD Appendix B, Architecture Specification Appendix B, and Digital Twin plan Section 15.
+
+---
+
+# Demo Risk Contract 1.2.0 (2026-07-22)
+
+- The server owns inclusive bands: 0-30 low/Green, 31-70 medium/Amber, 71-90 high/Red, and 91-100 critical/Red.
+- `NAMESPACE_TWIN_PVC_RISK_ENABLED=false` and `NAMESPACE_TWIN_STATEFULSET_RISK_ENABLED=false` are explicit MVP properties shown in evidence metadata.
+- A Signoz-source bundle writes `human_approval_before_mutation=false` only when `BOSGENESIS_MOP_HUMAN_APPROVAL_EXEMPT_SOURCE_NAMESPACES` contains `signoz`.
+- Bundle-level approval metadata does not bypass independent Bundle Execution policy or approval.
+- Historical Twin decisions stay immutable. The UI must show the recorded rules version and require a new Twin after a configuration or threshold change.
+- TODO: re-enable StatefulSet scoring after volumeClaimTemplate, identity/order, update strategy, partition, disruption, and rollback evidence is authoritative.
+- TODO: replace namespace-list approval metadata with a signed ODD/change-class policy.
+- TODO: calibrate weights and bands against labeled operational outcomes before production.
+
+## Authoritative Validation Proof (2026-07-23)
+
+Twin `twin_5d7c8fe499ca4dd8bdcc9cd7404536da` validates the implemented demo contract end to end:
+
+- source `signoz`, target `agent-testing`;
+- source machine plan `human_approval_before_mutation=false`;
+- final Green, risk 15/low, rules `namespace-twin-risk-1.2.0`;
+- active thresholds 0-30 Green, 31-70 Amber, 71-90 Red/high, 91-100 Red/critical;
+- PVC and StatefulSet feature toggles false;
+- only `ingress_change=15` contributes;
+- complete evidence and no approval requirement;
+- 14 dependency nodes present, 20 edges valid, no missing/uncertain nodes, cycles, or findings.
+
+The bundle includes real planned Service and StatefulSet evidence to close the Ingress backend and selector dependencies. StatefulSet scoring remains disabled; including the planned object proves graph completeness, not stateful operational safety.

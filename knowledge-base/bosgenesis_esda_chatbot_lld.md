@@ -2469,18 +2469,23 @@ The existing model, release-note, MoP creation, execution, Kubernetes, Helm, art
 | `NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_NAMES` | `kube-root-ca.crt` | Exclude platform ConfigMaps from Twin planning only. |
 | `NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_PREFIXES` | `istio-` | Exclude service-mesh generated ConfigMaps from Twin planning only. |
 | `NAMESPACE_TWIN_PVC_RISK_ENABLED` | `false` | PVC risk is intentionally outside MVP scope. It must be enabled only after storage safety evidence exists. |
+| `NAMESPACE_TWIN_STATEFULSET_RISK_ENABLED` | `false` | StatefulSet score contribution is disabled for the MVP. Enable only after stateful update, storage, identity/order, disruption, and rollback evidence is authoritative. |
 | `NAMESPACE_TWIN_DRY_RUN_MAX_AGE_SECONDS` | `86400` | Maximum authoritative dry-run age unless a stricter environment policy overrides it. |
 | `NAMESPACE_TWIN_DATABASE_URL` | service-owned PostgreSQL DSN | Preferred execution-agent Twin database setting; `DATABASE_URL` is the fallback. |
 
-Equivalent Helm values must be used when deployed in Kubernetes. The current demo values include `namespaceTwinLiveCollectionEnabled`, `namespaceTwinHelmInstalledReleasesOnly`, `namespaceTwinHelmIgnorePrefixes`, `namespaceTwinConfigMapExcludeNames`, `namespaceTwinConfigMapExcludePrefixes`, and `namespaceTwinPvcRiskEnabled`.
+Equivalent Helm values must be used when deployed in Kubernetes. The current demo values include `namespaceTwinLiveCollectionEnabled`, `namespaceTwinHelmInstalledReleasesOnly`, `namespaceTwinHelmIgnorePrefixes`, `namespaceTwinConfigMapExcludeNames`, `namespaceTwinConfigMapExcludePrefixes`, `namespaceTwinPvcRiskEnabled`, and `namespaceTwinStatefulSetRiskEnabled`.
+
+Bundle Generation separately uses `BOSGENESIS_MOP_HUMAN_APPROVAL_EXEMPT_SOURCE_NAMESPACES=signoz`. The creation agent compares the normalized source namespace and writes `executor_contract.human_approval_before_mutation=false` only for a configured match. Other source namespaces remain `true`. This field is input evidence; it does not disable execution-agent policy or an ESDA approval gate.
 
 ### B.5 Deterministic decision contract
 
-The current risk rules are versioned as `namespace-twin-risk-1.1.0`. Default contributions are PVC create/delete +30 when enabled, StatefulSet +25, Helm release upgrade +20, image +15, ConfigMap +15, Ingress +15, Service selector +20, large replica change +10, missing rollback +30, inferred chart/value +20, partial/stale evidence +20, previous similar failure +20, and drift +25.
+The current risk rules are versioned as `namespace-twin-risk-1.2.0`. Default contributions are PVC create/delete +30 when enabled, StatefulSet +25 when enabled, Helm release upgrade +20, image +15, ConfigMap +15, Ingress +15, Service selector +20, large replica change +10, missing rollback +30, inferred chart/value +20, partial/stale evidence +20, previous similar failure +20, and drift +25. PVC and StatefulSet toggles default to `false`.
 
-Decision precedence is policy denial or hard block, authoritative dry-run failure, critical unmitigated risk, approval required, partial/stale/unavailable evidence, risk above the Green band, then otherwise Green. Green still requires authoritative dry-run evidence and never means guaranteed runtime success.
+Risk bands are inclusive: 0-30 is low/Green, 31-70 is medium/Amber, 71-90 is high/Red, and 91-100 is critical/Red. Decision precedence is policy denial or hard block, authoritative dry-run failure, high-or-critical unmitigated risk, approval required, partial/stale/unavailable evidence, risk above the Green band, then otherwise Green. The persisted precedence rule ID `critical_unmitigated_risk` is retained for API compatibility even though it now matches both high and critical scores. Green still requires authoritative dry-run evidence and never means guaranteed runtime success.
 
-The post-fix reference run `twin_3c9667d6848f4daabebdc270166c7c05` finalized Amber at risk 55 with complete evidence. The non-zero contributions were StatefulSet +25, ConfigMap +15, and Ingress +15. Read-only Helm evidence contributed zero inferred chart/value risk.
+Reference run `twin_3c9667d6848f4daabebdc270166c7c05` is an immutable `1.1.0` historical result at 55. New `1.2.0` Twins do not inherit that StatefulSet contribution when the default toggle is false.
+
+The validated `1.2.0` proof is `twin_5d7c8fe499ca4dd8bdcc9cd7404536da`. It finalized Green at risk 15 with only `ingress_change=15`, complete evidence, no approval requirement, and feature toggles `pvc_risk_enabled=false` and `statefulset_risk_enabled=false`. Its dependency graph contains 14 present nodes and 20 valid edges with no missing or uncertain nodes, cycles, or findings. The source machine plan records `human_approval_before_mutation=false`.
 
 ### B.6 Persistence, caching, and rehydration
 
@@ -2495,10 +2500,12 @@ The post-fix reference run `twin_3c9667d6848f4daabebdc270166c7c05` finalized Amb
 1. Replace FastAPI process background work with a durable worker and PostgreSQL-backed LangGraph saver.
 2. Add typed ownership provenance to bundle artifacts and remove ConfigMap/Helm name heuristics.
 3. Enable PVC scoring only after storage class, retention, restore, resize, and data-loss controls are authoritative.
-4. Add versioned Twin re-evaluation that creates a successor decision without rewriting history.
-5. Finish worker restart, reconnect, timeout, cancellation, idempotency, namespace-lock, and report-write failure tests.
-6. Add server materialized summaries and ETags to reduce first-tab latency.
-7. Complete end-to-end metrics and correlation across ESDA, execution agent, MCP, model calls, and PostgreSQL.
-8. Resolve execution-agent generic CI type-stub and duplicate-module debt; retain the passing container workflow as the current image gate.
-9. Remove unused ClickHouse sample settings after confirming no downstream report dependency.
-10. Keep `.env.example`, Helm values, and runtime configuration documentation synchronized through an automated drift test.
+4. Enable StatefulSet scoring only after volumeClaimTemplate, identity/order, partition/update strategy, disruption, and rollback controls are authoritative.
+5. Replace the Signoz approval-exemption namespace list with signed ODD/change-class policy and governed ownership.
+6. Add versioned Twin re-evaluation that creates a successor decision without rewriting history.
+7. Finish worker restart, reconnect, timeout, cancellation, idempotency, namespace-lock, and report-write failure tests.
+8. Add server materialized summaries and ETags to reduce first-tab latency.
+9. Complete end-to-end metrics and correlation across ESDA, execution agent, MCP, model calls, and PostgreSQL.
+10. Resolve execution-agent generic CI type-stub and duplicate-module debt; retain the passing container workflow as the current image gate.
+11. Remove unused ClickHouse sample settings after confirming no downstream report dependency.
+12. Keep `.env.example`, Helm values, and runtime configuration documentation synchronized through an automated drift test.
