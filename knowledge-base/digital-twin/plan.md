@@ -893,3 +893,53 @@ Do these tasks next. Do not start server, database, GPT, MCP, or execution-agent
 - [ ] Record accepted changes before starting browser-only JavaScript fixtures.
 
 **Sprint exit:** The user can open the static files directly and review the complete Digital Twins workspace and Bundle Execution gate with no application server running and no network request made.
+
+
+## 15. Demo Readiness Checkpoint (2026-07-22)
+
+### Implemented and verified
+
+- [x] On-demand server-side full Digital Twin simulation from the Digital Twins page.
+- [x] Direct launch and matching from the selected Bundle Execution bundle/target pair.
+- [x] Optional execution gate controlled by `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED`.
+- [x] Real-core server mode and visible mock/fixture isolation.
+- [x] Browser caching and lazy tab loading without browser-side decision inference.
+- [x] Synthetic `reference.esda` dependency false-positive correction.
+- [x] Explicit planned Helm installation projection includes rendered Service dependencies.
+- [x] Installed-release-only Helm evidence and configurable `bosgenesis-` ignore prefix.
+- [x] Configurable `kube-root-ca.crt` and `istio-` planning exclusions.
+- [x] Configurable PVC risk, disabled for the MVP.
+- [x] Missing rollback false-positive regression coverage.
+- [x] MoP Execution Agent `0.1.4` read-only Helm inference correction.
+- [x] Fresh authoritative E2E Twin finalized Amber at risk 55 with complete evidence and zero inferred chart/value contribution.
+- [x] HLD, LLD, Architecture Specification, Digital Twin design, and implementation plan aligned to the demo baseline.
+
+### Required before the customer demo
+
+- [ ] Verify ESDA health and PostgreSQL connectivity after startup.
+- [ ] Verify execution-agent health reports version `0.1.4` or later through ingress.
+- [ ] Verify Kubernetes Inspector and Helm Manager reads for `agent-testing`.
+- [ ] Generate one fresh Twin from the exact bundle/target used in the demo; do not present a historical pre-fix Twin.
+- [ ] Confirm every non-zero risk contribution is explainable in Policy Twin and audit report.
+- [ ] Rehearse the optional-gate and mandatory-gate stories separately.
+- [ ] Rehearse approval, bounded mutation, validation, rollback/cleanup, and artifact/report downloads.
+- [ ] Confirm no Secret values, credentials, kubeconfig, or hidden reasoning appear in the UI or downloaded evidence.
+- [ ] Capture the exact startup, ingress, DNS, restart, and log-collection commands in the demo runbook.
+
+### Post-demo technical debt backlog
+
+- [ ] Enterprise Entra ID/SSO, RBAC, tenant isolation, and secret management.
+- [ ] Durable worker plus PostgreSQL LangGraph checkpointing and restart recovery.
+- [ ] Malicious ZIP/path traversal, authorization, cluster-scope, destructive-operation, and audit immutability tests.
+- [ ] Typed bundle ownership provenance to replace ConfigMap/Helm name heuristics.
+- [ ] Storage-class, retention, restore, and data-loss evidence before enabling PVC risk.
+- [ ] Versioned historical Twin re-evaluation workflow.
+- [ ] Outcome-based deterministic risk calibration.
+- [ ] Post-mutation image-pull, scheduling, PVC binding, readiness, and controller observation.
+- [ ] Isolated, independently approved MoP Replay runtime.
+- [ ] End-to-end metrics, tracing, dashboards, alerts, and operator runbooks.
+- [ ] Server materialized summaries/ETags and latency budgets for first-load tabs.
+- [ ] Concurrent Git publisher hardening and provider parity tests.
+- [ ] Repair execution-agent generic CI type-check/module-path debt.
+- [ ] Remove unused ClickHouse sample configuration.
+- [ ] Automate configuration drift validation for Python settings, `.env.example`, Helm values, and documentation.

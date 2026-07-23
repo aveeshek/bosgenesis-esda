@@ -1,6 +1,6 @@
 # Project Architecture Specification: BOS Genesis ESDA Chatbot Console
 
-**Code-Verified Baseline:** 2026-07-12 (`v0.2.9`, commit `aad7ee6`)
+**Code-Verified Baseline:** 2026-07-22 (`v0.2.18-1`, commit `744e1c6`)
 
 ## 1. Purpose
 
@@ -18,7 +18,7 @@ The application is a Python-based web project with:
 
 This document should be treated as the controlling architecture specification. The LLD should remain aligned with it.
 
-## 1.1 Implemented V1 Baseline (2026-07-12)
+## 1.1 Implemented V1 Baseline (2026-07-22)
 
 The current implementation is a multi-workflow local ESDA console. Release Notes is the reference artifact workflow; Bundle Generation, Bundle Execution, Activity, and Environment Chat are also implemented and integrated.
 
@@ -1363,3 +1363,111 @@ The Namespace Twin decision path must use one internally consistent planned reso
 ### Recorded Technical Debt and TODO
 
 Generated MoP bundles may still contain platform-managed ConfigMaps because upstream Bundle Generation lacks typed ownership provenance. Name/prefix exclusion is accepted as temporary V1 debt. The target design is to classify origin during Bundle Generation from collector identity, Kubernetes `managedFields`, owner references, and generator metadata, persist the classification in the artifact index, and remove heuristic filtering after all supported bundle producers emit that contract.
+
+
+## Appendix B: Demo Deployment and Configuration Specification (2026-07-22)
+
+### B.1 Normative deployment baseline
+
+For the current demo, the system SHALL use:
+
+- ESDA `v0.2.18-1` / commit `744e1c6` or this documentation-only successor;
+- MoP Execution Agent `0.1.4` / commit `2571ee8` or a compatible later build;
+- PostgreSQL as the durable transactional, episodic, audit, and Twin store;
+- the execution-agent ingress for local ESDA and Kubernetes service DNS for in-cluster ESDA;
+- `real_core` Digital Twin mode with browser/server fixtures disabled;
+- SIGMA 5 PRO as the primary explanatory model while deterministic code remains authoritative;
+- namespace-scoped mutation and human approval with demo pass-through disabled.
+
+An execution-agent version older than `0.1.4` SHALL NOT be used for a risk-score demo because its read-only Helm validation evidence can create an incorrect inferred chart/value contribution.
+
+### B.2 Required ESDA properties
+
+```properties
+APP_ENV=local
+APP_BASE_URL=http://localhost:8080
+DATABASE_URL=<postgresql-dsn>
+DEFAULT_MODEL_PROFILE=azure_gpt5_pro
+DIGITAL_TWIN_BACKEND_MODE=real_core
+DIGITAL_TWIN_MOCK_ENABLED=false
+DIGITAL_TWIN_EXECUTION_AGENT_URL=http://mop-execution-agent.bosgenesis.local
+DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false
+MOP_EXECUTION_ALLOWED_NAMESPACES=agent-testing
+MOP_EXECUTION_DEMO_PASS_THROUGH_ENABLED=false
+ARTIFACT_GIT_PUBLISH_ENABLED=true
+LOG_LEVEL=INFO
+```
+
+The database DSN and all authentication material SHALL be injected from a local secret store, managed identity, or Kubernetes Secret and SHALL NOT appear in Git, screenshots, browser payloads, prompts, or logs. The optional gate may be set to `true` only when demonstrating the mandatory Twin-gated execution journey.
+
+### B.3 Required execution-agent properties
+
+```properties
+NAMESPACE_TWIN_LIVE_COLLECTION_ENABLED=true
+NAMESPACE_TWIN_HELM_INSTALLED_RELEASES_ONLY=true
+NAMESPACE_TWIN_HELM_IGNORE_PREFIXES=bosgenesis-
+NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_NAMES=kube-root-ca.crt
+NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_PREFIXES=istio-
+NAMESPACE_TWIN_PVC_RISK_ENABLED=false
+NAMESPACE_TWIN_DRY_RUN_MAX_AGE_SECONDS=86400
+NAMESPACE_TWIN_DATABASE_URL=<postgresql-dsn>
+```
+
+The deployment SHALL configure Kubernetes Inspector and Helm Manager MCP endpoints and SHALL retain one-job-per-namespace locking, startup recovery, dry-run before mutation, human approval, Secret redaction, and namespace-only guardrails.
+
+### B.4 Authoritative decision requirements
+
+1. A final decision SHALL be calculated by deterministic, versioned policy, evidence, and risk code.
+2. Model output MAY explain structured redacted facts but SHALL NOT alter an axis, score, precedence rule, approval, or execution authorization.
+3. Browser code SHALL NOT infer a final decision.
+4. Historical decisions SHALL remain immutable. A rules change SHALL require a new Twin decision version.
+5. Green SHALL require fresh complete evidence and authoritative dry-run. It SHALL NOT claim runtime success.
+6. Amber SHALL require bounded human review/approval when eligible.
+7. Red SHALL block execution until inputs/evidence are corrected and a new Twin is generated.
+8. Bundle Execution Twin matching SHALL be optional when `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false` and mandatory only when it is `true`.
+9. A ConfigMap or Helm exclusion SHALL affect planning evidence only; it SHALL NOT alter the bundle or Kubernetes execution input.
+10. PVC risk SHALL be described as intentionally disabled while `NAMESPACE_TWIN_PVC_RISK_ENABLED=false`.
+
+### B.5 Demo acceptance checklist
+
+- [ ] PostgreSQL health and schema initialization pass.
+- [ ] ESDA health returns `ok`.
+- [ ] Execution-agent health reports version `0.1.4` or later.
+- [ ] Kubernetes Inspector and Helm Manager MCP reads succeed for `agent-testing`.
+- [ ] Digital Twin launch resolves a published `mop-bundle.zip` on the server.
+- [ ] A new final Twin shows real lifecycle, delta, graph, policy, dry-run, rollback, drift, runtime, release-note validation, and audit facts.
+- [ ] Read-only Helm evidence does not add inferred chart/value risk.
+- [ ] The Twin report explains every non-zero score contribution and evidence gap.
+- [ ] Bundle Execution displays a matching Twin when available and remains operable without one in optional-gate mode.
+- [ ] Approval and mutation remain blocked by Red, stale, mismatched, expired, or incomplete mandatory-gate evidence.
+- [ ] No Secret value, hidden chain-of-thought, credential, or kubeconfig appears in UI/log/report output.
+- [ ] The operator rehearses mutation, validation, rollback/cleanup, Git artifact access, and evidence download before the customer demo.
+
+### B.6 Consolidated technical debt and TODO
+
+| ID | Priority | Requirement gap / planned work |
+|---|---|---|
+| TD-001 | P0 | Replace local admin authentication with Entra ID/SSO, strict RBAC, CSRF controls, and tenant isolation. |
+| TD-002 | P0 | Move credentials to managed identity or Kubernetes Secrets and rotate demo credentials. |
+| TD-003 | P0 | Complete malicious ZIP/path traversal, authorization, cluster-scope/destructive-operation, audit immutability, and browser credential-leak tests. |
+| TD-004 | P0 | Complete restart, PostgreSQL reconnect, MCP timeout/partial, lock contention, duplicate idempotency, cancellation, and report-write failure testing. |
+| TD-005 | P0 | Sign off one complete `agent-testing` Green/Amber/Red, approval, mutation, validation, rollback, cleanup, and retained-evidence runbook. |
+| TD-006 | P1 | Add explicit versioned Twin re-evaluation without rewriting historical decisions. |
+| TD-007 | P1 | Replace ConfigMap and Helm prefix/name heuristics with typed bundle ownership and origin provenance. |
+| TD-008 | P1 | Add storage safety evidence before enabling PVC risk outside the MVP. |
+| TD-009 | P1 | Calibrate deterministic risk weights against labeled operational outcomes and publish false-positive/negative metrics. |
+| TD-010 | P1 | Add post-mutation runtime observation/fault injection for image pull, scheduling, binding, readiness, and controller convergence. |
+| TD-011 | P1 | Implement optional MoP Replay only with isolated infrastructure and separate approval. |
+| TD-012 | P1 | Replace process-local background tasks/checkpointing with a durable worker and PostgreSQL LangGraph saver. |
+| TD-013 | P1 | Govern LangMem/Qdrant/Redis before describing them as active memory authorities. |
+| TD-014 | P1 | Complete correlation IDs, metrics, dashboards, alerts, and runbooks across every service boundary. |
+| TD-015 | P1 | Preserve `completed_with_review` only when missing validation rows are offset by explicit healthy Helm/Kubernetes evidence. |
+| TD-016 | P2 | Add provider capability/contract tests for TRAINIUM/Ollama profiles. |
+| TD-017 | P2 | Add server materialized summaries and ETags for first-load Twin tab latency. |
+| TD-018 | P2 | Harden concurrent Git publishing, credentials, remote conflicts, and retry/backoff. |
+| TD-019 | P2 | Repair execution-agent generic CI type stubs/module discovery and keep container CI as the interim image gate. |
+| TD-020 | P2 | Remove unused ClickHouse sample settings; ESDA remains PostgreSQL-only. |
+| TD-021 | P2 | Automate configuration drift checks among `config.py`, `.env.example`, Helm values, and documents. |
+| TD-022 | P2 | Produce one operator runbook covering startup, DNS/ingress, generation, approval, mutation, rollback, cleanup, and log collection. |
+
+This register is controlling for demo readiness together with HLD Appendix C. A checked demo acceptance item does not close a production-hardening debt unless its evidence and owner are recorded.

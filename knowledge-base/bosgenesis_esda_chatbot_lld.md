@@ -1,6 +1,6 @@
 # Low-Level Design (LLD): BOS Genesis ESDA Chatbot UX Application
 
-**Code-Verified Baseline:** 2026-07-12 (`v0.2.9`, commit `aad7ee6`)
+**Code-Verified Baseline:** 2026-07-22 (`v0.2.18-1`, commit `744e1c6`)
 
 ## 1. Document Purpose
 
@@ -14,7 +14,7 @@ This version is also aligned with `hld.md`. Where the HLD describes the LLM prov
 
 This LLD is aligned with `project_architecture_specification.md` and the code-verified v0.2.9 implementation: a FastAPI application with colocated JavaScript/HTML/CSS, LangChain model profiles, workflow-specific LangGraph use, PostgreSQL workflow/chat/memory/audit records, and local/Git artifact storage. LangMem, Qdrant, Redis, a durable LangGraph saver, and a dedicated worker remain optional roadmap capabilities. If this LLD conflicts with the controlling specification, that specification takes precedence.
 
-## 1.1 Current Low-Level Implementation Status (2026-07-12)
+## 1.1 Current Low-Level Implementation Status (2026-07-22)
 
 The implemented application is a single FastAPI/Jinja2/plain-JavaScript project with PostgreSQL persistence and local artifact storage. Release Notes, Bundle Generation, Bundle Execution, Activity, Environment Chat, Approvals, L4 Audit, model chat, authentication, policy evaluation, artifact publishing, and run-event APIs are present in the current source.
 
@@ -2410,3 +2410,95 @@ The ConfigMap exclusion is deliberately downstream and read-only. The bundle and
 ### Technical Debt / TODO
 
 Bundle Generation currently cannot reliably distinguish application-owned ConfigMaps from API-server, service-mesh, or controller-generated ConfigMaps. The exact-name/prefix filter is therefore a temporary planning adapter. Add typed object-origin metadata to `artifact-index.json` and generated manifests using source collector identity, `managedFields`, owner references, and generator provenance; then make Twin projection depend on that typed origin and remove the heuristic properties.
+
+
+## Appendix B: Demo Configuration and Digital Twin LLD (2026-07-22)
+
+### B.1 Compatible deployed components
+
+The demo-tested compatibility set is ESDA `v0.2.18-1` at commit `744e1c6` plus MoP Execution Agent image `ghcr.io/aveeshek/bosgenesis-mop-execution-agent:0.1.4` at commit `2571ee8`. ESDA must reject or visibly degrade authoritative Twin claims when the execution-agent capability/version contract cannot be verified.
+
+Version `0.1.4` is the minimum supported execution-agent version for this demo because it prevents read-only Helm inventory and validation evidence from being classified as inferred chart/value mutation risk. Previously persisted twins are immutable and are not repaired in place; operators must generate a new twin after any planner, parser, policy, or risk-rule correction.
+
+### B.2 Runtime component sequence
+
+```text
+Browser
+  -> authenticated ESDA Digital Twins or Bundle Execution route
+  -> ESDA Digital Twin gateway
+  -> MoP Execution Agent REST/worker lifecycle
+  -> PostgreSQL twin and audit persistence
+  -> Kubernetes Inspector and Helm Manager MCP evidence
+  -> deterministic release delta, graph, policy, risk, dry-run, rollback,
+     drift, runtime, release-note validation, replay, and audit facts
+  -> optional SIGMA 5 PRO bounded explanation
+  -> immutable decision version and report
+```
+
+ESDA owns authentication, launch orchestration, presentation, browser caching, optional Bundle Execution matching, and safe model explanation. The MoP Execution Agent owns authoritative facts, deterministic scoring, final decisions, dry-run identity, reports, locks, and execution eligibility. The browser must never calculate policy, risk, evidence completeness, dependencies, or a final decision.
+
+### B.3 ESDA properties contract
+
+| Property | Default | Demo value / rule |
+|---|---|---|
+| `APP_ENV` | `local` | `local` for the single-user demo; use a governed environment value outside the lab. |
+| `APP_BASE_URL` | `http://localhost:8080` | Must match the URL used by the browser. |
+| `DATABASE_URL` | Local PostgreSQL DSN | Required. PostgreSQL is the durable run, chat, audit, artifact metadata, and user-view store. |
+| `LOG_LEVEL` | `INFO` | Use `DEBUG` only during bounded troubleshooting; redact before write. |
+| `DIGITAL_TWIN_BACKEND_MODE` | `real_core` | Must be `real_core` for authoritative demo runs. |
+| `DIGITAL_TWIN_MOCK_ENABLED` | `true` | Set `false` for the demo to prevent fixture ambiguity. Mock behavior is development-only. |
+| `DIGITAL_TWIN_MOCK_DELAY_MS` | `120` | Development fixture latency only; it must not affect `real_core`. |
+| `DIGITAL_TWIN_EXECUTION_AGENT_URL` | empty | `http://mop-execution-agent.bosgenesis.local` for local ingress; use service DNS in-cluster. |
+| `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED` | `false` | Keep `false` for the optional-gate demo. Set `true` only for the explicit mandatory-gate journey. |
+| `DEFAULT_MODEL_PROFILE` | `azure_gpt5_pro` | Primary demo profile, displayed as `SIGMA 5 PRO`. |
+| `LANGGRAPH_CHECKPOINTER` | `memory` | Process-local checkpointing only; durable PostgreSQL graph saver is TODO. |
+| `LANGMEM_ENABLED` | `false` | Optional memory-management layer; it is not a decision authority. |
+| `ARTIFACT_GIT_PUBLISH_ENABLED` | `true` | Single-user demo publishing; concurrent publisher hardening remains TODO. |
+| `MOP_EXECUTION_ALLOWED_NAMESPACES` | `agent-testing` | Keep mutation restricted to the demo namespace. |
+| `MOP_EXECUTION_DEMO_PASS_THROUGH_ENABLED` | `false` | Must remain `false`; do not bypass policy or approval for the demo. |
+
+The existing model, release-note, MoP creation, execution, Kubernetes, Helm, artifact, and logging properties in `backend/app/config.py` remain authoritative. `.env.example` is a non-secret template and must be kept synchronized with that class. Real passwords, tokens, API keys, database passwords, and managed-identity material must never be committed.
+
+### B.4 MoP Execution Agent Namespace Twin properties
+
+| Property | Demo value | Behavior |
+|---|---|---|
+| `NAMESPACE_TWIN_LIVE_COLLECTION_ENABLED` | `true` | Collect current namespace and Helm evidence. |
+| `NAMESPACE_TWIN_HELM_INSTALLED_RELEASES_ONLY` | `true` | Treat target-installed releases as baseline evidence; still include an explicit planned new install. |
+| `NAMESPACE_TWIN_HELM_IGNORE_PREFIXES` | `bosgenesis-` | Ignore demo/platform-owned Helm releases by configurable prefix. |
+| `NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_NAMES` | `kube-root-ca.crt` | Exclude platform ConfigMaps from Twin planning only. |
+| `NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_PREFIXES` | `istio-` | Exclude service-mesh generated ConfigMaps from Twin planning only. |
+| `NAMESPACE_TWIN_PVC_RISK_ENABLED` | `false` | PVC risk is intentionally outside MVP scope. It must be enabled only after storage safety evidence exists. |
+| `NAMESPACE_TWIN_DRY_RUN_MAX_AGE_SECONDS` | `86400` | Maximum authoritative dry-run age unless a stricter environment policy overrides it. |
+| `NAMESPACE_TWIN_DATABASE_URL` | service-owned PostgreSQL DSN | Preferred execution-agent Twin database setting; `DATABASE_URL` is the fallback. |
+
+Equivalent Helm values must be used when deployed in Kubernetes. The current demo values include `namespaceTwinLiveCollectionEnabled`, `namespaceTwinHelmInstalledReleasesOnly`, `namespaceTwinHelmIgnorePrefixes`, `namespaceTwinConfigMapExcludeNames`, `namespaceTwinConfigMapExcludePrefixes`, and `namespaceTwinPvcRiskEnabled`.
+
+### B.5 Deterministic decision contract
+
+The current risk rules are versioned as `namespace-twin-risk-1.1.0`. Default contributions are PVC create/delete +30 when enabled, StatefulSet +25, Helm release upgrade +20, image +15, ConfigMap +15, Ingress +15, Service selector +20, large replica change +10, missing rollback +30, inferred chart/value +20, partial/stale evidence +20, previous similar failure +20, and drift +25.
+
+Decision precedence is policy denial or hard block, authoritative dry-run failure, critical unmitigated risk, approval required, partial/stale/unavailable evidence, risk above the Green band, then otherwise Green. Green still requires authoritative dry-run evidence and never means guaranteed runtime success.
+
+The post-fix reference run `twin_3c9667d6848f4daabebdc270166c7c05` finalized Amber at risk 55 with complete evidence. The non-zero contributions were StatefulSet +25, ConfigMap +15, and Ingress +15. Read-only Helm evidence contributed zero inferred chart/value risk.
+
+### B.6 Persistence, caching, and rehydration
+
+- Run, event, artifact metadata, safe summaries, decisions, and audit events are persisted in PostgreSQL.
+- Live reasoning/working notes remain page-session ephemeral and are not restored after navigation or refresh.
+- Twin detail responses may be cached in the browser by twin ID, decision version, model profile, module, and filter. Cache entries never become decision authority.
+- Bundle Execution matches a Twin by immutable bundle identity plus target. A missing match is non-blocking unless `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=true`.
+- A selected historical run must rehydrate its persisted state; a fresh page without an active or explicitly selected run starts idle.
+
+### B.7 Low-level TODOs
+
+1. Replace FastAPI process background work with a durable worker and PostgreSQL-backed LangGraph saver.
+2. Add typed ownership provenance to bundle artifacts and remove ConfigMap/Helm name heuristics.
+3. Enable PVC scoring only after storage class, retention, restore, resize, and data-loss controls are authoritative.
+4. Add versioned Twin re-evaluation that creates a successor decision without rewriting history.
+5. Finish worker restart, reconnect, timeout, cancellation, idempotency, namespace-lock, and report-write failure tests.
+6. Add server materialized summaries and ETags to reduce first-tab latency.
+7. Complete end-to-end metrics and correlation across ESDA, execution agent, MCP, model calls, and PostgreSQL.
+8. Resolve execution-agent generic CI type-stub and duplicate-module debt; retain the passing container workflow as the current image gate.
+9. Remove unused ClickHouse sample settings after confirming no downstream report dependency.
+10. Keep `.env.example`, Helm values, and runtime configuration documentation synchronized through an automated drift test.

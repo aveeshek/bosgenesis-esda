@@ -3219,3 +3219,46 @@ The design is doable and strongly aligned with the current architecture. A contr
 - OPA for Kubernetes admission control: https://openpolicyagent.org/docs/kubernetes
 - Argo CD sync phases and waves: https://argo-cd.readthedocs.io/en/stable/user-guide/sync-waves/
 
+
+
+## 31. Implemented Demo Baseline (2026-07-22)
+
+The UI-first design is now implemented as a server-backed Digital Twins workspace and an optional compact Bundle Execution integration. The verified demo compatibility pair is ESDA `v0.2.18-1` / `744e1c6` and MoP Execution Agent `0.1.4` / `2571ee8`.
+
+The implementation includes on-demand launch, durable lifecycle/list/detail state, all eleven detail tabs, progressive availability, authoritative release delta/dependency/policy/dry-run/rollback/drift/runtime/release-note/audit facts, optional isolated MoP replay facts, bounded SIGMA explanation, report/evidence downloads, and optional execution matching.
+
+The current demo configuration is:
+
+```properties
+# ESDA
+DIGITAL_TWIN_BACKEND_MODE=real_core
+DIGITAL_TWIN_MOCK_ENABLED=false
+DIGITAL_TWIN_EXECUTION_AGENT_URL=http://mop-execution-agent.bosgenesis.local
+DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false
+
+# MoP Execution Agent
+NAMESPACE_TWIN_LIVE_COLLECTION_ENABLED=true
+NAMESPACE_TWIN_HELM_INSTALLED_RELEASES_ONLY=true
+NAMESPACE_TWIN_HELM_IGNORE_PREFIXES=bosgenesis-
+NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_NAMES=kube-root-ca.crt
+NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_PREFIXES=istio-
+NAMESPACE_TWIN_PVC_RISK_ENABLED=false
+NAMESPACE_TWIN_DRY_RUN_MAX_AGE_SECONDS=86400
+```
+
+The latest verified post-fix authoritative example, `twin_3c9667d6848f4daabebdc270166c7c05`, finalized Amber at risk 55 with complete evidence. The score was StatefulSet +25, ConfigMap +15, and Ingress +15. Read-only Helm validation contributed zero inferred chart/value risk, confirming the `0.1.4` compatibility fix.
+
+### 31.1 Demo interpretation
+
+- Green means eligible inside the configured ODD after authoritative dry-run; it does not predict runtime success.
+- Amber means eligible only after bounded human review/approval.
+- Red is ineligible and blocks mutation in mandatory-gate mode.
+- A missing Twin does not block Bundle Execution while `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false`.
+- Historical decisions are immutable and may retain scores produced by older rules. Generate a new Twin to consume a correction.
+- Installed Helm releases are used as baseline evidence. An absent release is ignored unless the machine plan explicitly requests a new install.
+- PVC scoring is disabled for the MVP, not proven safe.
+- Platform ConfigMap exclusions are planning heuristics and are recorded technical debt.
+
+### 31.2 Remaining design debt
+
+Before production or shared use, complete enterprise authentication/authorization, secret management, durable worker recovery, malicious-bundle testing, typed object provenance, storage/PVC evidence, risk calibration, post-admission runtime validation, MoP replay isolation, full observability, Git concurrency hardening, and the complete real `agent-testing` mutation/rollback/cleanup rehearsal. The controlling consolidated register is HLD Appendix C and Architecture Specification Appendix B.6.

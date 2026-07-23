@@ -2599,3 +2599,18 @@ Execute only if allowed
 ```
 
 That is the correct foundation for Conditional L4 autonomy.
+
+
+---
+
+# Demo Baseline Correction (2026-07-22)
+
+The implemented Bundle Execution integration is configurable rather than universally mandatory:
+
+- `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false` keeps Twin matching visible and useful but does not block an otherwise valid Bundle Execution when no matching final Twin exists.
+- `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=true` enables the original mandatory-gate contract. In this mode, execution requires an exact fresh final Twin match and applies Green/Amber/Red eligibility rules.
+- Red, stale, mismatched, superseded, or incomplete evidence cannot authorize execution in mandatory-gate mode.
+- The browser never infers the gate. ESDA and the MoP Execution Agent validate immutable IDs, hashes, target, versions, dry-run identity, drift, approval, lock, and idempotency.
+- Historical twins remain immutable; a corrected parser, planner, policy, or risk rule requires a new Twin.
+
+The demo properties and technical-debt backlog are controlled by HLD Appendices B/C, LLD Appendix B, Architecture Specification Appendix B, and Digital Twin plan Section 15.

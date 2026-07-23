@@ -1,7 +1,7 @@
 # High-Level Design (HLD): GPT-5 Powered Bounded Codex-like Workflow Agent
 
-**Document Version:** 1.1
-**Code-Verified Baseline:** 2026-07-12 (`v0.2.9`, commit `aad7ee6`)
+**Document Version:** 1.2
+**Code-Verified Baseline:** 2026-07-22 (`v0.2.18-1`, commit `744e1c6`)
 **Target System:** Custom Web Application / Local Agent Console  
 **Primary Goal:** Build a bounded, task-specific Codex/Kiro/Claude-like agent using GPT-5 API, MCP servers, PowerShell execution, APIs, validation, and agentic memory.  
 **Intended Usage:** Operational automation, troubleshooting, validation, controlled remediation, and workflow orchestration for a limited scope such as BOS Genesis / TAAI / Kubernetes / API validation tasks.
@@ -87,9 +87,9 @@ V1 standardization:
 - MongoDB is optional and out of scope for V1.
 - Redis is optional only for cache, locks, rate limiting, and SSE pressure.
 
-## 3.2 Current V1 Implementation Status (2026-07-12)
+## 3.2 Current V1 Implementation Status (2026-07-22)
 
-The current codebase contains five integrated operator experiences: Release Notes, Bundle Generation, Bundle Execution, Activity, and Environment Chat. Release Notes remains the reference artifact workflow, while Environment Chat is the prompt-first diagnostic and approval-gated remediation workflow.
+The current codebase contains six integrated operator experiences: Release Notes, Bundle Generation, Digital Twins, Bundle Execution, Activity, and Environment Chat. Release Notes remains the reference artifact workflow, Environment Chat is the prompt-first diagnostic and approval-gated remediation workflow, and Digital Twins is the deterministic pre-execution evidence and decision workspace.
 
 Implemented behavior:
 
@@ -1146,3 +1146,99 @@ The authoritative Namespace Twin planner uses the following resource-selection r
 MoP bundles can still contain platform/controller-generated ConfigMaps because Bundle Generation does not yet carry authoritative ownership provenance for every object. The current name/prefix exclusion is a bounded Twin-planning workaround only: it does not remove files from `mop-bundle.zip`, alter Bundle Execution, or mutate Kubernetes.
 
 TODO: move ownership classification upstream into Bundle Generation using typed provenance, Kubernetes `managedFields`, owner references, and generator metadata. Once bundles mark or omit platform-managed objects authoritatively, replace the name heuristic and retire these exclusion properties.
+
+
+## Appendix B: Demo-Ready Architecture Baseline (2026-07-22)
+
+### B.1 Verified deployment set
+
+| Component | Demo baseline | Responsibility |
+|---|---|---|
+| ESDA | `v0.2.18-1`, commit `744e1c6` before this documentation update | Authenticated UX, workflow orchestration, model profiles, artifacts, activity, approvals, and execution-agent gateway. |
+| MoP Execution Agent | image `ghcr.io/aveeshek/bosgenesis-mop-execution-agent:0.1.4`, commit `2571ee8` | Durable execution jobs, Namespace Twin facts, deterministic policy/risk decisions, reports, and mutation controls. |
+| Execution-agent ingress | `http://mop-execution-agent.bosgenesis.local` | Local ESDA-to-cluster integration. Cluster deployment should use service DNS instead. |
+| PostgreSQL | Required | ESDA run/chat/audit state and execution-agent Namespace Twin persistence. Schemas remain service-owned. |
+| Git artifact repository | Configured `aveeshek/bosgenesis-artifacts` | Published release-note, MoP bundle, and execution report artifacts. |
+
+The minimum compatible MoP Execution Agent version for this baseline is `0.1.4`. That version prevents read-only Helm inventory/validation observations from being scored as inferred chart/value mutation risk. Version `0.1.3` fixed structured inference labels, while `0.1.4` also fixed the remaining `observed_or_inferred` read-only validation path.
+
+### B.2 Implemented Namespace Twin architecture
+
+Digital Twins is a real, server-backed product surface at `/digital-twins`. ESDA owns launch and presentation; the MoP Execution Agent owns authoritative facts and decisions.
+
+The implemented flow is:
+
+```text
+Published mop-bundle.zip + target namespace
+  -> ESDA authenticated on-demand launch
+  -> execution-agent bundle registration and validation
+  -> fresh namespace and installed-Helm evidence
+  -> canonical planned-state projection
+  -> release delta and dependency graph
+  -> deterministic policy/evidence/risk axes
+  -> authoritative dry-run evidence
+  -> rollback, drift, runtime, release-note, replay, and audit modules
+  -> immutable final Green/Amber/Red decision
+  -> optional compact summary on Bundle Execution
+```
+
+Implemented operator behavior:
+
+- A user can launch a full simulation from the Digital Twins page or from the selected bundle/target pair on Bundle Execution.
+- The launch is idempotent and non-mutating.
+- Existing final twins are matched by immutable bundle identity and target; old decisions are not rewritten.
+- Bundle Execution displays the matching twin when one exists. The twin gate is optional by default through `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false`.
+- When the optional gate is enabled, the backend validates twin ID/version, bundle and input hashes, target, dry-run identity, policy/rule versions, freshness, drift, approval, lock, and idempotency before mutation.
+- Browser tabs render server-returned facts and do not infer policy, risk, dependencies, or final decisions.
+- GPT/SIGMA produces bounded explanations from structured redacted facts only. It cannot alter deterministic axes or authorize execution.
+- Historical high-risk twins remain valid audit records. A rule or parser fix affects only a newly generated twin.
+
+The latest verified post-fix E2E example is twin `twin_3c9667d6848f4daabebdc270166c7c05` for the Comet Forge/signoz bundle targeting `agent-testing`. It finalized Amber with risk score 55 and complete evidence. Its non-zero deterministic contributions were StatefulSet change +25, ConfigMap change +15, and Ingress change +15. `inferred_chart_or_value` was false with contribution 0.
+
+### B.3 Demo safety posture
+
+The demo is conditional-L4-oriented but remains approval-gated:
+
+- Namespace-scoped reads and typed diagnostics may run automatically inside configured allowlists.
+- Bundle generation and Digital Twin simulation are read-only except for artifact publishing.
+- Kubernetes/Helm mutations run only through typed adapters or the MoP Execution Agent after policy and approval.
+- Cluster-wide mutation, arbitrary shell, Secret value retrieval, and hidden chain-of-thought storage are prohibited.
+- Live working notes are ephemeral. Persisted records contain safe summaries, structured decisions, redacted evidence, and audit events.
+- A successful server dry-run proves admission/static acceptance only. It does not prove image pulls, scheduling, PVC binding, readiness, or controller/webhook convergence.
+
+### B.4 Configuration ownership
+
+| Configuration owner | Primary properties |
+|---|---|
+| ESDA `.env` | `DIGITAL_TWIN_BACKEND_MODE`, `DIGITAL_TWIN_EXECUTION_AGENT_URL`, `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED`, model profiles, PostgreSQL, Git publishing, MCP/agent endpoints, allowlists, logging. |
+| Execution-agent environment/Helm values | `NAMESPACE_TWIN_LIVE_COLLECTION_ENABLED`, installed-release filtering, ignored Helm prefixes, planning ConfigMap exclusions, PVC risk toggle, dry-run age, PostgreSQL, MCP endpoints, worker/recovery behavior. |
+| Policy files/versioned code | Deterministic policy groups, risk weights, precedence, ODD, approval, and mutation constraints. Secrets must never be placed in a ConfigMap or committed properties file. |
+
+For the demo, use `DIGITAL_TWIN_BACKEND_MODE=real_core`, point `DIGITAL_TWIN_EXECUTION_AGENT_URL` to the ingress, keep `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false` unless the gated journey is being demonstrated, and disable fixture behavior with `DIGITAL_TWIN_MOCK_ENABLED=false`.
+
+## Appendix C: Consolidated Technical Debt and TODO Register
+
+| Priority | Area | Debt / TODO | Demo position |
+|---|---|---|---|
+| P0 | Authentication | Local admin/password and Environment Chat admin normalization are not enterprise identity or tenant isolation. Add Entra ID/SSO, strict RBAC, CSRF review, and per-tenant authorization before shared use. | Accept only for the single-user lab demo. |
+| P0 | Secrets | Replace local credentials and API keys with managed identity or Kubernetes Secrets. Rotate all demo credentials before broader use. | Never show values in UI, logs, Git, or documentation. |
+| P0 | Twin hardening | Complete worker restart, PostgreSQL reconnect, MCP timeout/partial response, namespace-lock contention, duplicate-idempotency, report-write, cancellation, and mixed-mode failure tests. | Core happy paths are demonstrated; failure matrix remains incomplete. |
+| P0 | Security validation | Complete malicious ZIP/path traversal, authorization, cluster-scope/destructive-operation, audit immutability, and model-credential leakage tests. | Keep scope lab-only until complete. |
+| P0 | Real E2E evidence | Finish the full `agent-testing` Green/Amber/Red, approval, mutation, validation, rollback, cleanup, and evidence-retention rehearsal without manual state repair. | Existing bounded mutation/cleanup paths work, but the complete signed runbook is pending. |
+| P1 | Historical twins | Decisions are immutable and are not automatically recomputed after parser/risk fixes. Add an explicit migration/re-evaluation workflow that creates a new version without overwriting history. | Regenerate a twin after every rules or projection change. |
+| P1 | ConfigMap provenance | `kube-root-ca.crt` and `istio-` exclusions are name heuristics because bundle producers lack typed ownership provenance. Add collector/generator identity, `managedFields`, owner references, and origin metadata to `artifact-index.json`. | Current filter changes Twin planning only; it does not alter the bundle or execution. |
+| P1 | PVC policy | `NAMESPACE_TWIN_PVC_RISK_ENABLED=false` suppresses PVC risk for the MVP. Implement storage-class, retention, data-loss, resize, restore, and destructive-approval evidence before enabling it in production. | PVC is intentionally out of demo risk scope. |
+| P1 | Helm filtering | `NAMESPACE_TWIN_HELM_IGNORE_PREFIXES=bosgenesis-` and installed-release-only filtering are demo configuration. Replace prefix conventions with governed ownership/tenant metadata. | Only installed releases are baseline evidence; explicit planned installs are simulated. |
+| P1 | Risk calibration | Static rule weights and thresholds have not been calibrated against a labeled outcome dataset. Add versioned calibration, false-positive/false-negative metrics, and review approval. | Scores are deterministic and explainable, not probabilistic guarantees. |
+| P1 | Dry-run fidelity | Admission success cannot predict image pull, scheduling, PVC binding, readiness, or controller/webhook convergence. Add post-mutation runtime observation and fault-injection evidence. | UI must retain the fidelity limitation. |
+| P1 | MoP Replay | Replay is optional and remains Not Run unless isolated replay infrastructure and separate approval exist. | It must not block the baseline twin. |
+| P1 | Persistence/workers | Artifact workflows use FastAPI background tasks; LangGraph PostgreSQL saver and a dedicated durable worker are not implemented. | PostgreSQL run/events rehydrate UI state; process-level graph recovery remains limited. |
+| P1 | Memory | LangMem, Qdrant, and Redis are configuration/roadmap capabilities, not decision authorities. Wire governed extraction, semantic retrieval, retention, and review before claiming them active. | PostgreSQL is the current durable memory/audit source. |
+| P1 | Observability | End-to-end correlation IDs, metrics, dashboards, alerts, and runbooks across ESDA, execution agent, MCP, PostgreSQL, and model calls remain incomplete. | Rotating ESDA and Bundle Execution debug files support the demo. |
+| P1 | Execution validation | Some execution-agent results may lack validation matrix rows. Preserve `completed_with_review` only with explicit healthy Helm/Kubernetes evidence and manual review. | Never convert absent evidence into success. |
+| P2 | Provider parity | Ollama-backed TRAINIUM profiles may differ in model names, structured output, tool calling, context, and latency. Add provider contract tests and capability flags. | Use SIGMA 5 PRO for the primary demo. |
+| P2 | UI performance | First-load evidence tabs depend on execution-agent and model latency. Retain browser cache keyed by twin/version/model/filter and add server-side materialized summaries/ETags. | Revisited tabs are cached; first render can still vary. |
+| P2 | Git publishing | Improve concurrent publisher locking, credential handling, retry/backoff, and remote conflict observability. | Publishing is functional for single-user demo traffic. |
+| P2 | CI | The execution-agent container workflow passes, but the generic CI type-check path still has pre-existing stub/module-path debt. Add missing type stubs and resolve duplicate module discovery. | Runtime tests and image build are the release gate for this demo only. |
+| P2 | Legacy configuration | Remove unused ClickHouse-oriented settings from the execution-agent sample after confirming no report path consumes them. ESDA already uses PostgreSQL only. | Do not introduce ClickHouse into ESDA. |
+| P2 | Documentation/runbooks | Produce one operator runbook for startup, ingress/DNS checks, twin regeneration, approval, mutation, rollback, cleanup, and log collection. | Current design and plan documents are the interim source. |
