@@ -1852,6 +1852,24 @@ def create_app() -> FastAPI:
             "source": "local_mop_generation_runs",
         }
 
+    @app.get("/api/mop-execution/bundles/{run_id}/identity", tags=["workflows"])
+    def get_mop_execution_bundle_identity(
+        run_id: str,
+        artifact_id: str | None = None,
+        principal: SessionPrincipal = Depends(get_current_user),
+    ) -> dict:
+        identity = mop_execution_preflight.bundle_identity_for_activity_run(
+            user_id=principal.user_id,
+            run_id=run_id,
+            artifact_id=artifact_id,
+        )
+        if not identity.get("ok"):
+            raise HTTPException(
+                status_code=404,
+                detail=identity.get("error") or "Selected MoP bundle is unavailable.",
+            )
+        return identity
+
     @app.post("/api/mop-execution/preflight", tags=["workflows"])
     def preflight_mop_execution_bundle(
         request: MopExecutionPreflightRequest,

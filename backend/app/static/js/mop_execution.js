@@ -90,6 +90,8 @@ const autoHideMs = 30000;
 let events = [], activeRunId = null, es = null, lastSeq = 0, pinned = false, autoHideTimer = null, viewGeneration = 0;
 let approvalHydrationInFlight = new Set();
 let bundleCandidates = [];
+let bundleCandidatesLoadFailed = false;
+let bundleIdentityAbortController = null;
 let selectedTwinGate = null;
 let requestedTwinIdConsumed = false;
 let twinGateLoadVersion = 0;
@@ -1149,6 +1151,52 @@ function selectedCandidate() {
   const runId = activityRunSelect?.value || "";
   return bundleCandidates.find((candidate) => candidate.run_id === runId) || null;
 }
+async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  const externalSignal = options.signal;
+  const abortFromExternal = () => controller.abort();
+  externalSignal?.addEventListener("abort", abortFromExternal, {once: true});
+  try {
+    return await fetch(url, {...options, signal: controller.signal});
+  } finally {
+    window.clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", abortFromExternal);
+  }
+}
+async function loadSelectedBundleIdentity() {
+  const candidate = selectedCandidate();
+  if (!candidate || candidate.canonical_sha256) return;
+  bundleIdentityAbortController?.abort();
+  const controller = new AbortController();
+  bundleIdentityAbortController = controller;
+  const runId = candidate.run_id;
+  const query = candidate.artifact_id
+    ? `?artifact_id=${encodeURIComponent(candidate.artifact_id)}`
+    : "";
+  candidate.identity_loading = true;
+  renderBundleMetadata(candidate);
+  try {
+    const response = await fetchWithTimeout(
+      `/api/mop-execution/bundles/${encodeURIComponent(runId)}/identity${query}`,
+      {signal: controller.signal},
+      20000
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const identity = await response.json();
+    if (selectedCandidate()?.run_id !== runId) return;
+    Object.assign(candidate, identity, {identity_loading: false});
+    renderBundleMetadata(candidate);
+    await loadTwinGate();
+  } catch (error) {
+    if (error.name === "AbortError" || selectedCandidate()?.run_id !== runId) return;
+    candidate.identity_loading = false;
+    candidate.identity_error = error.message;
+    renderBundleMetadata(candidate);
+  } finally {
+    if (bundleIdentityAbortController === controller) bundleIdentityAbortController = null;
+  }
+}
 function renderBundleMetadata(candidate = selectedCandidate()) {
   if (!bundleMetadataPanel) return;
   const source = valueOf("mop_execution_bundle_source") || "activity_run";
@@ -1159,7 +1207,7 @@ function renderBundleMetadata(candidate = selectedCandidate()) {
       `Source namespace: ${candidate.source_namespace || "unknown"}`,
       `Generated: ${compactTime(candidate.generated_at)}`,
       `Bundle: ${candidate.filename || "mop-bundle.zip"} (${formatBytes(candidate.size_bytes)})`,
-      `Bundle identity: ${shortHash(candidate.canonical_sha256 || candidate.sha256)}`,
+      `Bundle identity: ${candidate.identity_loading ? "calculating selected bundle..." : shortHash(candidate.canonical_sha256 || candidate.sha256)}`,
       `Publish folder: ${candidate.publish_folder || "not published"}`,
     ];
   } else if (source === "artifact_repo_folder") {
@@ -1479,8 +1527,11 @@ function renderBundleOptions() {
 }
 async function loadBundleCandidates() {
   if (!activityRunSelect) return;
+  bundleCandidatesLoadFailed = false;
+  activityRunSelect.disabled = true;
+  activityRunSelect.innerHTML = '<option value="">Loading MoP bundles...</option>';
   try {
-    const response = await fetch("/api/mop-execution/bundles");
+    const response = await fetchWithTimeout("/api/mop-execution/bundles", {}, 12000);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     bundleCandidates = data.bundles || [];
@@ -1489,8 +1540,12 @@ async function loadBundleCandidates() {
     setText(formStatus, `${bundleCandidates.length} MoP bundle${bundleCandidates.length === 1 ? "" : "s"} available.`);
   } catch (error) {
     bundleCandidates = [];
-    activityRunSelect.innerHTML = '<option value="">Could not load bundles</option>';
-    setText(formStatus, `Could not load MoP bundles: ${error.message}`);
+    bundleCandidatesLoadFailed = true;
+    const reason = error.name === "AbortError" ? "request timed out" : error.message;
+    activityRunSelect.innerHTML = '<option value="">Could not load bundles - click to retry</option>';
+    setText(formStatus, `Could not load MoP bundles: ${reason}. Click the dropdown to retry.`);
+  } finally {
+    activityRunSelect.disabled = false;
   }
 }
 async function runPreflight() {
@@ -2236,6 +2291,7 @@ async function boot() {
   updateSourceVisibility();
   await loadBundleCandidates();
   await loadTwinGate();
+  void loadSelectedBundleIdentity();
   resetView("No MoP execution run yet.");
   setStatus("Idle");
   setVisual("idle");
@@ -2248,7 +2304,14 @@ async function boot() {
   if (runId) await openRun(runId);
 }
 bundleSource?.addEventListener("change", () => { updateSourceVisibility(); stampCorrelationId(); void loadTwinGate(); });
-activityRunSelect?.addEventListener("change", () => { renderBundleMetadata(); void loadTwinGate(); });
+activityRunSelect?.addEventListener("change", () => {
+  renderBundleMetadata();
+  void loadTwinGate();
+  void loadSelectedBundleIdentity();
+});
+activityRunSelect?.addEventListener("pointerdown", () => {
+  if (bundleCandidatesLoadFailed) void loadBundleCandidates().then(() => loadSelectedBundleIdentity());
+});
 repoFolderInput?.addEventListener("input", () => renderBundleMetadata());
 bundleFileInput?.addEventListener("change", () => renderBundleMetadata());
 targetNamespaceSelect?.addEventListener("change", () => { stampCorrelationId(); renderBundleMetadata(); void loadTwinGate(); });

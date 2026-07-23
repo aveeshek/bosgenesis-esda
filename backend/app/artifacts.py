@@ -109,6 +109,16 @@ class ArtifactService:
             raise ValueError("Artifact path escaped storage root")
         return path.read_bytes()
 
+    def stat_artifact(self, storage_path: str) -> dict:
+        if not storage_path:
+            raise ValueError("Artifact storage path is empty")
+        root = self.storage_root.resolve()
+        path = (root / storage_path).resolve()
+        if root not in path.parents and path != root:
+            raise ValueError("Artifact path escaped storage root")
+        stat = path.stat()
+        return {"size_bytes": stat.st_size}
+
 
 def _render_text_pdf(*, markdown: str, title: str) -> bytes:
     pages: list[list[str]] = []

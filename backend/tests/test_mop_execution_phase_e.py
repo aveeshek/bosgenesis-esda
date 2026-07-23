@@ -114,8 +114,16 @@ def test_mop_execution_lists_activity_run_bundles_and_preflights_success(tmp_pat
         bundles = listed.json()["bundles"]
         assert len(bundles) == 1
         assert bundles[0]["run_id"] == "mop_generation_good"
-        assert bundles[0]["sha256"]
+        assert bundles[0]["local_available"] is True
+        assert bundles[0]["size_bytes"] == len(_bundle_bytes())
         assert bundles[0]["publish_folder"] == "260630_120000_mop_signoz"
+
+        identity = client.get(
+            f"/api/mop-execution/bundles/mop_generation_good/identity?artifact_id={artifact['artifact_id']}"
+        )
+        assert identity.status_code == 200
+        assert identity.json()["sha256"]
+        assert identity.json()["canonical_sha256"]
 
         preflight = client.post(
             "/api/mop-execution/preflight",
@@ -136,6 +144,28 @@ def test_mop_execution_lists_activity_run_bundles_and_preflights_success(tmp_pat
         assert statuses["artifact_json"] == "passed"
         assert statuses["no_secret_material"] == "passed"
         assert statuses["manifest_namespace_rewrite"] == "passed"
+
+
+def test_mop_execution_bundle_listing_does_not_open_zip_artifacts(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
+
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        user_id = login.json()["user"]["user_id"]
+        _seed_bundle_run(client, user_id, _bundle_bytes())
+
+        def fail_if_read(_storage_path: str) -> bytes:
+            raise AssertionError("Bundle listing must not read or unzip artifact bytes")
+
+        monkeypatch.setattr(client.app.state.artifact_service, "read_artifact_bytes", fail_if_read)
+        listed = client.get("/api/mop-execution/bundles")
+
+        assert listed.status_code == 200
+        bundle = listed.json()["bundles"][0]
+        assert bundle["run_id"] == "mop_generation_good"
+        assert bundle["local_available"] is True
+        assert bundle["size_bytes"] > 0
 
 
 def test_mop_execution_preflight_blocks_secret_and_source_namespace_reuse(tmp_path, monkeypatch) -> None:

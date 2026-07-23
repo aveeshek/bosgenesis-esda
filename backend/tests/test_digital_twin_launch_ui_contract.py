@@ -39,3 +39,6 @@ def test_bundle_execution_can_restore_or_launch_matching_twin() -> None:
     assert "item.bundle_hash || item.bundle?.bundle_hash" in controller
     assert "twinRiskLabel(gate.risk)" in controller
     assert "decision v" in controller
+    assert 'fetchWithTimeout("/api/mop-execution/bundles", {}, 12000)' in controller
+    assert '/api/mop-execution/bundles/${encodeURIComponent(runId)}/identity' in controller
+    assert "Could not load bundles - click to retry" in controller

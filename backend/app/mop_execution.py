@@ -505,10 +505,12 @@ class MopExecutionPreflightService:
                 continue
             metadata = bundle.get("metadata") or {}
             publish_state = self._publish_state(record.get("events") or [])
-            bytes_result = self._read_bundle_artifact(bundle)
-            canonical_sha256 = metadata.get("canonical_sha256")
-            if not canonical_sha256 and bytes_result[0] is not None:
-                canonical_sha256 = self._canonical_zip_sha256(bytes_result[0])
+            local_error = None
+            try:
+                local_stat = self.artifact_service.stat_artifact(str(bundle.get("storage_path") or ""))
+            except (OSError, ValueError) as exc:
+                local_stat = None
+                local_error = f"Local artifact is unavailable: {exc}"
             candidates.append(
                 {
                     "source_type": "activity_run",
@@ -523,19 +525,44 @@ class MopExecutionPreflightService:
                     "artifact_type": bundle.get("artifact_type"),
                     "filename": self._artifact_filename(bundle),
                     "size_bytes": metadata.get("size_bytes")
-                    or (len(bytes_result[0]) if bytes_result[0] is not None else None),
+                    or (local_stat or {}).get("size_bytes"),
                     "sha256": metadata.get("sha256")
-                    or metadata.get("bundle_sha256")
-                    or (self._sha256(bytes_result[0]) if bytes_result[0] is not None else None),
-                    "canonical_sha256": canonical_sha256,
-                    "local_available": bytes_result[0] is not None,
-                    "local_error": bytes_result[1],
+                    or metadata.get("bundle_sha256"),
+                    "canonical_sha256": metadata.get("canonical_sha256"),
+                    "local_available": local_stat is not None,
+                    "local_error": local_error,
                     "publish_folder": publish_state.get("folder_name"),
                     "publish_branch": publish_state.get("branch"),
                     "bundle_id": metadata.get("bundle_id"),
                 }
             )
         return candidates
+
+    def bundle_identity_for_activity_run(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        artifact_id: str | None = None,
+    ) -> dict[str, Any]:
+        resolved = self.bundle_content_for_activity_run(
+            user_id=user_id,
+            run_id=run_id,
+            artifact_id=artifact_id,
+        )
+        if not resolved.get("ok"):
+            return resolved
+        content = resolved["content"]
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "artifact_id": (resolved.get("bundle") or {}).get("artifact_id"),
+            "filename": resolved.get("filename") or "mop-bundle.zip",
+            "size_bytes": len(content),
+            "sha256": self._sha256(content),
+            "canonical_sha256": self._canonical_zip_sha256(content),
+            "local_available": True,
+        }
 
     def _digital_twin_bundle_candidates(
         self,
