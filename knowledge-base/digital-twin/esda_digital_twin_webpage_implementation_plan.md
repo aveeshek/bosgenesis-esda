@@ -2,7 +2,7 @@
 
 **Project:** ESDA — Ericsson SRE and DevOps Agent  
 **Feature:** Dedicated Digital Twin webpage + embedded Digital Twin Gate in MoP Execution page  
-**Goal:** Implement a Digital Twin user experience that becomes the mandatory safety gate for Conditional L4 autonomy.
+**Goal:** Implement a Digital Twin user experience that can operate as the authoritative safety gate for Conditional L4 autonomy; current lab enforcement is configurable and optional by default.
 
 ---
 
@@ -2642,3 +2642,25 @@ Twin `twin_5d7c8fe499ca4dd8bdcc9cd7404536da` validates the implemented demo cont
 - 14 dependency nodes present, 20 edges valid, no missing/uncertain nodes, cycles, or findings.
 
 The bundle includes real planned Service and StatefulSet evidence to close the Ingress backend and selector dependencies. StatefulSet scoring remains disabled; including the planned object proves graph completeness, not stateful operational safety.
+
+## 2026-08-16 UI Implementation Reconciliation
+
+The current page implements the UI-first sequence through real server-backed modules. Earlier language describing the Twin as universally mandatory is a target-policy option, not the default lab behavior.
+
+### Implemented interaction contract
+
+- The Digital Twins list supports search, filters, sorting, pagination, old-run reopening, and an on-demand simulation dialog.
+- The simulation dialog selects a server-known published bundle plus target namespace/cluster; the browser never submits a local artifact URL.
+- The detail cockpit shows lifecycle and final-decision banners separately, a sticky identity summary, action eligibility, and module tabs.
+- Module tabs lazy-load authoritative payloads and use browser caches keyed by Twin/version/model/filter to reduce repeated latency.
+- Progressive states remain visibly provisional and never authorize execution.
+- Bundle Execution contains an optional compact Twin panel with match, open, run-again, and regeneration actions.
+- Missing Twin evidence is advisory by default and blocking only when the backend gate setting is enabled.
+- Responsive overflow, keyboard focus, labels, non-color status, Back/Forward, refresh/deep links, and reduced motion are part of the accepted product contract.
+
+### Remaining UI work
+
+- [ ] Add server-side materialized module summaries and ETags for first-load latency.
+- [ ] Complete automated cross-browser visual and accessibility regression coverage.
+- [ ] Replace fixture-oriented copy still present in low-level module cards with explicit real/mock provenance labels.
+- [ ] Add an operator-visible configuration/evidence disclosure for every disabled Twin axis and exclusion.

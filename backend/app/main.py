@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import base64
 import hashlib
 from contextlib import asynccontextmanager
@@ -39,6 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from backend.app.activity import ActivityService
 from backend.app.approvals import ApprovalService
@@ -1005,7 +1006,23 @@ def create_app() -> FastAPI:
 
     @app.post("/login", tags=["pages"])
     def login(request: Request, username: str = Form(...), password: str = Form(...)) -> Response:
-        principal = authenticate(username, password)
+        try:
+            principal = authenticate(username, password)
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "login_database_unavailable %s",
+                {
+                    "request_id": getattr(request.state, "request_id", None),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                {"error": "PostgreSQL is temporarily unavailable. Check the VPN or cluster route and retry."},
+                status_code=503,
+                headers={"Retry-After": "10"},
+            )
         if not principal:
             return templates.TemplateResponse(
                 request,
@@ -1025,7 +1042,18 @@ def create_app() -> FastAPI:
 
     @app.post("/api/auth/login", tags=["auth"])
     def api_login(credentials: LoginRequest, response: Response) -> dict:
-        principal = authenticate(credentials.username, credentials.password)
+        try:
+            principal = authenticate(credentials.username, credentials.password)
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "api_login_database_unavailable %s",
+                {"error_type": type(exc).__name__},
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="PostgreSQL is temporarily unavailable. Check the VPN or cluster route and retry.",
+                headers={"Retry-After": "10"},
+            ) from exc
         if not principal:
             raise HTTPException(status_code=401, detail="Invalid username or password")
         set_session_cookie(response, principal)
@@ -2246,6 +2274,18 @@ def create_app() -> FastAPI:
             return [str(compact)] if compact else [json.dumps(mop_execution_store._payload(value), default=str)]
         return [str(value)]
 
+    def _normalize_command_fingerprints(value) -> list[str]:
+        fingerprints: list[str] = []
+        seen: set[str] = set()
+        for item in _string_list(value):
+            cleaned = item.strip()
+            if not cleaned or cleaned.lower() in {"null", "none", "undefined"}:
+                continue
+            if cleaned not in seen:
+                seen.add(cleaned)
+                fingerprints.append(cleaned)
+        return fingerprints
+
     def _extract_command_fingerprints(payloads: list) -> list[str]:
         fingerprints: list[str] = []
         seen_fingerprints: set[str] = set()
@@ -2330,9 +2370,10 @@ def create_app() -> FastAPI:
         resources_value = _first_report_value(payloads, ("resources", "resource_changes", "would_change", "would_create", "changes", "change_preview"))
         policy_value = _first_report_value(payloads, ("policy_gates", "policy_decisions", "gates", "warnings", "guardrails"))
         warnings_value = _first_report_value(payloads, ("warnings", "warning", "policy_warnings"))
-        fingerprints = _string_list(
+        fingerprints = _normalize_command_fingerprints(
             authoritative_evidence.get("command_fingerprints")
         ) or _extract_command_fingerprints(payloads)
+        fingerprints = _normalize_command_fingerprints(fingerprints)
         reports = {
             "status": "available" if report_records or payloads else "unavailable",
             "job_id": job_id,
@@ -2447,6 +2488,184 @@ def create_app() -> FastAPI:
                     return results
         return results
 
+    def _mop_execution_list_payload(payload: Any, keys: tuple[str, ...]) -> list[dict]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if not isinstance(payload, dict):
+            return []
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return []
+
+    def _mop_execution_pod_ready(pod: dict) -> bool:
+        phase = str(pod.get("phase") or pod.get("status") or "").strip().lower()
+        if phase in {"succeeded", "completed"}:
+            return True
+        if phase != "running":
+            return False
+        ready = pod.get("ready")
+        if isinstance(ready, bool):
+            return ready
+        ready_text = str(ready or "").strip()
+        if "/" in ready_text:
+            current, desired = ready_text.split("/", 1)
+            try:
+                return int(desired) > 0 and int(current) >= int(desired)
+            except ValueError:
+                return False
+        return ready_text.lower() in {"true", "ready", "yes"}
+
+    async def _collect_live_post_mutation_verification(
+        *,
+        run_id: str,
+        user_id: str,
+        target_namespace: str,
+        metadata: dict,
+    ) -> dict:
+        source_namespace = str(metadata.get("source_namespace") or "").strip()
+        expected_release = str(settings.mop_execution_post_mutation_expected_helm_release or "").strip()
+        if not expected_release:
+            expected_release = str(metadata.get("generated_release_name") or "").strip()
+        if not expected_release and source_namespace:
+            expected_release = f"{settings.mop_execution_generated_name_prefix}-{source_namespace}"
+
+        async def collect(adapter, *, route: str, step_id: str) -> dict:
+            request = ToolExecutionRequest(
+                run_id=run_id,
+                step_id=step_id,
+                tool_name=str(getattr(adapter, "name", "mop_execution_verifier")),
+                workflow_type="mop_execution",
+                environment="kubernetes_generic",
+                namespace=target_namespace,
+                user_id=user_id,
+                arguments={"tool_name": route, "arguments": {"namespace": target_namespace}},
+                autonomy_mode="observe_only",
+            )
+            result, duration_ms = await adapter.execute(request)
+            output = result.output if isinstance(result.output, dict) else {}
+            return {
+                "status": result.status,
+                "raw": output.get("raw"),
+                "error": result.error,
+                "evidence_refs": result.evidence_refs,
+                "duration_ms": duration_ms,
+            }
+
+        attempts = max(1, int(settings.mop_execution_post_mutation_verification_attempts))
+        interval = max(0.0, float(settings.mop_execution_post_mutation_verification_interval_seconds))
+        last_result: dict = {}
+        for attempt in range(1, attempts + 1):
+            pods_result, services_result, ingress_result, helm_result = await asyncio.gather(
+                collect(app.state.env_k8s_inspector, route="pod_health", step_id=f"post-mutation-pods-{attempt}"),
+                collect(app.state.env_k8s_inspector, route="service_status", step_id=f"post-mutation-services-{attempt}"),
+                collect(app.state.env_k8s_inspector, route="ingress_status", step_id=f"post-mutation-ingresses-{attempt}"),
+                collect(app.state.env_helm_manager, route="helm_release_list", step_id=f"post-mutation-helm-{attempt}"),
+            )
+            pods = _mop_execution_list_payload(pods_result.get("raw"), ("pods", "items", "resources", "output"))
+            services = _mop_execution_list_payload(services_result.get("raw"), ("services", "items", "resources", "output"))
+            ingresses = _mop_execution_list_payload(ingress_result.get("raw"), ("ingresses", "items", "resources", "output"))
+            releases = _mop_execution_list_payload(helm_result.get("raw"), ("releases", "items", "output", "resources"))
+            deployed_releases = [
+                item
+                for item in releases
+                if str(item.get("status") or item.get("state") or "").strip().lower() == "deployed"
+            ]
+            matched_releases = [
+                item
+                for item in deployed_releases
+                if not expected_release or str(item.get("name") or item.get("release") or "").strip() == expected_release
+            ]
+            unhealthy_pods = [
+                {
+                    "name": str(item.get("name") or "unknown"),
+                    "phase": str(item.get("phase") or item.get("status") or "unknown"),
+                    "ready": item.get("ready"),
+                }
+                for item in pods
+                if not _mop_execution_pod_ready(item)
+            ]
+            helm_passed = helm_result.get("status") == "success" and bool(matched_releases)
+            pods_passed = pods_result.get("status") == "success" and bool(pods) and not unhealthy_pods
+            services_passed = services_result.get("status") == "success" and bool(services)
+            ingress_passed = ingress_result.get("status") == "success" and (
+                not settings.mop_execution_post_mutation_require_no_ingress or not ingresses
+            )
+            validation_matrix = [
+                {
+                    "kind": "HelmRelease",
+                    "name": expected_release or "deployed release",
+                    "namespace": target_namespace,
+                    "expected": "deployed",
+                    "observed": ", ".join(
+                        f"{item.get('name') or item.get('release')}={item.get('status') or item.get('state')}"
+                        for item in releases
+                    ) or "no releases returned",
+                    "status": "passed" if helm_passed else "failed",
+                },
+                {
+                    "kind": "Pod",
+                    "name": "namespace workloads",
+                    "namespace": target_namespace,
+                    "expected": "all workload pods Ready or Completed",
+                    "observed": f"{len(pods) - len(unhealthy_pods)}/{len(pods)} healthy; {len(unhealthy_pods)} need attention",
+                    "status": "passed" if pods_passed else "failed",
+                },
+                {
+                    "kind": "Service",
+                    "name": "namespace services",
+                    "namespace": target_namespace,
+                    "expected": "one or more services present",
+                    "observed": f"{len(services)} service(s)",
+                    "status": "passed" if services_passed else "failed",
+                },
+                {
+                    "kind": "Ingress",
+                    "name": "namespace ingress boundary",
+                    "namespace": target_namespace,
+                    "expected": "no Kubernetes Ingress resources" if settings.mop_execution_post_mutation_require_no_ingress else "Ingress not gated",
+                    "observed": f"{len(ingresses)} ingress resource(s)",
+                    "status": "passed" if ingress_passed else "failed",
+                },
+            ]
+            passed = helm_passed and pods_passed and services_passed and ingress_passed
+            last_result = {
+                "status": "passed" if passed else "needs_review",
+                "passed": passed,
+                "source": "deployed_mcp_services",
+                "attempt": attempt,
+                "attempts_configured": attempts,
+                "expected_helm_release": expected_release or None,
+                "target_namespace": target_namespace,
+                "require_no_ingress": settings.mop_execution_post_mutation_require_no_ingress,
+                "validation_matrix": validation_matrix,
+                "helm": {
+                    "status": helm_result.get("status"),
+                    "deployed_releases": deployed_releases,
+                    "matched_release_count": len(matched_releases),
+                    "error": helm_result.get("error"),
+                },
+                "kubernetes": {
+                    "pods_status": pods_result.get("status"),
+                    "pod_count": len(pods),
+                    "unhealthy_pods": unhealthy_pods,
+                    "services_status": services_result.get("status"),
+                    "service_count": len(services),
+                    "ingress_status": ingress_result.get("status"),
+                    "ingress_count": len(ingresses),
+                    "errors": [
+                        item.get("error")
+                        for item in (pods_result, services_result, ingress_result)
+                        if item.get("error")
+                    ],
+                },
+            }
+            if passed:
+                break
+            if attempt < attempts and interval:
+                await asyncio.sleep(interval)
+        return mop_execution_store._payload(last_result)
     async def _collect_post_mutation_observations(agent, job_id: str) -> dict:
         observations: dict[str, Any] = {"job_id": job_id, "phase": "post_mutation_validation", "phase_observations": {}}
         for phase in ("validation", "helm_status", "helm_history", "k8s_readiness"):
@@ -2769,6 +2988,21 @@ def create_app() -> FastAPI:
         validation_passed = bool(validation_matrix) and all(_resource_status_ok(row.get("status")) for row in validation_matrix)
         helm_evidence = reports.get("helm_evidence") or _extract_evidence_block(payloads, ("helm", "release", "chart", "revision", "history"))
         kubernetes_evidence = reports.get("kubernetes_evidence") or _extract_evidence_block(payloads, ("k8s", "kubernetes", "readiness", "pod", "deployment", "service", "ingress", "pvc"))
+        live_verification: dict = {}
+        if settings.mop_execution_post_mutation_live_verification_enabled:
+            live_verification = await _collect_live_post_mutation_verification(
+                run_id=run_id,
+                user_id=user_id,
+                target_namespace=target_namespace,
+                metadata=metadata,
+            )
+            validation_matrix = live_verification.get("validation_matrix") or []
+            validation_passed = bool(live_verification.get("passed"))
+            helm_evidence = [{"source": "helm_manager_mcp", **(live_verification.get("helm") or {})}]
+            kubernetes_evidence = [{"source": "k8s_inspector_mcp", **(live_verification.get("kubernetes") or {})}]
+            reports["live_mcp_verification"] = live_verification
+            reports["validation_matrix"] = validation_matrix
+            mop_execution_store.record_reports(run_id=run_id, reports=reports)
         has_evidence = bool(helm_evidence) or bool(kubernetes_evidence)
         completed_with_review = not validation_passed and has_evidence
         validation = {
@@ -2793,15 +3027,31 @@ def create_app() -> FastAPI:
         if publish:
             publish_result = await _publish_execution_report_bundle(run_id=run_id, target_namespace=target_namespace, artifact_payload=artifact_payload)
         mop_execution_store.record_artifact_publish(run_id=run_id, publish=publish_result)
-        final_summary = (
-            "Post-mutation validation passed and execution reports are available."
-            if validation_passed
-            else (
-                "Mutation completed. Post-mutation validation report is available, but ESDA received no validation matrix rows. Manual Kubernetes/Helm verification passed."
-                if completed_with_review and not validation_matrix
-                else "Post-mutation validation needs review; execution reports are available."
+        if validation_passed and live_verification:
+            live_kubernetes = live_verification.get("kubernetes") or {}
+            expected_release = live_verification.get("expected_helm_release") or "expected Helm release"
+            ingress_count = int(live_kubernetes.get("ingress_count") or 0)
+            ingress_summary = (
+                "zero Kubernetes Ingress resources were created"
+                if ingress_count == 0
+                else f"{ingress_count} Kubernetes Ingress resource(s) were created"
             )
-        )
+            final_summary = (
+                f"Mutation completed successfully. Helm release {expected_release} is deployed; "
+                f"all {live_kubernetes.get('pod_count', 0)} workload pod(s) are Ready or Completed; "
+                f"{live_kubernetes.get('service_count', 0)} service(s) are present; "
+                f"and {ingress_summary}."
+            )
+        else:
+            final_summary = (
+                "Post-mutation validation passed and execution reports are available."
+                if validation_passed
+                else (
+                    "Mutation completed. Post-mutation validation report is available, but ESDA received no validation matrix rows. Manual Kubernetes/Helm verification passed."
+                    if completed_with_review and not validation_matrix
+                    else "Post-mutation validation needs review; execution reports are available."
+                )
+            )
         twin_execution_link = await _link_mop_execution_outcome_to_twin(
             run_id=run_id,
             user_id=user_id,
@@ -2998,6 +3248,103 @@ def create_app() -> FastAPI:
             "approval_response": response,
         }
 
+    async def _submit_existing_approval_to_mutation_job(
+        *,
+        agent,
+        mutation_job_id: str,
+        source_approval_payload: dict,
+        target_namespace: str,
+        correlation_id: str,
+    ) -> dict:
+        """Bind an already accepted ESDA approval to a separately created agent job."""
+        approval = source_approval_payload.get("approval") or {}
+        source_approval_id = str(
+            source_approval_payload.get("approval_id")
+            or approval.get("approval_id")
+            or "approval"
+        )
+        scope = approval.get("scope") if isinstance(approval.get("scope"), dict) else {}
+        approved_phase_ids = [
+            str(item).strip()
+            for item in (scope.get("approved_phase_ids") or [])
+            if str(item).strip()
+        ]
+        approved_step_ids = [
+            str(item).strip()
+            for item in (scope.get("approved_step_ids") or [])
+            if str(item).strip()
+        ]
+        if not approved_phase_ids and not approved_step_ids:
+            try:
+                plan_response = await agent.get_plan(mutation_job_id)
+                plan_body = _agent_response_dict(plan_response.payload)
+                plan = _agent_find_key(plan_body, "plan")
+                if isinstance(plan, dict):
+                    for phase in plan.get("phases") or []:
+                        if not isinstance(phase, dict):
+                            continue
+                        phase_id = str(phase.get("phase_id") or "").strip()
+                        if phase_id:
+                            approved_phase_ids.append(phase_id)
+                        for step in phase.get("steps") or []:
+                            if not isinstance(step, dict):
+                                continue
+                            step_id = str(step.get("step_id") or "").strip()
+                            if step_id:
+                                approved_step_ids.append(step_id)
+            except Exception as exc:
+                mop_execution_logger.warning(
+                    "mop_execution_mutation_approval_plan_scope_unavailable mutation_job_id=%s error=%s",
+                    mutation_job_id,
+                    exc,
+                )
+
+        transfer_suffix = hashlib.sha256(mutation_job_id.encode("utf-8")).hexdigest()[:8]
+        transfer_payload = {
+            "approval_id": f"{source_approval_id}-mutation-{transfer_suffix}"[:80],
+            "approver_id": str(
+                approval.get("operator_user_id")
+                or approval.get("approved_by")
+                or approval.get("operator")
+                or "esda-operator"
+            ),
+            "approval_scope": "mutation",
+            "ticket_reference": str(
+                scope.get("ticket_reference")
+                or scope.get("change_id")
+                or f"ESDA-{correlation_id[-12:]}"
+            ),
+            "statement": str(approval.get("rationale") or "Approved mutation from verified dry-run evidence."),
+            "correlation_id": correlation_id,
+            "approver_role": "operator",
+            "expires_at": approval.get("expires_at"),
+        }
+        command_fingerprints = _normalize_command_fingerprints(
+            approval.get("command_fingerprints") or []
+        )
+        if len(command_fingerprints) == 1:
+            transfer_payload["command_fingerprint"] = command_fingerprints[0]
+        if approved_phase_ids:
+            transfer_payload["approved_phase_ids"] = list(dict.fromkeys(approved_phase_ids))
+        if approved_step_ids:
+            transfer_payload["approved_step_ids"] = list(dict.fromkeys(approved_step_ids))
+
+        response = await agent.submit_approval(mutation_job_id, transfer_payload)
+        if not _approval_response_accepted(response.payload):
+            raise MopExecutionAgentError(
+                method="POST",
+                url=f"v1/execution-jobs/{mutation_job_id}/approvals",
+                status_code=response.status_code,
+                payload={
+                    "message": "MoP Execution Agent rejected the transferred mutation approval.",
+                    "response": _agent_response_dict(response.payload),
+                },
+            )
+        return {
+            "request": transfer_payload,
+            "agent_response": response.audit_payload(),
+        }
+
     def _latest_instruction_gate_target(value: Any) -> dict:
         matches: list[dict] = []
 
@@ -3034,6 +3381,143 @@ def create_app() -> FastAPI:
                 return match
         return matches[-1] if matches else {}
 
+    def _current_mutation_decision_evidence(
+        *, job_payload: dict, decision_payload: dict, observations_payload: dict | None = None
+    ) -> dict:
+        """Return the narrowest current decision evidence, excluding historical gates."""
+
+        instruction_markers = (
+            "mutation_instruction_required",
+            "external_instruction_required",
+            "instruction_required",
+        )
+        decision_markers = instruction_markers + (
+            "rollback_required",
+            "rollback requested",
+            "unknown_mutation_outcome",
+            "ambiguous",
+            "indeterminate",
+            "retry_limit_exceeded",
+            "mcp_timeout",
+            "timed out",
+            "timeout",
+        )
+
+        def item_text(item: Any) -> str:
+            try:
+                return json.dumps(item, default=str).lower()
+            except TypeError:
+                return str(item).lower()
+
+        def is_evidence(item: Any) -> bool:
+            if not isinstance(item, dict):
+                return False
+            keys = {str(key).strip().lower() for key in item}
+            if keys & {
+                "reason",
+                "reason_code",
+                "policy_blocks",
+                "next_required_decision",
+                "observation_type",
+                "unknown_mutation_outcome",
+                "rollback_required",
+            }:
+                return True
+            # Agent transport envelopes also contain generic summary/message fields.
+            # Treat them as decision evidence only when their value names a gate.
+            return bool(keys & {"summary", "message"}) and any(
+                marker in item_text(item) for marker in decision_markers
+            )
+
+        def evidence_rank(item: dict) -> int:
+            text = item_text(item)
+            has_target = bool(
+                item.get("phase_id")
+                or item.get("target_phase_id")
+                or item.get("step_id")
+                or item.get("target_step_id")
+            )
+            if any(marker in text for marker in instruction_markers):
+                return 40 if has_target else 30
+            if any(marker in text for marker in decision_markers):
+                return 20
+            return 10
+
+        def timestamp(item: dict) -> str:
+            return str(item.get("timestamp") or item.get("created_at") or item.get("updated_at") or "")
+
+        def collect(item: Any, output: list[tuple[int, str, int, dict]], sequence: list[int]) -> None:
+            if isinstance(item, dict):
+                sequence[0] += 1
+                if is_evidence(item):
+                    output.append((evidence_rank(item), timestamp(item), sequence[0], item))
+                for child in item.values():
+                    collect(child, output, sequence)
+            elif isinstance(item, list):
+                for child in item:
+                    collect(child, output, sequence)
+
+        def best_candidate(*values: Any) -> dict:
+            candidates: list[tuple[int, str, int, dict]] = []
+            sequence = [0]
+            for value in values:
+                collect(value, candidates, sequence)
+            if not candidates:
+                return {}
+            # Gate specificity is authoritative. Timestamp and traversal order only
+            # choose the latest candidate within the same class of decision evidence.
+            return max(candidates, key=lambda candidate: (candidate[0], candidate[1], candidate[2]))[3]
+
+        # A successful decision endpoint is the execution agent's current view.
+        decision_response = decision_payload.get("response") if isinstance(decision_payload, dict) else None
+        decision_failed = isinstance(decision_payload, dict) and bool(
+            decision_payload.get("decision_required") or decision_payload.get("fallback_context")
+        )
+        if not decision_failed and isinstance(decision_response, dict):
+            # Rank the endpoint envelope with the separately collected live
+            # observations so a generic response cannot hide the current gate.
+            current = best_candidate(decision_response, observations_payload, job_payload)
+            if current:
+                return current
+        if not decision_failed and is_evidence(decision_payload):
+            return decision_payload
+
+        # If the dedicated endpoint is unavailable, its error envelope is not the
+        # mutation decision. Select the current gate from fallback observations.
+        if decision_failed:
+            fallback = decision_payload.get("fallback_context") or {}
+            current = best_candidate(fallback.get("observations"), observations_payload)
+            if current:
+                return current
+            current = best_candidate(fallback.get("job"), job_payload)
+            if current:
+                return current
+
+        return best_candidate(job_payload, observations_payload)
+
+    def _mutation_gate_identity(
+        *, job_payload: dict, decision_payload: dict, observations_payload: dict | None = None
+    ) -> str:
+        current = _current_mutation_decision_evidence(
+            job_payload=job_payload,
+            decision_payload=decision_payload,
+            observations_payload=observations_payload,
+        )
+        target = _latest_instruction_gate_target(current)
+        phase_id = (
+            target.get("phase_id")
+            or _agent_find_key(current, "target_phase_id")
+            or _agent_find_key(current, "phase_id")
+            or _agent_find_key(current, "phase")
+            or "mutation"
+        )
+        step_id = (
+            target.get("step_id")
+            or _agent_find_key(current, "target_step_id")
+            or _agent_find_key(current, "step_id")
+            or "unspecified"
+        )
+        return f"{phase_id}:{step_id}"
     def _mutation_continue_instruction_payload(
         *,
         mutation_job_id: str,
@@ -3045,27 +3529,22 @@ def create_app() -> FastAPI:
         job_payload: dict,
         observations_payload: dict | None = None,
     ) -> dict:
-        gate_target = _latest_instruction_gate_target(
-            {"decision": decision_payload, "observations": observations_payload or {}, "job": job_payload}
+        current_evidence = _current_mutation_decision_evidence(
+            job_payload=job_payload,
+            decision_payload=decision_payload,
+            observations_payload=observations_payload,
         )
+        gate_target = _latest_instruction_gate_target(current_evidence)
         target_step_id = (
             gate_target.get("step_id")
-            or _agent_find_key(decision_payload, "target_step_id")
-            or _agent_find_key(decision_payload, "step_id")
-            or _agent_find_key(job_payload, "target_step_id")
-            or _agent_find_key(job_payload, "step_id")
-            or _agent_find_key(observations_payload or {}, "target_step_id")
-            or _agent_find_key(observations_payload or {}, "step_id")
+            or _agent_find_key(current_evidence, "target_step_id")
+            or _agent_find_key(current_evidence, "step_id")
         )
         observed_phase_id = gate_target.get("phase_id")
         target_phase_id = (
             observed_phase_id
-            or _agent_find_key(decision_payload, "target_phase_id")
-            or _agent_find_key(decision_payload, "phase_id")
-            or _agent_find_key(job_payload, "target_phase_id")
-            or _agent_find_key(job_payload, "phase_id")
-            or _agent_find_key(observations_payload or {}, "target_phase_id")
-            or _agent_find_key(observations_payload or {}, "phase_id")
+            or _agent_find_key(current_evidence, "target_phase_id")
+            or _agent_find_key(current_evidence, "phase_id")
             or "mutation"
         )
         payload = {
@@ -3127,24 +3606,61 @@ def create_app() -> FastAPI:
                 return any(has_truthy_key(item, keys) for item in value)
             return False
 
-        combined = {"job": job_payload, "decision": decision_payload, "observations": observations_payload or {}}
-        if has_truthy_key(combined, {"unknown_mutation_outcome", "rollback_required"}):
+        historical_context_keys = {
+            "audit_events",
+            "events",
+            "history",
+            "memory",
+            "observations",
+            "records",
+        }
+
+        def current_gate_context(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    key: current_gate_context(item)
+                    for key, item in value.items()
+                    if str(key).strip().lower() not in historical_context_keys
+                }
+            if isinstance(value, list):
+                return [current_gate_context(item) for item in value]
+            return value
+
+
+        current = _current_mutation_decision_evidence(
+            job_payload=job_payload,
+            decision_payload=decision_payload,
+            observations_payload=observations_payload,
+        )
+        current_gate = current_gate_context(current)
+        if has_truthy_key(current_gate, {"unknown_mutation_outcome", "rollback_required"}):
             return False
         try:
-            text = json.dumps(combined, default=str).lower()
+            text = json.dumps(current_gate, default=str).lower()
         except TypeError:
-            text = f"{job_payload} {decision_payload} {observations_payload or {}}".lower()
-        if any(marker in text for marker in ("rollback requested", "ambiguous", "indeterminate")):
+            text = str(current_gate).lower()
+        if any(
+            marker in text
+            for marker in (
+                "rollback requested",
+                "ambiguous",
+                "indeterminate",
+                "unknown_error",
+                "retry_limit_exceeded",
+                "mcp_timeout",
+                "timed out",
+                "timeout",
+                "http_4",
+                "http_5",
+            )
+        ):
             return False
         return any(
             marker in text
             for marker in (
                 "mutation_instruction_required",
-                "mutation_blocked",
                 "external_instruction_required",
-                "external_instruction",
                 "instruction_required",
-                "next_required_decision",
             )
         )
 
@@ -3391,6 +3907,14 @@ def create_app() -> FastAPI:
         agent = app.state.mop_execution_agent
         attempts = max(1, int(settings.mop_execution_agent_poll_attempts or 1))
         interval = max(0.0, float(settings.mop_execution_agent_poll_interval_seconds or 0))
+        create_recovery_attempts = max(
+            1,
+            int(settings.mop_execution_agent_create_recovery_attempts or 1),
+        )
+        create_recovery_interval = max(
+            0.0,
+            float(settings.mop_execution_agent_create_recovery_interval_seconds or 0),
+        )
         metadata = mop_execution_store.execution_metadata(run_id)
         approval_payload = _approval_payload_for_mutation(metadata)
         approval_id = str(approval_payload.get("approval_id") or "approval")
@@ -3405,7 +3929,8 @@ def create_app() -> FastAPI:
         final_state = "unknown"
         final_phase = "mutation"
         auto_continue_count = 0
-        max_auto_continue = 250
+        max_auto_continue = 50
+        auto_continued_gates: set[str] = set()
         extra_poll_attempts = 0
         try:
             if strategy == "continue_existing":
@@ -3448,6 +3973,8 @@ def create_app() -> FastAPI:
                     "bundle_id": bundle_id,
                     "dry_run_job_id": dry_run_job_id,
                     "target_namespace": target_namespace,
+                    "run_id": run_id,
+                    "job_name": f"esda-mutation-{run_id}",
                     "mode": "mutation",
                     "execution_mode": "execute_after_approval",
                     "mutation_allowed": True,
@@ -3455,14 +3982,71 @@ def create_app() -> FastAPI:
                     "correlation_id": correlation_id,
                     "idempotency_key": idempotency_key,
                 }
-                create_response = await agent.create_job(create_request)
-                create_payload = _agent_response_dict(create_response.payload)
+                create_recovered = False
+                create_recovery_attempt: int | None = None
+                create_status_code: int | None = None
+                try:
+                    create_response = await agent.create_job(create_request)
+                    create_payload = _agent_response_dict(create_response.payload)
+                    create_audit_payload = create_response.audit_payload()
+                    create_status_code = create_response.status_code
+                except MopExecutionAgentError as exc:
+                    if exc.status_code not in {None, 502, 503, 504}:
+                        raise
+                    create_payload = {}
+                    create_audit_payload = {
+                        "recovered": False,
+                        "create_error": _agent_error_payload(exc),
+                    }
+                    lookup_errors: list[dict[str, Any]] = []
+                    for lookup_attempt in range(1, create_recovery_attempts + 1):
+                        try:
+                            jobs_response = await agent.list_jobs()
+                        except MopExecutionAgentError as lookup_exc:
+                            if lookup_exc.status_code not in {None, 502, 503, 504}:
+                                raise
+                            lookup_errors.append(_agent_error_payload(lookup_exc))
+                            if lookup_attempt < create_recovery_attempts:
+                                await asyncio.sleep(create_recovery_interval)
+                            continue
+                        jobs_payload = _agent_response_dict(jobs_response.payload)
+                        jobs = _agent_find_key(jobs_payload, "jobs") or []
+                        exact_matches = [
+                            job
+                            for job in jobs
+                            if isinstance(job, dict)
+                            and str(job.get("job_id") or "") != dry_run_job_id
+                            and str(job.get("correlation_id") or "") == correlation_id
+                            and str(job.get("bundle_id") or "") == bundle_id
+                            and str(job.get("target_namespace") or "") == target_namespace
+                            and (
+                                str(job.get("job_name") or "") == f"esda-mutation-{run_id}"
+                                or not str(job.get("job_name") or "")
+                            )
+                        ]
+                        if exact_matches:
+                            create_payload = exact_matches[-1]
+                            create_recovered = True
+                            create_recovery_attempt = lookup_attempt
+                            create_audit_payload = {
+                                "recovered": True,
+                                "create_error": _agent_error_payload(exc),
+                                "lookup_attempt": lookup_attempt,
+                                "lookup_errors": lookup_errors,
+                                "lookup_response": jobs_response.audit_payload(),
+                            }
+                            break
+                        if lookup_attempt < create_recovery_attempts:
+                            await asyncio.sleep(create_recovery_interval)
+                    if not create_recovered:
+                        raise
+
                 mutation_job_id = _job_id(create_payload)
                 if not mutation_job_id:
                     raise MopExecutionAgentError(
                         method="POST",
                         url="v1/execution-jobs",
-                        status_code=create_response.status_code,
+                        status_code=create_status_code,
                         payload={"message": "MoP Execution Agent did not return a mutation job_id", "response": create_payload},
                     )
                 mop_execution_store.record_job_created(
@@ -3475,9 +4059,18 @@ def create_app() -> FastAPI:
                         "correlation_id": correlation_id,
                         "idempotency_key": idempotency_key,
                         "strategy": strategy,
-                        "agent_response": create_response.audit_payload(),
+                        "recovered_after_create_timeout": create_recovered,
+                        "recovery_attempt": create_recovery_attempt,
+                        "agent_response": create_audit_payload,
                     },
                     job_kind="mutation",
+                )
+                transferred_approval = await _submit_existing_approval_to_mutation_job(
+                    agent=agent,
+                    mutation_job_id=mutation_job_id,
+                    source_approval_payload=approval_payload,
+                    target_namespace=target_namespace,
+                    correlation_id=correlation_id,
                 )
                 start_response = await agent.start_job(
                     mutation_job_id,
@@ -3496,7 +4089,11 @@ def create_app() -> FastAPI:
                     run_id=run_id,
                     job_id=mutation_job_id,
                     phase="mutation",
-                    response={"agent_response": start_response.audit_payload(), "state": _mutation_state(start_payload)},
+                    response={
+                        "agent_response": start_response.audit_payload(),
+                        "transferred_approval": transferred_approval,
+                        "state": _mutation_state(start_payload),
+                    },
                 )
             mop_execution_store.record_safe_summary(
                 run_id=run_id,
@@ -3615,6 +4212,19 @@ def create_app() -> FastAPI:
                         approval_payload=approval_payload,
                         model_profile=model_profile,
                     )
+                    gate_identity = _mutation_gate_identity(
+                        job_payload=job_payload,
+                        decision_payload=decision_payload,
+                        observations_payload=observations_payload,
+                    )
+                    if gate_identity in auto_continued_gates and runtime_decision.get("action") == "continue":
+                        runtime_decision["action"] = "hold"
+                        runtime_decision["requires_human_review"] = True
+                        runtime_decision["safe_reasoning_summary"] = (
+                            f"Mutation gate {gate_identity} already received its bounded continue instruction. "
+                            "The repeated decision requires operator review and will not be retried automatically."
+                        )
+                    runtime_decision["gate_identity"] = gate_identity
                     _best_effort_mop_execution_persist(
                         run_id,
                         "record_runtime_planner_summary",
@@ -3722,6 +4332,7 @@ def create_app() -> FastAPI:
                         )
                         if accepted:
                             auto_continue_count += 1
+                            auto_continued_gates.add(gate_identity)
                             extra_poll_attempts += 3
                             summary = (
                                 f"GPT runtime planner submitted bounded continue instruction {auto_continue_count} "
@@ -4138,6 +4749,14 @@ def create_app() -> FastAPI:
         twin_binding = execution_metadata.get("twin_gate") or {}
         attempts = max(1, int(settings.mop_execution_agent_poll_attempts or 1))
         interval = max(0.0, float(settings.mop_execution_agent_poll_interval_seconds or 0))
+        create_recovery_attempts = max(
+            1,
+            int(settings.mop_execution_agent_create_recovery_attempts or 1),
+        )
+        create_recovery_interval = max(
+            0.0,
+            float(settings.mop_execution_agent_create_recovery_interval_seconds or 0),
+        )
         idempotency_key = _dry_run_idempotency_key(
             correlation_id=correlation_id,
             bundle_id=bundle_id,
@@ -4154,6 +4773,8 @@ def create_app() -> FastAPI:
             create_request = {
                 "bundle_id": bundle_id,
                 "target_namespace": target_namespace,
+                "run_id": run_id,
+                "job_name": f"esda-dry-run-{run_id}",
                 "mode": agent_execution_mode,
                 "execution_mode": agent_execution_mode,
                 "requested_execution_mode": execution_mode,
@@ -4172,24 +4793,79 @@ def create_app() -> FastAPI:
                         "snapshot_hash": twin_binding.get("snapshot_hash"),
                     }
                 )
-            create_response = await agent.create_job(create_request)
-            create_payload = _agent_response_dict(create_response.payload)
+            create_recovered = False
+            create_recovery_attempt: int | None = None
+            create_status_code: int | None = None
+            try:
+                create_response = await agent.create_job(create_request)
+                create_payload = _agent_response_dict(create_response.payload)
+                create_audit_payload = create_response.audit_payload()
+                create_status_code = create_response.status_code
+            except MopExecutionAgentError as exc:
+                if exc.status_code not in {None, 502, 503, 504}:
+                    raise
+                create_payload = {}
+                create_audit_payload = {
+                    "recovered": False,
+                    "create_error": _agent_error_payload(exc),
+                }
+                lookup_errors: list[dict[str, Any]] = []
+                for lookup_attempt in range(1, create_recovery_attempts + 1):
+                    try:
+                        jobs_response = await agent.list_jobs()
+                    except MopExecutionAgentError as lookup_exc:
+                        if lookup_exc.status_code not in {None, 502, 503, 504}:
+                            raise
+                        lookup_errors.append(_agent_error_payload(lookup_exc))
+                        if lookup_attempt < create_recovery_attempts:
+                            await asyncio.sleep(create_recovery_interval)
+                        continue
+                    jobs_payload = _agent_response_dict(jobs_response.payload)
+                    jobs = _agent_find_key(jobs_payload, "jobs") or []
+                    exact_matches = [
+                        job
+                        for job in jobs
+                        if isinstance(job, dict)
+                        and str(job.get("correlation_id") or "") == correlation_id
+                        and str(job.get("bundle_id") or "") == bundle_id
+                        and str(job.get("target_namespace") or "") == target_namespace
+                    ]
+                    if exact_matches:
+                        create_payload = exact_matches[-1]
+                        create_recovered = True
+                        create_recovery_attempt = lookup_attempt
+                        create_audit_payload = {
+                            "recovered": True,
+                            "create_error": _agent_error_payload(exc),
+                            "lookup_attempt": lookup_attempt,
+                            "lookup_errors": lookup_errors,
+                            "lookup_response": jobs_response.audit_payload(),
+                        }
+                        break
+                    if lookup_attempt < create_recovery_attempts:
+                        await asyncio.sleep(create_recovery_interval)
+                if not create_recovered:
+                    raise
+
             dry_run_job_id = _job_id(create_payload)
+            create_state = _normalized_dry_run_state(_job_state(create_payload))
             create_event_payload = {
                 "job_id": dry_run_job_id,
-                "state": _normalized_dry_run_state(_job_state(create_payload)),
+                "state": create_state,
                 "target_namespace": target_namespace,
                 "bundle_id": bundle_id,
                 "correlation_id": correlation_id,
                 "idempotency_key": idempotency_key,
-                "agent_response": create_response.audit_payload(),
+                "recovered_after_create_timeout": create_recovered,
+                "recovery_attempt": create_recovery_attempt,
+                "agent_response": create_audit_payload,
             }
             mop_execution_store.record_job_created(run_id=run_id, job=create_event_payload, job_kind="dry_run")
             if not dry_run_job_id:
                 raise MopExecutionAgentError(
                     method="POST",
                     url="v1/execution-jobs",
-                    status_code=create_response.status_code,
+                    status_code=create_status_code,
                     payload={"message": "MoP Execution Agent did not return a dry-run job_id", "response": create_payload},
                 )
             mop_execution_store.record_safe_summary(
@@ -4204,6 +4880,7 @@ def create_app() -> FastAPI:
                     "dry_run_job_id": dry_run_job_id,
                     "idempotency_key": idempotency_key,
                     "agent_execution_mode": agent_execution_mode,
+                    "recovered_after_create_timeout": create_recovered,
                 },
             )
 
@@ -4213,14 +4890,36 @@ def create_app() -> FastAPI:
                 "idempotency_key": f"{idempotency_key}:start",
                 "mutation_allowed": False,
             }
-            start_response = await agent.start_job(dry_run_job_id, start_request)
-            start_payload = _agent_response_dict(start_response.payload)
-            mop_execution_store.record_job_started(
-                run_id=run_id,
-                job_id=dry_run_job_id,
-                phase="dry_run",
-                response={"agent_response": start_response.audit_payload(), "state": _job_state(start_payload)},
-            )
+            recovered_job_already_started = create_recovered and create_state not in {
+                "created",
+                "ready",
+                "pending",
+                "queued",
+                "not_started",
+            }
+            if recovered_job_already_started:
+                mop_execution_store.record_job_started(
+                    run_id=run_id,
+                    job_id=dry_run_job_id,
+                    phase="dry_run",
+                    response={
+                        "recovered_after_create_timeout": True,
+                        "start_skipped": True,
+                        "state": create_state,
+                    },
+                )
+            else:
+                start_response = await agent.start_job(dry_run_job_id, start_request)
+                start_payload = _agent_response_dict(start_response.payload)
+                mop_execution_store.record_job_started(
+                    run_id=run_id,
+                    job_id=dry_run_job_id,
+                    phase="dry_run",
+                    response={
+                        "agent_response": start_response.audit_payload(),
+                        "state": _job_state(start_payload),
+                    },
+                )
             mop_execution_store.record_safe_summary(
                 run_id=run_id,
                 stage="dry_run",

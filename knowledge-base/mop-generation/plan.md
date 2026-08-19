@@ -474,3 +474,18 @@ MoP Generation is ready when:
 - Whether MoP Generation should support user-uploaded templates in V1 or use only internal/default templates.
 - Whether reviewed MoP upload/overwrite should be enabled in Activity after bundle baseline stabilizes.
 - Whether external change-management IDs are required in the generated Document Control section.
+
+## 2026-08-16 Implementation Reconciliation
+
+- [x] Source namespace discovery and selectable environment inputs.
+- [x] Kubernetes Inspector, Helm Manager, and MoP Creation Agent evidence orchestration.
+- [x] Professional human MoP Markdown/PDF preservation from the MoP Creation Agent.
+- [x] Complete `mop-bundle.zip` generation, local download, Git publishing, and Activity visibility.
+- [x] Bundle contents include machine plan, artifact metadata/index, human documents, and deployment artifacts when returned by the agent.
+- [x] Previous/current run history, live working stream, safe summaries, agent JSON logs, and reusable sphere/theme.
+- [x] Source namespace and target placeholder are distinct; the actual target is bound during Bundle Execution.
+- [x] Signoz demo configuration may emit `human_approval_before_mutation=false`.
+
+The bundle approval flag is source metadata for downstream policy. It does not bypass Bundle Execution approval by itself. `MOP_EXECUTION_PREFERRED_BUNDLE_PUBLISH_FOLDER` affects downstream selection order only and does not change generation or artifact identity.
+
+Remaining work is provenance and production hardening: typed ownership for generated ConfigMaps, stronger chart/value origin evidence, concurrent Git publishing controls, durable workers, and complete malicious-bundle/security validation.

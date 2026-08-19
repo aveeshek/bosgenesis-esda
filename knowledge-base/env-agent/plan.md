@@ -86,5 +86,31 @@ Create an ENV Agent page that acts as a chatbot-first operational assistant for 
 - [x] Add UI smoke tests for chat submit, sphere shrink, prompt-first page shape, and log copy/maximize controls.
 - [x] Prepare demo prompts for pod issue count, restart-loop diagnosis, and approved safe remediation.
 
+## 2026-08-16 Implementation Reconciliation
 
+### Implemented
 
+- [x] Prompt-first two-pane Environment Chat; no namespace/mode/scope setup form and no bottom Agent Activity Feed.
+- [x] Shared sphere animation, matte-glass theme, copy logs, maximize Autonomy Notes, and clear-history controls.
+- [x] Prompt classification and bounded Kubernetes/Helm inspection through typed adapters.
+- [x] Follow-up context for pod logs and prior diagnostic targets.
+- [x] PostgreSQL sessions/messages/run restoration and bounded short/long context retrieval.
+- [x] Markdown-formatted SIGMA/GPT reports grounded in structured MCP evidence.
+- [x] Typed namespace-scoped remediation proposal, policy/approval persistence, execution, read-only verification, and audit events.
+- [x] Admin chat normalization for the single-user lab.
+
+### Current boundaries
+
+- Namespace, mode, and scope are inferred from prompts; the MCP server and policy layer remain the authority for allowed boundaries.
+- Namespace-scoped typed operations may include get/list/log/describe/apply/install/upgrade/uninstall/patch/scale/delete when the adapter, ODD, policy, and approval permit them. Cluster-wide mutation, arbitrary shell, Secret disclosure, and raw kubeconfig access remain blocked.
+- LangMem package detection is not active memory management. PostgreSQL is the durable chat/session/memory authority and the in-process prompt window is short-term context.
+- Qdrant and Redis are optional extension points, not current Environment Chat authorities.
+- Phase G Activity/L4 integration remains intentionally deferred.
+- Local admin normalization is demo-only and must be replaced with Entra ID and scoped RBAC.
+
+### Remaining checklist
+
+- [ ] Implement governed LangMem extraction/consolidation only after retention and review rules are approved.
+- [ ] Add provider/tool capability tests for every selectable model profile.
+- [ ] Complete remediation failure/recovery, concurrent-session, and malicious-prompt tests.
+- [ ] Add Environment Chat to the unified Activity/L4 views when Phase G resumes.

@@ -1,6 +1,6 @@
 # Low-Level Design (LLD): BOS Genesis ESDA Chatbot UX Application
 
-**Code-Verified Baseline:** 2026-07-22 (`v0.2.18-1`, commit `744e1c6`)
+**Code-Verified Baseline:** 2026-08-16 working tree; last committed baseline `30f6634` (2026-07-23)
 
 ## 1. Document Purpose
 
@@ -12,7 +12,7 @@ This LLD is derived from `baseline_idea.md` and narrows the design around the re
 
 This version is also aligned with `hld.md`. Where the HLD describes the LLM provider generically as GPT-5 through the OpenAI API, this LLD maps that provider boundary to Azure-hosted GPT-5 because the ESDA implementation will receive Azure deployment details later.
 
-This LLD is aligned with `project_architecture_specification.md` and the code-verified v0.2.9 implementation: a FastAPI application with colocated JavaScript/HTML/CSS, LangChain model profiles, workflow-specific LangGraph use, PostgreSQL workflow/chat/memory/audit records, and local/Git artifact storage. LangMem, Qdrant, Redis, a durable LangGraph saver, and a dedicated worker remain optional roadmap capabilities. If this LLD conflicts with the controlling specification, that specification takes precedence.
+This LLD is aligned with `project_architecture_specification.md` and the code-verified 2026-08-16 working tree (latest repository tag `v0.2.18`): a FastAPI application with colocated JavaScript/HTML/CSS, LangChain model profiles, workflow-specific LangGraph use, PostgreSQL workflow/chat/memory/audit records, and local/Git artifact storage. LangMem, Qdrant, Redis, a durable LangGraph saver, and a dedicated worker remain optional roadmap capabilities. If this LLD conflicts with the controlling specification, that specification takes precedence.
 
 ## 1.1 Current Low-Level Implementation Status (2026-07-22)
 
@@ -59,7 +59,7 @@ Current persistence truth:
 - LangMem availability is detected and exposed in memory metadata, but extraction/search APIs are not called.
 - LangGraph uses in-process `MemorySaver` only when configured. PostgreSQL graph checkpointing is not yet implemented.
 - Live working notes are ephemeral; safe summaries and structured outcomes are persisted.
-- The repository currently contains 170 automated tests.
+- The repository contains a broad automated suite across API, workflow, frontend-state, Digital Twin, Bundle Execution, and safety behavior; use the current test collection rather than a hard-coded count.
 
 ## 1.2 Current Low-Level Slice: Bundle Generation
 
@@ -867,7 +867,7 @@ The exact node sequence is intake, scope, classify, plan, inspect, correlate, di
 
 ### 20.4 Autonomy Modes
 
-The common policy vocabulary includes observe-only, dry-run, assisted, semi-autonomous, and conditional L4. Environment Chat internally infers `diagnostic_only`, `propose_only`, or `approval_gated_remediation` from the prompt. Bundle Execution exposes dry-run and approval-gated mutation modes. Production mutation remains disabled by the current ODD.
+The common policy vocabulary includes observe-only, dry-run, assisted, semi-autonomous, and conditional L4. Environment Chat internally infers `diagnostic_only`, `propose_only`, or `approval_gated_remediation` from the prompt. Bundle Execution exposes dry-run and approval-gated mutation modes. Real namespace-scoped mutation is implemented for the configured lab ODD; broader production mutation remains outside the approved boundary.
 
 ## 21. Tool Registry
 
@@ -2509,3 +2509,98 @@ The validated `1.2.0` proof is `twin_5d7c8fe499ca4dd8bdcc9cd7404536da`. It final
 10. Resolve execution-agent generic CI type-stub and duplicate-module debt; retain the passing container workflow as the current image gate.
 11. Remove unused ClickHouse sample settings after confirming no downstream report dependency.
 12. Keep `.env.example`, Helm values, and runtime configuration documentation synchronized through an automated drift test.
+
+## Appendix D: Low-Level Implementation Reconciliation (2026-08-16)
+
+### D.1 Application composition
+
+The current repository contains one FastAPI application with Jinja2 templates and page-specific JavaScript. The primary implementation modules are:
+
+| Module | Current low-level responsibility |
+|---|---|
+| `main.py` | App composition, authentication, pages/APIs, workflow background tasks, SSE events, approval/mutation orchestration, report collection, and live verification. |
+| `config.py` | Pydantic environment settings and typed configuration defaults. |
+| `db/models.py` / `db/database.py` | PostgreSQL schema and repository operations. |
+| `mop_execution.py` | Bundle discovery/identity, preferred demo bundle, upload/preflight, execution run state, terminal and cleanup state transitions. |
+| `tools/mop_execution_agent.py` | Typed REST/MCP execution-agent client, authentication, transport fallback, and error normalization. |
+| `digital_twin_gateway.py` | ESDA adapter for server-authoritative Namespace Twin lifecycle, modules, reports, and gate matching. |
+| `activity.py` | Multi-workflow list/detail, stage projection, artifact inspection/action, and chat context. |
+| `env_agent.py`, `chains/env_agent.py`, `graphs/env_agent.py` | Prompt-first Environment Chat session state, evidence, typed plans, diagnosis, remediation, verification, and safe summaries. |
+| `mop_bundle.py` | Deterministic bundle assembly and machine-plan/artifact normalization. |
+| `static/js/mop_execution.js` | Browser state machine, historical-run restore, Twin panel, approval/mutation/validation rendering, activity rail, terminal-state resilience. |
+
+### D.2 Durable data contract
+
+PostgreSQL tables cover:
+
+- users;
+- chat sessions and messages;
+- agent runs and ordered run events;
+- artifacts and user run visibility;
+- plan steps and tool calls;
+- agent/tool event logs;
+- safe LLM reasoning-review logs;
+- approval requests;
+- procedures, versions, steps, and policies;
+- L4 audit records.
+
+Reasoning streaming is page-session data and is not rehydrated. Safe summaries and redacted structured evidence are durable. The configured LangGraph checkpointer still defaults to `memory`; process-crash continuation is therefore not equivalent to PostgreSQL UI/run restoration.
+
+### D.3 HTTP surface
+
+The implemented public surface is grouped as follows:
+
+- Authentication and system: `/health`, `/login`, `/logout`, `/api/auth/*`, `/api/llm/model-profiles`, `/api/llm/chat`, `/api/llm/smoke-test`.
+- Workflow pages: `/`, `/release-notes`, `/mop-generation`, `/digital-twins`, `/digital-twins/{twin_id}`, `/mop-execution`, `/env-agent`, `/activity`, `/approvals`, `/l4-audit`.
+- Environment Chat: contract, session list/detail, chat, and remediation execution under `/api/env-agent/*`.
+- Bundle Execution: bundles/identity, preflight/upload, validate/upload, dry-run, decision context, instruction, report, approval, mutation, validation report, and cleanup under `/api/mop-execution/*`.
+- Activity and transactions: generic multi-workflow list/detail/chat/artifact routes, user transaction list/clear routes, run snapshot/stop/event/artifact routes.
+- Digital Twin: lifecycle, module, report, evidence, approval/execution-link, drift/runtime refresh, and on-demand generation routes delegated through the gateway.
+- Policy/approval/L4/procedure endpoints remain distinct from workflow-specific APIs.
+
+All authenticated resource routes must verify the requesting user can see the referenced run/session/artifact. API errors use structured status/error payloads and correlation/request identifiers where available.
+
+### D.4 Bundle Execution state and safety rules
+
+Normalized terminal states include `completed`, `completed_with_review`, `cleanup_completed`, `cleanup_needs_review`, `failed`, `validation_failed`, `cleanup_failed`, `cancelled`, and `stopped`.
+
+The approved mutation loop:
+
+1. Requires an accepted approval record and a valid dry-run job.
+2. Creates or continues the agent job according to supported strategy.
+3. Polls authoritative state and current phase.
+4. Fetches current decision/observation context when a decision gate appears.
+5. Allows bounded automatic continuation only after approval and only for a recognized instruction gate.
+6. Refuses automatic continuation for rollback, unknown outcome, ambiguity, timeout, HTTP 4xx/5xx, or exhausted retry evidence.
+7. Persists redacted observations and safe runtime-planner summaries.
+8. Never retries mutation blindly.
+9. Calls post-mutation validation only after mutation success.
+10. Preserves the authoritative terminal state even if optional report/UI rendering fails.
+
+### D.5 Twin matching and optional gate
+
+Bundle identity is content-derived and preferred over filenames. Twin matching uses bundle/input hash and target namespace, not a mutable display label.
+
+- Missing or stale Twin evidence is shown in the compact panel.
+- The user can launch a new simulation for the selected bundle/target.
+- With `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false`, no matching Twin is informative, not a preflight failure.
+- With the gate enabled, the backend validates immutable Twin ID/version, hashes, target, freshness, drift, policy/rule versions, dry-run identity, lock, approval, and idempotency.
+- The browser never calculates risk, policy, or the final decision.
+
+### D.6 Model profile contract
+
+| UI label | Profile id | Underlying intent |
+|---|---|---|
+| `SIGMA 5 PRO` | `azure_gpt5_pro` | Azure GPT-5 deployment. |
+| `SIGMA 4.1` | `azure_gpt41_mini` | Azure GPT-4.1 mini deployment. |
+| `TRAINIUM BEHEMOTH` | `ollama_llama70b` | OpenAI-compatible Ollama 70B profile. |
+| `TRAINIUM GEMMA` | `ollama_gemma4` | OpenAI-compatible Ollama Gemma profile. |
+| `CUSTOM` | configured Azure profile | Generic configured Azure deployment. |
+
+Labels must be used in UI and operator-facing logs; profile IDs and provider/deployment metadata remain in structured audit records.
+
+### D.7 Current tests and residual gaps
+
+Focused Bundle Execution tests cover bounded post-approval continuation, multiple gates, nested decision envelopes, live MCP validation, no-Ingress verification, `completed_with_review`, cleanup, and pre-mutation blocking. The Digital Twin suite covers the UI-first contracts, real gateway, slices 5A-5K, Phase 6 gate, and selected Phase 7 journeys.
+
+Residual gaps are listed in HLD Appendix C and `knowledge-base/README.md`. In particular, do not claim durable process recovery, enterprise authorization, production-ready disabled risk axes, or one-touch mutation from the current code.

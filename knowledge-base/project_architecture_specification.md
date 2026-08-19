@@ -1,6 +1,6 @@
 # Project Architecture Specification: BOS Genesis ESDA Chatbot Console
 
-**Code-Verified Baseline:** 2026-07-22 (`v0.2.18-1`, commit `744e1c6`)
+**Code-Verified Baseline:** 2026-08-16 working tree; last committed baseline `30f6634` (2026-07-23)
 
 ## 1. Purpose
 
@@ -36,7 +36,7 @@ Implemented and verified:
 - Live progress is scrollable/copyable. Ephemeral working notes stream only while the page is connected and are not persisted; persisted Safe Reasoning Summaries replace them after completion.
 - Agent Activity Feed visualizes autonomy nodes from intake through publish/complete, remains hidden until a run starts, auto-hides after activity, and can be pinned by the user.
 - Completed runs do not automatically reload after refresh; active runs restore automatically. Historical runs restore only when selected from the floating history drawer.
-- The repository contains 170 automated tests across authentication, policy, logging, model profiles, Release Notes, Activity, Bundle Generation, Bundle Execution, Environment Chat, artifact publishing, and L4 controls.
+- The repository contains a broad automated suite across authentication, policy, logging, model profiles, Release Notes, Activity, Bundle Generation, Bundle Execution, Digital Twins, Environment Chat, artifact publishing, and L4 controls; acceptance evidence must record the current collected result rather than a hard-coded count.
 - Bundle Generation is implemented as a read-only bundle workflow at `/mop-generation`; its backend workflow id remains `mop_generation`. It uses source namespace, target namespace placeholder, environment, intent, optional Helm release, analysis depth, GPT-backed classifier/planner/verifier/recovery chains, MCP adapters, professional MoP Creation Agent artifacts where available, local bundle assembly, bundle download, Git publishing, and Activity inclusion.
 - MoP artifacts now center on `mop-bundle.zip` as the final Git-published artifact. The bundle includes root MoP Markdown/PDF, installation notes, `machine_execution_plan.yaml`, metadata, `deployment-artifacts/`, `deployment-artifacts.zip`, preserved agent payloads, and raw generated ConfigMaps under `deployment-artifacts/kubernetes-manifests/raw/` when present.
 - Activity is multi-workflow and supports Release Note, Bundle Generation, and Bundle Execution timeline nodes, workflow filters, run details, artifact downloads, and artifact-grounded chat. Release Notes expose Markdown/PDF actions; Bundle Generation exposes complete MoP bundle actions.
@@ -1500,3 +1500,95 @@ This evidence demonstrates the requested deterministic contract and configuratio
 | TD-022 | P2 | Produce one operator runbook covering startup, DNS/ingress, generation, approval, mutation, rollback, cleanup, and log collection. |
 
 This register is controlling for demo readiness together with HLD Appendix C. A checked demo acceptance item does not close a production-hardening debt unless its evidence and owner are recorded.
+
+## Appendix C: Current Normative Architecture Delta (2026-08-16)
+
+The following requirements are controlling for the current working tree.
+
+### C.1 Ownership
+
+- ESDA SHALL own authentication, browser UX, model-profile selection, workflow orchestration, local/PostgreSQL run state, artifact mediation, approvals UX, and cross-service presentation.
+- The MoP Execution Agent SHALL own execution jobs, mutation authority, namespace locks, Namespace Twin facts/decisions, rollback/cleanup controls, and authoritative execution reports.
+- Helm Manager and Kubernetes Inspector SHALL enforce their own typed tool contracts, credentials, namespace ODD, and RBAC.
+- GPT/SIGMA SHALL advise, classify, summarize, and select bounded orchestration actions. It SHALL NOT become a source of Kubernetes truth or directly authorize mutation.
+- Deterministic Twin policy/risk/final decisions SHALL NOT be recalculated in browser JavaScript or overwritten by model output.
+
+### C.2 Persistence and reasoning
+
+- PostgreSQL SHALL remain the durable operational and audit store.
+- Hidden chain-of-thought SHALL NOT be stored, logged, returned, or rendered.
+- Live working notes MAY be ephemeral and visible only to the connected page.
+- Durable model records SHALL contain prompt/version/hash metadata, safe summaries, bounded decisions, and redacted evidence.
+- LangMem, Qdrant, and Redis SHALL be described as optional until real governed reads/writes are implemented.
+- ClickHouse SHALL NOT be reintroduced without a new architecture decision.
+
+### C.3 Bundle and execution requirements
+
+- Bundle selection SHALL use immutable identity when available and MAY prioritize a configured publish folder for demonstration.
+- ESDA SHALL preflight locally and SHALL register/validate through the execution agent before dry-run.
+- A mutation SHALL require an accepted execution approval under the current contract.
+- Automatic Twin approval or bundle-level no-approval metadata SHALL NOT be interpreted as execution approval.
+- After accepted approval, ESDA MAY submit a bounded continue instruction only for a recognized current instruction gate.
+- ESDA SHALL hold rather than continue on unknown mutation outcome, rollback requirement, ambiguity, timeout, transport/server failure, or unrecognized context.
+- ESDA SHALL NOT issue direct Kubernetes/Helm mutation commands.
+- ESDA SHALL NOT blindly retry mutation.
+- Cleanup/revert SHALL be scoped to an existing execution and SHALL run through the execution agent.
+
+### C.4 Post-mutation evidence
+
+- Mutation completion and post-mutation validation SHALL be separate state transitions.
+- A full demo completion SHALL require live evidence for the configured Helm release, workload Pod health, Service presence, and no Ingress when that gate is enabled.
+- Missing validation matrix rows MAY result in `completed_with_review` only when explicit healthy Helm/Kubernetes evidence exists.
+- A frontend/report rendering failure SHALL NOT rewrite an authoritative terminal mutation/validation state.
+- Demo pass-through SHALL remain disabled for evidence-backed claims.
+
+### C.5 Namespace Twin requirements
+
+- On-demand simulation SHALL be non-mutating and server-side.
+- Historical Twin decisions SHALL be immutable.
+- Bundle Execution Twin enforcement SHALL be controlled only by `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED`; the current default is false.
+- New configuration/risk/parser rules SHALL affect newly generated Twins only.
+- Installed-release-only and ignored-prefix logic SHALL be execution-agent configuration.
+- Ingress, platform ConfigMap, PVC, StatefulSet, and rollback exclusions/toggles SHALL be disclosed in reports and documentation.
+- A disabled axis SHALL mean not evaluated, not safe.
+
+### C.6 Current lab configuration
+
+ESDA:
+
+```env
+DIGITAL_TWIN_BACKEND_MODE=real_core
+DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false
+MOP_EXECUTION_DEMO_PASS_THROUGH_ENABLED=false
+MOP_EXECUTION_POST_MUTATION_LIVE_VERIFICATION_ENABLED=true
+MOP_EXECUTION_POST_MUTATION_REQUIRE_NO_INGRESS=true
+MOP_EXECUTION_PREFERRED_BUNDLE_PUBLISH_FOLDER=260630_114925_mop_signoz
+```
+
+Execution agent:
+
+```env
+MOP_EXECUTION_EXCLUDED_K8S_KINDS=Ingress
+MOP_EXECUTION_EXCLUDED_K8S_NAMES=kube-root-ca.crt
+MOP_EXECUTION_EXCLUDED_K8S_NAME_PREFIXES=istio-
+NAMESPACE_TWIN_LIVE_COLLECTION_ENABLED=true
+NAMESPACE_TWIN_HELM_INSTALLED_RELEASES_ONLY=true
+NAMESPACE_TWIN_HELM_IGNORE_PREFIXES=bosgenesis-
+NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_NAMES=kube-root-ca.crt
+NAMESPACE_TWIN_CONFIGMAP_EXCLUDE_PREFIXES=istio-
+NAMESPACE_TWIN_EXCLUDED_KINDS=Ingress
+NAMESPACE_TWIN_ROLLBACK_REQUIRED=false
+NAMESPACE_TWIN_AUTO_APPROVAL_ENABLED=true
+NAMESPACE_TWIN_PVC_RISK_ENABLED=false
+NAMESPACE_TWIN_STATEFULSET_RISK_ENABLED=false
+```
+
+These values describe the current lab/demo ODD. Production shall replace heuristic exclusions and disabled axes with governed provenance, evidence, and policy.
+
+### C.7 Current acceptance evidence
+
+The August lab proof reached a terminal completed Signoz mutation in `agent-testing`, with the expected deployed Helm release, six Ready/Completed Pods, eight Services, zero Kubernetes Ingress objects, and a published report bundle. This qualifies the pinned lab journey only.
+
+### C.8 Release blockers beyond the lab
+
+The system is not production-ready until enterprise identity/RBAC, managed secrets, durable workers/checkpointing, malicious-bundle tests, full recovery/lock/idempotency tests, production risk calibration, storage/stateful evidence, cross-service observability, and a signed delegation design for any one-touch mutation are complete.

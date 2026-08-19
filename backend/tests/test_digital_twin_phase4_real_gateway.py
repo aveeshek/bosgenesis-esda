@@ -1406,6 +1406,8 @@ def test_on_demand_source_catalog_resolves_only_user_owned_published_bundle(
         )
 
     assert [item["eligible"] for item in catalog["bundles"]] == [True, False]
+    assert catalog["bundles"][0]["source_reference_hash"]
+    assert catalog["bundles"][1]["source_reference_hash"] is None
     assert "agent-testing" in catalog["target_namespaces"]
     assert resolved["source"] == {
         "type": "object_store",

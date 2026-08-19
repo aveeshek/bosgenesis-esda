@@ -70,6 +70,28 @@ class FailingMopExecutionApprovalAgent(FakeMopExecutionApprovalAgent):
         )
 
 
+class NullFingerprintMopExecutionApprovalAgent(FakeMopExecutionApprovalAgent):
+    async def get_dry_run_evidence(self, job_id: str) -> MopExecutionAgentResponse:
+        self.calls.append("get_dry_run_evidence")
+        return self._response(
+            "GET",
+            f"http://agent/v1/execution-jobs/{job_id}/dry-run-evidence",
+            {
+                "data": {
+                    "dry_run_evidence": {
+                        "command_fingerprints": [None, "", "null", " fp-valid ", "fp-valid"],
+                        "command_fingerprint_hash": None,
+                    }
+                }
+            },
+        )
+
+    async def get_report_metadata(self, job_id: str, report_id: str) -> MopExecutionAgentResponse:
+        response = await super().get_report_metadata(job_id, report_id)
+        response.payload["command_fingerprints"] = [None, "undefined"]
+        return response
+
+
 def _waiting_for_approval_run(client, user_id: str, fake_agent: FakeMopExecutionApprovalAgent) -> dict[str, Any]:
     validation = _validated_execution_run(client, user_id, fake_agent)
     response = client.post(
@@ -127,6 +149,28 @@ def test_mop_execution_phase_i_refreshes_report_metadata(tmp_path, monkeypatch) 
         assert result["mutation_controls_enabled"] is False
         event_types = [event["event_type"] for event in result["events"]]
         assert event_types.count("reports_updated") >= 2
+
+
+def test_mop_execution_phase_i_filters_null_command_fingerprints(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_ATTEMPTS", "1")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_INTERVAL_SECONDS", "0")
+
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        fake_agent = NullFingerprintMopExecutionApprovalAgent()
+        run = _waiting_for_approval_run(client, login.json()["user"]["user_id"], fake_agent)
+
+        assert run["reports"]["command_fingerprints"] == ["fp-valid"]
+        assert run["approval_gate"]["command_fingerprints"] == ["fp-valid"]
+
+        response = client.get(f"/api/mop-execution/dry-run-report?run_id={run['run_id']}")
+
+        assert response.status_code == 200
+        refreshed = response.json()
+        assert refreshed["reports"]["command_fingerprints"] == ["fp-valid"]
+        assert refreshed["approval_gate"]["command_fingerprints"] == ["fp-valid"]
 
 
 def test_mop_execution_phase_i_submits_approval_with_scope_and_fingerprints(tmp_path, monkeypatch) -> None:

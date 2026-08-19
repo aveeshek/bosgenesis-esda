@@ -16,7 +16,7 @@ from backend.app.auth.security import SessionPrincipal, create_session_cookie
 from backend.app.config import get_settings
 
 
-def build_test_client(tmp_path, monkeypatch):
+def build_test_client(tmp_path, monkeypatch, *, live_verification: bool = False):
     db_file = tmp_path / "phase1.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+pysqlite:///{db_file}")
     monkeypatch.setenv("ADMIN_USERNAME", "admin")
@@ -24,6 +24,7 @@ def build_test_client(tmp_path, monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "test-secret")
     monkeypatch.setenv("LANGGRAPH_CHECKPOINTER", "disabled")
     monkeypatch.setenv("LLM_REVIEW_LOGGING_ENABLED", "true")
+    monkeypatch.setenv("MOP_EXECUTION_POST_MUTATION_LIVE_VERIFICATION_ENABLED", str(live_verification).lower())
     monkeypatch.setenv("ARTIFACT_STORAGE_DIR", str(tmp_path / "artifacts"))
     monkeypatch.setenv("LLM_DEFAULT_MODEL_PROFILE", "azure_configured")
     monkeypatch.setenv("AZURE_OPENAI_AUTH_MODE", "api_key")
@@ -58,6 +59,26 @@ def test_phase1_auth_api_rejects_missing_session(tmp_path, monkeypatch) -> None:
     with build_test_client(tmp_path, monkeypatch) as client:
         response = client.get("/api/auth/me")
         assert response.status_code == 401
+
+
+def test_phase1_login_reports_database_outage_as_retryable(tmp_path, monkeypatch) -> None:
+    with build_test_client(tmp_path, monkeypatch) as client:
+        @contextmanager
+        def unavailable_database():
+            raise OperationalError("SELECT user", {}, TimeoutError("database offline"))
+            yield
+
+        monkeypatch.setattr(client.app.state.database, "session", unavailable_database)
+
+        page = client.post("/login", data={"username": "admin", "password": "admin"})
+        assert page.status_code == 503
+        assert page.headers["retry-after"] == "10"
+        assert "PostgreSQL is temporarily unavailable" in page.text
+
+        api = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert api.status_code == 503
+        assert api.headers["retry-after"] == "10"
+        assert "PostgreSQL is temporarily unavailable" in api.json()["detail"]
 
 
 def test_phase1_signed_session_survives_transient_database_outage(tmp_path, monkeypatch) -> None:

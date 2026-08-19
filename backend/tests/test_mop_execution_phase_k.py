@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.app.tools.contracts import ToolExecutionResult
 from backend.app.tools.mop_execution_agent import MopExecutionAgentResponse
 from backend.tests.test_mop_execution_phase_i import _waiting_for_approval_run
 from backend.tests.test_mop_execution_phase_j import FakeMopExecutionMutationAgent, _approved_mutation_run
@@ -169,6 +170,25 @@ class FakeMopExecutionCleanupAgent(FakeMopExecutionValidationAgent):
             )
         return await super().get_job(job_id)
 
+class FakeLiveVerificationAdapter:
+    def __init__(self, name: str, payloads: dict[str, Any]) -> None:
+        self.name = name
+        self.payloads = payloads
+        self.calls: list[str] = []
+
+    async def execute(self, request) -> tuple[ToolExecutionResult, int]:
+        route = str(request.arguments.get("tool_name") or "")
+        self.calls.append(route)
+        return (
+            ToolExecutionResult(
+                status="success",
+                output={"raw": self.payloads[route]},
+                evidence_refs=[f"mcp://{self.name}/{route}"],
+                validation_result={"valid": True},
+            ),
+            1,
+        )
+
 class FakeArtifactPublisher:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -231,6 +251,59 @@ def test_mop_execution_phase_k_collects_validation_reports_artifacts_and_publish
         assert "run_completed" in event_types
         assert client.app.state.repository.get_run(approved["run_id"]).status == "completed"
 
+
+def test_mop_execution_phase_k_live_mcp_verification_proves_demo_success(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_ATTEMPTS", "2")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("MOP_EXECUTION_POST_MUTATION_VERIFICATION_ATTEMPTS", "1")
+    monkeypatch.setenv("MOP_EXECUTION_POST_MUTATION_VERIFICATION_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("MOP_EXECUTION_POST_MUTATION_REQUIRE_NO_INGRESS", "true")
+    monkeypatch.setenv("MOP_EXECUTION_POST_MUTATION_EXPECTED_HELM_RELEASE", "agent-ai-signoz")
+
+    with build_test_client(tmp_path, monkeypatch, live_verification=True) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        fake_agent = FakeMopExecutionReviewValidationAgent(mutation_states=["succeeded"])
+        client.app.state.artifact_publisher = FakeArtifactPublisher()
+        k8s = FakeLiveVerificationAdapter(
+            "env.k8s_inspector",
+            {
+                "pod_health": {
+                    "pods": [
+                        {"name": "agent-ai-signoz-0", "phase": "Running", "ready": "1/1"},
+                        {"name": "agent-ai-signoz-otel", "phase": "Running", "ready": "1/1"},
+                        {"name": "signoz-migrator", "phase": "Succeeded", "ready": "0/1"},
+                    ]
+                },
+                "service_status": {"services": [{"name": "agent-ai-signoz"}]},
+                "ingress_status": {"ingresses": []},
+            },
+        )
+        helm = FakeLiveVerificationAdapter(
+            "env.helm_manager",
+            {"helm_release_list": {"releases": [{"name": "agent-ai-signoz", "status": "deployed"}]}},
+        )
+        client.app.state.env_k8s_inspector = k8s
+        client.app.state.env_helm_manager = helm
+        approved = _approved_mutation_run(client, login.json()["user"]["user_id"], fake_agent)
+        mutation = client.post("/api/mop-execution/mutation", json={"run_id": approved["run_id"]})
+        assert mutation.status_code == 200
+        assert mutation.json()["status"] == "mutation_succeeded"
+
+        response = client.post("/api/mop-execution/validation-report", json={"run_id": approved["run_id"]})
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["valid"] is True
+        assert result["status"] == "completed"
+        assert result["validation"]["status"] == "passed"
+        assert len(result["validation"]["validation_matrix"]) == 4
+        assert result["reports"]["live_mcp_verification"]["kubernetes"]["ingress_count"] == 0
+        assert "zero Kubernetes Ingress resources were created" in result["summary"]
+        assert k8s.calls == ["pod_health", "service_status", "ingress_status"]
+        assert helm.calls == ["helm_release_list"]
+        assert client.app.state.repository.get_run(approved["run_id"]).status == "completed"
 
 def test_mop_execution_phase_k_empty_matrix_with_evidence_completes_with_review(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")

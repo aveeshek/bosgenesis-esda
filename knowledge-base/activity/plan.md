@@ -551,3 +551,22 @@ Defer until later:
 - Should artifact Markdown text be cached in PostgreSQL after first read from the artifact repo?
 - Should GitHub overwrite uploads require an explicit approval step after V1, or is authenticated run ownership sufficient for this artifact-review workflow?
 
+## 2026-08-16 Implementation Reconciliation
+
+### Implemented
+
+- [x] Matte-glass Activity page consistent with Release Notes and Bundle workflows.
+- [x] Server-backed time-series list/detail for Release Note, Bundle Generation, and Bundle Execution runs.
+- [x] Workflow filters, status/publish badges, selected-run details, stages, and local/Git artifact links.
+- [x] Release Note Markdown/PDF download and governed overwrite upload.
+- [x] Bundle Generation single bundle download and bundle overwrite upload.
+- [x] Artifact Chat grounded on selected run/artifact context, including ZIP inspection and deterministic fast paths for simple bundle inventory questions.
+- [x] SIGMA/GPT fallback for complex artifact questions, with formatted answers and audit logging.
+- [x] Responsive chart/card layout and bounded chat viewport.
+
+### Current boundaries
+
+- Environment Chat has its own PostgreSQL session drawer and is not yet merged into the Activity timeline.
+- Digital Twin lifecycle/audit has its own Digital Twins page and reports; a unified Activity projection remains future work.
+- Bundle Execution report/cleanup artifacts are visible through workflow transactions and report links, but a richer cross-workflow causality graph remains planned.
+- Upload overwrite is authenticated and run-scoped; enterprise Git authorization and approval policy remain technical debt.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.app.tools.mop_execution_agent import MopExecutionAgentResponse
+from backend.app.tools.mop_execution_agent import MopExecutionAgentError, MopExecutionAgentResponse
 from backend.tests.test_mop_execution_phase_e import _bundle_bytes, _seed_bundle_run
 from backend.tests.test_mop_execution_phase_f import FakeMopExecutionAgent
 from backend.tests.test_phase1_app import build_test_client
@@ -120,6 +120,59 @@ class FakeMopExecutionDryRunAgent(FakeMopExecutionAgent):
             request={"report_type": report_type},
         )
 
+class FakeCreateTimeoutRecoveryAgent(FakeMopExecutionDryRunAgent):
+    def __init__(self) -> None:
+        super().__init__(states=["succeeded"])
+
+    async def create_job(self, payload: dict[str, Any]) -> MopExecutionAgentResponse:
+        self.calls.append("create_job")
+        self.create_job_request = payload
+        raise MopExecutionAgentError(
+            method="POST",
+            url="http://agent/v1/execution-jobs",
+            status_code=504,
+            payload={"message": "Gateway Timeout"},
+        )
+
+    async def list_jobs(self, params: dict[str, Any] | None = None) -> MopExecutionAgentResponse:
+        self.calls.append("list_jobs")
+        request = self.create_job_request or {}
+        return self._response(
+            "GET",
+            "http://agent/v1/execution-jobs",
+            {
+                "data": {
+                    "jobs": [
+                        {
+                            "job_id": "dry_run_job_recovered",
+                            "state": "dry_running",
+                            "correlation_id": request.get("correlation_id"),
+                            "bundle_id": request.get("bundle_id"),
+                            "target_namespace": request.get("target_namespace"),
+                        }
+                    ]
+                }
+            },
+            request={"params": params or {}},
+        )
+
+
+class FakeTransientLookupRecoveryAgent(FakeCreateTimeoutRecoveryAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.lookup_attempts = 0
+
+    async def list_jobs(self, params: dict[str, Any] | None = None) -> MopExecutionAgentResponse:
+        self.lookup_attempts += 1
+        if self.lookup_attempts == 1:
+            self.calls.append("list_jobs")
+            raise MopExecutionAgentError(
+                method="GET",
+                url="http://agent/v1/execution-jobs",
+                status_code=503,
+                payload={"message": "Service Temporarily Unavailable"},
+            )
+        return await super().list_jobs(params)
 
 def _validated_execution_run(client, user_id: str, fake_agent: FakeMopExecutionDryRunAgent) -> dict[str, Any]:
     artifact = _seed_bundle_run(client, user_id, _bundle_bytes())
@@ -184,6 +237,65 @@ def test_mop_execution_phase_g_creates_starts_and_polls_dry_run(tmp_path, monkey
         assert metadata["dry_run_job_id"] == "dry_run_job_123"
         assert metadata["current_state"] == "dry_run_succeeded"
         assert client.app.state.repository.get_run(validation["run_id"]).status == "waiting_for_approval"
+
+
+def test_mop_execution_phase_g_recovers_job_after_create_gateway_timeout(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_ATTEMPTS", "2")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_INTERVAL_SECONDS", "0")
+
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        user_id = login.json()["user"]["user_id"]
+        fake_agent = FakeCreateTimeoutRecoveryAgent()
+        validation = _validated_execution_run(client, user_id, fake_agent)
+
+        response = client.post(
+            "/api/mop-execution/dry-run",
+            json={"run_id": validation["run_id"], "bundle_id": validation["bundle_id"]},
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["valid"] is True
+        assert result["status"] == "waiting_for_approval"
+        assert result["dry_run_job_id"] == "dry_run_job_recovered"
+        assert "list_jobs" in fake_agent.calls
+        assert "start_job" not in fake_agent.calls
+        created_event = next(
+            event for event in result["events"] if event["event_type"] == "dry_run_job_created"
+        )
+        assert created_event["payload"]["recovered_after_create_timeout"] is True
+
+
+
+def test_mop_execution_phase_g_retries_transient_lookup_after_create_timeout(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_ATTEMPTS", "2")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_INTERVAL_SECONDS", "0")
+
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        user_id = login.json()["user"]["user_id"]
+        fake_agent = FakeTransientLookupRecoveryAgent()
+        validation = _validated_execution_run(client, user_id, fake_agent)
+
+        response = client.post(
+            "/api/mop-execution/dry-run",
+            json={"run_id": validation["run_id"], "bundle_id": validation["bundle_id"]},
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["valid"] is True
+        assert result["dry_run_job_id"] == "dry_run_job_recovered"
+        assert fake_agent.lookup_attempts == 2
 
 
 def test_mop_execution_phase_g_pauses_on_decision_required(tmp_path, monkeypatch) -> None:

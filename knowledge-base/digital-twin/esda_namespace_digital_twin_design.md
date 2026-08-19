@@ -2,7 +2,7 @@
 
 **System:** ESDA - Ericsson SRE and DevOps Agent  
 **Design target:** Release note -> MoP bundle -> namespace readiness model -> governed recreation/mutation -> Conditional L4 autonomy  
-**Baseline recommendation:** Add a mandatory **ESDA Namespace Readiness Twin Core** as the pre-mutation autonomy gate.  
+**Baseline recommendation:** Provide an authoritative **ESDA Namespace Readiness Twin Core** as a pre-mutation decision input. The current lab keeps enforcement optional by configuration.
 **Add-on model:** Implement the eight broader digital-twin use cases as composable capabilities on top of the baseline.  
 **Original date:** 2026-07-01  
 **Architecture review:** 2026-07-13, aligned with ESDA v0.2.10 and the current execution-agent/MCP repositories.  
@@ -3277,3 +3277,30 @@ The authoritative 2026-07-23 validation run is `twin_5d7c8fe499ca4dd8bdcc9cd7404
 ### 31.2 Remaining design debt
 
 Before production or shared use, complete enterprise authentication/authorization, secret management, durable worker recovery, malicious-bundle testing, typed object provenance, storage/PVC evidence, risk calibration, post-admission runtime validation, MoP replay isolation, full observability, Git concurrency hardening, and the complete real `agent-testing` mutation/rollback/cleanup rehearsal. The controlling consolidated register is HLD Appendix C and Architecture Specification Appendix B.6.
+
+## 2026-08-16 Architecture Reconciliation
+
+The implemented Namespace Twin is an authoritative, non-mutating decision service owned by the MoP Execution Agent. ESDA is its authenticated gateway and UX. The browser never calculates dependencies, policy, evidence completeness, risk, freshness, or final decision.
+
+### Current runtime
+
+1. ESDA resolves a published `mop-bundle.zip` and immutable bundle identity.
+2. ESDA submits an idempotent on-demand Twin request for a target namespace/cluster.
+3. The execution agent records lifecycle, gathers configured live evidence, performs authoritative dry-run/diff work, calculates deterministic modules, persists a final decision, and exposes module/report APIs.
+4. ESDA polls lifecycle, displays progressive availability, and lazy-loads/caches individual modules.
+5. Bundle Execution matches a final Twin by bundle/input identity and target. Enforcement is optional unless `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=true`.
+
+### Current lab policy
+
+The current demo ODD uses installed-Helm-release-only evidence, ignores configured `bosgenesis-` Helm prefixes, excludes Kubernetes `Ingress` from the selected mutation/Twin plan, excludes `kube-root-ca.crt` and `istio-` ConfigMaps from Twin planning, makes rollback not applicable for the selected demo, enables Twin automatic approval, and disables PVC and StatefulSet risk scoring. Every exclusion or disabled axis must remain visible in configuration, reports, and technical debt.
+
+### Non-negotiable safety semantics
+
+- A disabled or excluded axis is not evidence that the omitted resource is safe.
+- Dry-run success proves admission/static acceptance only.
+- Historical final decisions are immutable.
+- Model explanations are advisory and audit-safe.
+- A Twin approval state is distinct from execution approval unless a separately governed delegation contract explicitly unifies them.
+- Name/prefix exclusions are temporary technical debt; production requires typed ownership and origin provenance.
+
+The controlling configuration and debt register are in `../README.md`, `../hld.md`, and `../project_architecture_specification.md`.

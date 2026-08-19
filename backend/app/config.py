@@ -102,7 +102,15 @@ class Settings(BaseSettings):
     mop_execution_agent_timeout_seconds: int = 300
     mop_execution_agent_poll_interval_seconds: float = 5
     mop_execution_agent_poll_attempts: int = 120
+    mop_execution_agent_create_recovery_attempts: int = 45
+    mop_execution_agent_create_recovery_interval_seconds: float = 2
     mop_execution_demo_pass_through_enabled: bool = False
+    mop_execution_post_mutation_live_verification_enabled: bool = True
+    mop_execution_post_mutation_verification_attempts: int = 30
+    mop_execution_post_mutation_verification_interval_seconds: float = 10
+    mop_execution_post_mutation_require_no_ingress: bool = True
+    mop_execution_post_mutation_expected_helm_release: str = ""
+    mop_execution_preferred_bundle_publish_folder: str = "260630_114925_mop_signoz"
     mop_execution_allowed_target_namespaces: str = Field(default="agent-testing")
     mop_execution_default_target_namespace: str = "agent-testing"
     mop_execution_generated_name_prefix: str = "agent-ai"

@@ -59,7 +59,7 @@
             <select class="form-select" id="mop_execution_mode" required>
               <option value="dry_run_then_approval">Dry-run then approval</option>
               <option value="dry_run_only">Dry-run only</option>
-              <option value="approved_mutation" selected>Approved mutation (agent approval required)</option>
+              <option value="approved_mutation" selected>Autonomous mutation (pre-authorized)</option>
             </select>
           </div>
           <div class="mb-3">
@@ -293,5 +293,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/js/mop_execution.js?v=twin-direct-launch-1"></script>
+<script src="/static/js/mop_execution.js?v=validation-terminal-authority-1"></script>
 {% endblock %}

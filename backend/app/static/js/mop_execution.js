@@ -416,13 +416,9 @@ function approvalScopeDefault(result = {}) {
 }
 function renderApprovalCard(result = {}) {
   if (!approvalCard) return;
-  setStatus("waiting_for_approval");
-  setVisual("working");
-  setText(spherePhase, "Dry-run completed");
-  setText(sphereTitle, "Approval is required before mutation.");
   const reports = result.reports || result.payload?.reports || {};
   const gate = result.approval_gate || {};
-  const fingerprints = gate.command_fingerprints || reports.command_fingerprints || [];
+  const fingerprints = normalizeCommandFingerprints(gate.command_fingerprints || reports.command_fingerprints || []);
   const dryRunJobId = result.dry_run_job_id || gate.dry_run_job_id || reports.job_id || result.job_id || "";
   approvalCard.dataset.runId = result.run_id || activeRunId || "";
   approvalCard.dataset.jobId = dryRunJobId;
@@ -435,10 +431,31 @@ function renderApprovalCard(result = {}) {
   if (approvalScope) approvalScope.value = JSON.stringify(approvalScopeDefault(result), null, 2);
   if (approvalRationale && !approvalRationale.value.trim()) approvalRationale.value = valueOf("mop_execution_rationale") || "";
   if (approvalSubmit) approvalSubmit.disabled = false;
+  if (approvedMutationMode()) {
+    approvalCard.classList.add("d-none");
+    progressPanel?.classList.remove("is-approval-ready");
+    setStatus("authorizing_mutation");
+    setVisual("working");
+    setText(spherePhase, "Dry-run completed");
+    setText(sphereTitle, "Authorizing autonomous mutation.");
+    setApprovalFeedback("Using the run-level pre-authorization and dry-run evidence. No additional operator approval is required.");
+    return;
+  }
+  setStatus("waiting_for_approval");
+  setVisual("working");
+  setText(spherePhase, "Dry-run completed");
+  setText(sphereTitle, "Approval is required before mutation.");
   promoteApprovalCard();
   approvalCard.classList.remove("d-none");
   showApprovalShortcut();
   setApprovalFeedback("Submit approval only after reviewing the dry-run report and fingerprints.");
+}
+function normalizeCommandFingerprints(values) {
+  const source = Array.isArray(values) ? values : [];
+  return [...new Set(source
+    .filter((value) => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value && !["null", "none", "undefined"].includes(value.toLowerCase())))];
 }
 function validateApprovalPayload(payload) {
   const errors = [];
@@ -472,7 +489,7 @@ function buildApprovalPayload() {
   } catch (_error) {
     return {payload: null, errors: ["Approval scope JSON is not valid."]};
   }
-  const fingerprints = JSON.parse(approvalCard?.dataset.commandFingerprints || "[]");
+  const fingerprints = normalizeCommandFingerprints(JSON.parse(approvalCard?.dataset.commandFingerprints || "[]"));
   const payload = {
     run_id: approvalCard?.dataset.runId || activeRunId,
     job_id: approvalCard?.dataset.jobId || null,
@@ -501,7 +518,7 @@ async function submitApprovalPayload(statusText = "Submitting approval to MoP Ex
   try {
     const response = await fetch("/api/mop-execution/approval", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
     const result = await response.json();
-    renderApprovalResult(result);
+    await renderApprovalResult(result);
   } catch (error) {
     setApprovalFeedback(`Approval failed: ${error.message}`, true);
     if (approvalSubmit) approvalSubmit.disabled = false;
@@ -516,9 +533,9 @@ async function submitApprovedMutationApproval(result = {}) {
   if (approvalRationale && !approvalRationale.value.trim()) approvalRationale.value = valueOf("mop_execution_rationale") || "";
   const rationale = approvalRationale?.value?.trim() || "";
   if (rationale.length < 10) {
-    setApprovalFeedback("Approved mutation requires an approval rationale before ESDA can submit the gate automatically.", true);
-    setText(formStatus, "Approved mutation paused: enter an approval rationale, then submit approval.");
-    mark("approval", "running", "Waiting for the operator approval rationale required by approved mutation mode.");
+    setApprovalFeedback("Autonomous mutation requires a run-level authorization rationale before execution can begin.", true);
+    setText(formStatus, "Autonomous mutation paused: enter a run-level authorization rationale and prepare the execution again.");
+    mark("approval", "running", "Waiting for the run-level authorization rationale required by autonomous mutation mode.");
     renderActivity();
     approvalCard?.scrollIntoView({behavior: "smooth", block: "center"});
     if (approvalSubmit) approvalSubmit.disabled = false;
@@ -527,13 +544,13 @@ async function submitApprovedMutationApproval(result = {}) {
   setStatus("running");
   setVisual("working");
   setText(spherePhase, "Dry-run completed");
-  setText(sphereTitle, "Submitting approved mutation gate.");
-  mark("approval", "running", "Approved mutation mode selected; ESDA is submitting the operator approval after the successful dry-run.");
-  addStageWorking("approval", "Submitting approved mutation gate", "Using the operator rationale and dry-run evidence to request execution-agent approval before mutation starts.", `approved-mutation:${result.run_id || activeRunId}:${result.dry_run_job_id || "job"}`);
+  setText(sphereTitle, "Authorizing autonomous mutation.");
+  mark("approval", "running", "Autonomous mutation was pre-authorized; ESDA is completing the internal execution-agent authorization exchange.");
+  addStageWorking("approval", "Authorizing autonomous mutation", "Using the run-level authorization and dry-run evidence. This is an internal protocol step and requires no additional operator action.", `approved-mutation:${result.run_id || activeRunId}:${result.dry_run_job_id || "job"}`);
   renderActivity();
-  await submitApprovalPayload("Approved mutation mode: submitting approval to MoP Execution Agent...");
+  await submitApprovalPayload("Completing internal authorization for autonomous mutation...");
 }
-function renderApprovalResult(result = {}) {
+async function renderApprovalResult(result = {}) {
   (result.events || []).forEach((event) => processEvent(event, {live: true, reveal: true, hydrateApproval: false}));
   const lines = [
     `# MoP Execution Approval: ${result.status || "unknown"}`,
@@ -553,14 +570,19 @@ function renderApprovalResult(result = {}) {
   if (result.accepted) {
     if (approvedMutationMode() && mutationStrategy) mutationStrategy.value = "continue_existing";
     const autoStart = approvedMutationMode() || mutationStrategy?.value === "continue_existing";
-    setApprovalFeedback(autoStart ? "Approval accepted. Starting approved mutation..." : (result.summary || "Approval accepted by the execution agent."));
+    setApprovalFeedback(autoStart ? "Run authorization accepted. Starting autonomous mutation..." : (result.summary || "Approval accepted by the execution agent."));
     setText(approvalStatus, "approved");
-    setStatus("approved_for_mutation");
-    mark("approval", "success", result.summary || "Human approval accepted for the dry-run scope.");
-    mark("mutation_job", autoStart ? "running" : "pending", autoStart ? "Starting the approved mutation path." : "Ready to create an approved mutation job through the execution agent.");
+    setStatus(autoStart ? "mutation_running" : "approved_for_mutation");
+    setVisual(autoStart ? "working" : "complete");
+    if (autoStart) {
+      setText(spherePhase, "Authorization accepted");
+      setText(sphereTitle, "Autonomous mutation in progress.");
+    }
+    mark("approval", "success", autoStart ? "Run-level authorization accepted; no second operator approval was required." : (result.summary || "Human approval accepted for the dry-run scope."));
+    mark("mutation_job", autoStart ? "running" : "pending", autoStart ? "Starting the autonomous mutation path." : "Ready to create an approved mutation job through the execution agent.");
     if (mutationStart) mutationStart.disabled = false;
-    if (artifactLinks) artifactLinks.innerHTML += ' <span class="badge text-bg-success">Approval accepted</span>';
-    if (autoStart) window.setTimeout(() => { void startMutation(); }, 50);
+    if (artifactLinks) artifactLinks.innerHTML += autoStart ? ' <span class="badge text-bg-primary">Autonomous mutation running</span>' : ' <span class="badge text-bg-success">Approval accepted</span>';
+    if (autoStart) await startMutation();
   } else {
     const rejection = approvalErrorSummary(result);
     setApprovalFeedback(rejection, true);
@@ -580,10 +602,15 @@ async function startMutation() {
     setApprovalFeedback("No approved MoP Execution run is selected.", true);
     return;
   }
+  hideApprovalCard();
   if (mutationStart) mutationStart.disabled = true;
-  setApprovalFeedback("Starting approved mutation through MoP Execution Agent...");
-  mark("mutation_job", "running", "Creating or continuing the approved mutation job.");
-  addStageWorking("mutation_job", "Starting approved mutation", "The execution agent is receiving the accepted approval evidence, dry-run job ID, and command fingerprints. ESDA will not retry blindly.", "phase-j:mutation-start");
+  setStatus("mutation_running");
+  setVisual("working");
+  setText(spherePhase, "Autonomous mutation");
+  setText(sphereTitle, "Applying the approved bundle.");
+  setText(formStatus, "Autonomous mutation is running. No additional operator action is required.");
+  mark("mutation_job", "running", "Creating or continuing the autonomous mutation job.");
+  addStageWorking("mutation_job", "Starting autonomous mutation", "The execution agent is receiving the accepted run authorization, dry-run job ID, and command fingerprints. Bounded recovery remains enabled.", "phase-j:mutation-start");
   renderActivity();
   try {
     const payload = {
@@ -595,13 +622,13 @@ async function startMutation() {
     };
     const response = await fetch("/api/mop-execution/mutation", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
     const result = await response.json();
-    renderMutationResult(result);
+    await renderMutationResult(result);
   } catch (error) {
     setApprovalFeedback(`Mutation start failed: ${error.message}`, true);
     if (mutationStart) mutationStart.disabled = false;
   }
 }
-function renderMutationResult(result = {}) {
+async function renderMutationResult(result = {}) {
   (result.events || []).forEach((event) => processEvent(event, {live: true, reveal: true, hydrateApproval: false}));
   const observationPayload = result.observations && Object.keys(result.observations).length ? JSON.stringify(scrub(result.observations), null, 2) : "No mutation observations returned yet.";
   const decisionPayload = result.decision_required ? JSON.stringify(scrub(result.decision_required), null, 2) : "No decision-required context.";
@@ -640,7 +667,11 @@ function renderMutationResult(result = {}) {
     mark("validation", "running", "Collecting post-mutation validation observations from the execution agent.");
     addStageWorking("validation", "Collecting post-mutation validation", "Retrieving Helm status/history, Kubernetes readiness, validation matrix, and report metadata from the MoP Execution Agent.", "phase-k:validation-start");
     if (artifactLinks) artifactLinks.innerHTML += ' <span class="badge text-bg-success">Mutation completed</span> <span class="badge text-bg-primary">Validation running</span>';
-    void runPostMutationValidation(result.run_id || activeRunId).then(renderValidationReportResult).catch((error) => {
+    const validationRunId = result.run_id || activeRunId;
+    let validationResult;
+    try {
+      validationResult = await runPostMutationValidation(validationRunId);
+    } catch (error) {
       mark("validation", "failed", `Post-mutation validation failed: ${error.message}`);
       mark("reports", "failed", "Execution report collection failed.");
       setStatus("validation_failed");
@@ -648,7 +679,17 @@ function renderMutationResult(result = {}) {
       setApprovalFeedback(`Post-mutation validation failed: ${error.message}`, true);
       if (finalReport) finalReport.textContent += `\n\n## Phase K Error\n${error.message}`;
       renderActivity();
-    });
+      await loadTransactions();
+      return;
+    }
+    try {
+      renderValidationReportResult(validationResult);
+    } catch (error) {
+      console.error("Post-mutation validation completed, but terminal rendering failed.", error);
+      renderValidationTerminalFallback(validationResult, error);
+    }
+    await loadTransactions();
+    return;
   } else if (["decision_required", "paused"].includes(String(result.current_state || result.status || "").toLowerCase())) {
     setStatus("mutation_paused");
     setVisual("working");
@@ -679,7 +720,7 @@ function renderMutationResult(result = {}) {
   renderActivity();
   renderSafeFromEvents(true);
   refreshOpenAutonomyModal();
-  void loadTransactions();
+  await loadTransactions();
 }
 async function runCleanupRevert() {
   const runId = activeRunId;
@@ -879,7 +920,50 @@ function renderValidationReportResult(result = {}) {
   renderActivity();
   renderSafeFromEvents(true);
   refreshOpenAutonomyModal();
-  void loadTransactions();
+}
+function renderValidationTerminalFallback(result = {}, error) {
+  const validation = result.validation || {};
+  const completedWithReview = Boolean(result.completed_with_review || result.status === "completed_with_review" || validation.status === "needs_review");
+  const completed = Boolean(result.valid || result.status === "completed");
+  const summary = result.summary || (completedWithReview
+    ? "Mutation completed. Post-mutation validation needs review."
+    : completed
+      ? "Mutation and post-mutation validation completed successfully."
+      : "Post-mutation validation failed.");
+  if (finalReport) {
+    finalReport.textContent = [
+      `# MoP Execution Validation and Reports: ${result.status || (completed ? "completed" : "unknown")}`,
+      "",
+      summary,
+      "",
+      "The authoritative backend result was retained. A nonessential browser formatter failed while drawing the detailed report.",
+    ].join("\n");
+  }
+  if (completed || completedWithReview) {
+    setStatus(completedWithReview ? "completed_with_review" : "completed");
+    setVisual("complete");
+    setText(spherePhase, completedWithReview ? "Execution completed" : "Execution validated");
+    setText(sphereTitle, completedWithReview ? "Validation report needs review." : "Reports and evidence are ready.");
+    hideApprovalCard();
+    mark("mutation", "success", "Approved mutation completed through execution agent.");
+    mark("validation", completedWithReview ? "recovered" : "success", summary);
+    mark("reports", "success", "The execution report was produced by the backend.");
+    mark("complete", completedWithReview ? "recovered" : "success", summary);
+    setApprovalFeedback(summary, false);
+    setText(formStatus, summary);
+  } else {
+    setStatus("validation_failed");
+    setVisual("failed");
+    mark("validation", "failed", summary);
+    mark("reports", "recovered", "Report rendering needs review.");
+    mark("complete", "failed", summary);
+    setApprovalFeedback(summary, true);
+    setText(formStatus, summary);
+  }
+  setText(copyProgressStatus, `Detailed report display fallback used: ${error?.message || "rendering error"}`);
+  renderActivity();
+  renderSafeFromEvents(true);
+  refreshOpenAutonomyModal();
 }
 function formatDecisionValue(value) {
   if (!value) return "";
@@ -1462,6 +1546,7 @@ async function loadTwinGate() {
   }
   const activeCandidate = selectedCandidate() || candidate;
   const bundleHash = activeCandidate?.canonical_sha256 || activeCandidate?.sha256 || requestedBundleHash;
+  const sourceReferenceHash = activeCandidate?.source_reference_hash || "";
   const selectedRunId = activeCandidate?.run_id || "";
   const selectionIsCurrent = () => {
     if (loadVersion !== twinGateLoadVersion || controller.signal.aborted) return false;
@@ -1485,7 +1570,18 @@ async function loadTwinGate() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const listing = await response.json();
       if (!selectionIsCurrent()) return;
-      const match = (listing.items || []).find((item) => (item.bundle_hash || item.bundle?.bundle_hash) === bundleHash && (item.target_namespace || item.target?.namespace) === target);
+      const targetTwins = (listing.items || []).filter(
+        (item) => (item.target_namespace || item.target?.namespace) === target,
+      );
+      const match = targetTwins.find(
+        (item) => sourceReferenceHash
+          && item.source_reference_hash === sourceReferenceHash
+          && item.decision_is_final === true,
+      ) || targetTwins.find(
+        (item) => sourceReferenceHash && item.source_reference_hash === sourceReferenceHash,
+      ) || targetTwins.find(
+        (item) => (item.bundle_hash || item.bundle?.bundle_hash) === bundleHash,
+      );
       twinId = match?.twin_id;
     }
     if (!selectionIsCurrent()) return;
@@ -1520,7 +1616,9 @@ function renderBundleOptions() {
     const option = document.createElement("option");
     option.value = candidate.run_id;
     option.dataset.artifactId = candidate.artifact_id || "";
-    option.textContent = `${candidate.source_namespace || "namespace"} | ${compactTime(candidate.generated_at)} | ${candidate.filename || "mop-bundle.zip"}`;
+    const published = candidate.publish_folder || compactTime(candidate.generated_at);
+    const prefix = candidate.preferred ? "PINNED | " : "";
+    option.textContent = `${prefix}${published} | ${candidate.source_namespace || "namespace"} | ${candidate.filename || "mop-bundle.zip"}`;
     if (index === 0) option.selected = true;
     activityRunSelect.appendChild(option);
   });
@@ -1717,7 +1815,7 @@ async function runDryRun(validationResult) {
   return response.json();
 }
 
-function renderDryRunResult(result) {
+async function renderDryRunResult(result) {
   if (result?.run_id) setActive(result.run_id);
   (result.events || []).forEach((event) => processEvent(event, {live: true, reveal: true, hydrateApproval: false}));
   const observationPayload = result.observations && Object.keys(result.observations).length ? JSON.stringify(scrub(result.observations), null, 2) : "No observations returned yet.";
@@ -1775,7 +1873,7 @@ function renderDryRunResult(result) {
     renderApprovalCard(result);
     if (autoApproved) {
       setText(formStatus, "Dry-run succeeded. Approved mutation mode is submitting approval automatically.");
-      void submitApprovedMutationApproval(result);
+      await submitApprovedMutationApproval(result);
     } else {
       setText(formStatus, "Dry-run succeeded. Approval gate is next; mutation controls remain disabled.");
     }
@@ -1931,7 +2029,7 @@ async function startShell(event) {
         setText(formStatus, "Creating and starting dry-run job...");
         requestPhase = {stage: "dry_run", label: "Dry-run execution", beforeAgent: false};
         const dryRun = await runDryRun(validation);
-        renderDryRunResult(dryRun);
+        await renderDryRunResult(dryRun);
       }
     } else {
       setStatus("failed");

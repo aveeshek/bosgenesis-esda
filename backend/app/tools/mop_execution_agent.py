@@ -492,9 +492,31 @@ class MopExecutionAgentClient:
         )
 
     async def get_decision_required_context(self, job_id: str) -> MopExecutionAgentResponse:
-        return await self._request(
-            "GET", f"v1/execution-jobs/{quote(job_id, safe='')}/decision-required"
-        )
+        try:
+            return await self._request(
+                "GET", f"v1/execution-jobs/{quote(job_id, safe='')}/decision-required"
+            )
+        except MopExecutionAgentError as rest_exc:
+            # Older deployed agents expose this read-only operation only through MCP.
+            # Keep ESDA compatible until the matching REST route is rolled out.
+            try:
+                return await self._mcp_tool_call(
+                    "mop_execution_get_next_required_decision",
+                    {"job_id": job_id},
+                )
+            except MopExecutionAgentError as mcp_exc:
+                raise MopExecutionAgentError(
+                    method="DECISION_CONTEXT",
+                    url=f"{rest_exc.url} -> {mcp_exc.url}",
+                    status_code=mcp_exc.status_code or rest_exc.status_code,
+                    payload={
+                        "message": "MoP Execution Agent decision context failed through both REST and MCP.",
+                        "rest_status_code": rest_exc.status_code,
+                        "rest_error": rest_exc.payload,
+                        "mcp_status_code": mcp_exc.status_code,
+                        "mcp_error": mcp_exc.payload,
+                    },
+                ) from mcp_exc
 
     async def submit_instruction(
         self, job_id: str, payload: dict[str, Any]

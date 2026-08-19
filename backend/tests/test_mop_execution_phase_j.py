@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from typing import Any
@@ -9,16 +9,44 @@ from backend.tests.test_phase1_app import build_test_client
 
 
 class FakeMopExecutionMutationAgent(FakeMopExecutionApprovalAgent):
-    def __init__(self, *, mutation_states: list[str] | None = None, instruction_accepted: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        mutation_states: list[str] | None = None,
+        instruction_accepted: bool = True,
+        decision_contexts: list[dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__(accepted=True)
         self.mutation_states = list(mutation_states or ["running", "succeeded"])
         self.instruction_accepted = instruction_accepted
         self.mutation_create_request: dict[str, Any] | None = None
         self.mutation_start_request: dict[str, Any] | None = None
         self.mutation_resume_request: dict[str, Any] | None = None
+        self.mutation_approval_request: dict[str, Any] | None = None
         self.mutation_instruction_request: dict[str, Any] | None = None
         self.mutation_instruction_requests: list[dict[str, Any]] = []
+        self.decision_contexts = list(decision_contexts or [])
+        self.current_decision_context: dict[str, Any] = {
+            "reason_code": "MUTATION_BLOCKED",
+            "reason": "mutation_instruction_required",
+            "phase": "mutation",
+        }
 
+    async def submit_approval(self, job_id: str, payload: dict[str, Any]) -> MopExecutionAgentResponse:
+        if job_id == "mutation_job_456":
+            self.calls.append("submit_mutation_approval")
+            self.mutation_approval_request = {"job_id": job_id, **payload}
+            return self._response(
+                "POST",
+                f"http://agent/v1/execution-jobs/{job_id}/approvals",
+                {
+                    "ok": True,
+                    "message": "Approval submitted.",
+                    "data": {"job": {"job_id": job_id, "approval_status": "active"}},
+                },
+                request=payload,
+            )
+        return await super().submit_approval(job_id, payload)
     async def create_job(self, payload: dict[str, Any]) -> MopExecutionAgentResponse:
         if payload.get("mode") == "mutation" or payload.get("execution_mode") == "approved_mutation":
             self.calls.append("create_mutation_job")
@@ -59,8 +87,9 @@ class FakeMopExecutionMutationAgent(FakeMopExecutionApprovalAgent):
             state = self.mutation_states.pop(0) if self.mutation_states else "succeeded"
             payload = {"job_id": job_id, "state": state, "current_phase": "mutation"}
             if state == "decision_required":
-                payload["reason"] = "mutation_instruction_required"
-                payload["reason_code"] = "MUTATION_BLOCKED"
+                if self.decision_contexts:
+                    self.current_decision_context = self.decision_contexts.pop(0)
+                payload.update(self.current_decision_context)
             return self._response(
                 "GET",
                 f"http://agent/v1/execution-jobs/{job_id}",
@@ -85,7 +114,7 @@ class FakeMopExecutionMutationAgent(FakeMopExecutionApprovalAgent):
         return self._response(
             "GET",
             f"http://agent/v1/execution-jobs/{job_id}/decision-required",
-            {"job_id": job_id, "reason_code": "MUTATION_BLOCKED", "reason": "mutation_instruction_required", "phase": "mutation"},
+            {"job_id": job_id, **self.current_decision_context},
         )
 
 
@@ -142,6 +171,80 @@ class ObservationOnlyMutationDecisionAgent(FakeMopExecutionMutationAgent):
             )
         return await super().get_observations(job_id, params)
 
+
+class GenericDecisionWithCurrentObservationAgent(ObservationOnlyMutationDecisionAgent):
+    async def get_decision_required_context(self, job_id: str) -> MopExecutionAgentResponse:
+        self.calls.append("get_decision_required_context")
+        self.decision_requested = True
+        return self._response(
+            "GET",
+            f"http://agent/v1/execution-jobs/{job_id}/decision-required",
+            {
+                "message": "External LLM instruction is required.",
+                "data": {
+                    "next_required_decision": {
+                        "reason_code": "DECISION_REQUIRED",
+                        "summary": "External LLM instruction is required.",
+                    },
+                    "memory": [
+                        {
+                            "observation_type": "approval_result",
+                            "summary": "Human approval submitted.",
+                            "phase_id": "approval",
+                        },
+                        {
+                            "observation_type": "historical_agent_error",
+                            "summary": "Not Found (HTTP 404)",
+                            "phase_id": "old_evidence_collection",
+                        },
+                    ],
+                },
+            },
+        )
+
+
+class NestedMutationDecisionAgent(FakeMopExecutionMutationAgent):
+    async def get_decision_required_context(self, job_id: str) -> MopExecutionAgentResponse:
+        self.calls.append("get_decision_required_context")
+        self.decision_requested = True
+        current = {
+            "job_id": job_id,
+            "target_namespace": "agent-testing",
+            "reason_code": "MUTATION_BLOCKED",
+            "summary": "mutation_instruction_required",
+            "phase_id": "apply_configmaps",
+            "step_id": "apply_configmaps-1-configmap-istio-ca-crl",
+            "required_from": "external_llm",
+            "allowed_next_action_types": ["continue", "retry", "wait", "skip", "abort"],
+            "observations": [
+                {
+                    "observation_type": "mutation_result",
+                    "summary": "mutation_instruction_required",
+                    "phase_id": "apply_configmaps",
+                    "step_id": "apply_configmaps-1-configmap-istio-ca-crl",
+                    "result": {"unknown_mutation_outcome": False},
+                    "policy_blocks": [
+                        {
+                            "code": "INSTRUCTION_REQUIRED",
+                            "message": "Mutation requires an explicit continue instruction.",
+                            "guardrail": "external_instruction",
+                        }
+                    ],
+                }
+            ],
+        }
+        return self._response(
+            "GET",
+            f"http://agent/v1/execution-jobs/{job_id}/decision-required",
+            {
+                "message": "External LLM instruction is required.",
+                "data": {"next_required_decision": current},
+                "next_required_decision": {
+                    "reason_code": "DECISION_REQUIRED",
+                    "summary": "External LLM instruction is required.",
+                },
+            },
+        )
 def _approved_mutation_run(client, user_id: str, fake_agent: FakeMopExecutionMutationAgent) -> dict[str, Any]:
     run = _waiting_for_approval_run(client, user_id, fake_agent)
     approval = client.post(
@@ -187,6 +290,11 @@ def test_mop_execution_phase_j_creates_starts_and_polls_mutation_job(tmp_path, m
         assert fake_agent.mutation_create_request is not None
         assert fake_agent.mutation_create_request["mutation_allowed"] is True
         assert fake_agent.mutation_create_request["approval"]["approval_id"]
+        assert fake_agent.mutation_approval_request is not None
+        assert fake_agent.mutation_approval_request["approval_scope"] == "mutation"
+        assert fake_agent.mutation_approval_request["approved_phase_ids"] == ["apply"]
+        assert fake_agent.mutation_approval_request["approved_step_ids"] == ["apply-config"]
+        assert fake_agent.calls.index("submit_mutation_approval") < fake_agent.calls.index("start_mutation_job")
         assert fake_agent.mutation_start_request is not None
         assert fake_agent.mutation_start_request["mutation_allowed"] is True
         event_types = [event["event_type"] for event in result["events"]]
@@ -326,7 +434,12 @@ def test_mop_execution_phase_j_auto_continues_multiple_mutation_gates(tmp_path, 
         login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
         fake_agent = FakeMopExecutionMutationAgent(
-            mutation_states=["decision_required", "decision_required", "decision_required", "succeeded"]
+            mutation_states=["decision_required", "decision_required", "decision_required", "succeeded"],
+            decision_contexts=[
+                {"reason_code": "MUTATION_BLOCKED", "reason": "mutation_instruction_required", "phase_id": "apply_configmaps", "step_id": "configmap-1"},
+                {"reason_code": "MUTATION_BLOCKED", "reason": "mutation_instruction_required", "phase_id": "apply_configmaps", "step_id": "configmap-2"},
+                {"reason_code": "MUTATION_BLOCKED", "reason": "mutation_instruction_required", "phase_id": "install_helm_releases", "step_id": "helm-1"},
+            ],
         )
         approved = _approved_mutation_run(client, login.json()["user"]["user_id"], fake_agent)
 
@@ -343,6 +456,56 @@ def test_mop_execution_phase_j_auto_continues_multiple_mutation_gates(tmp_path, 
         assert len(fake_agent.mutation_instruction_requests) == 3
         assert all(item["instruction_type"] == "continue" for item in fake_agent.mutation_instruction_requests)
         assert client.app.state.repository.get_run(approved["run_id"]).status == "mutation_succeeded"
+
+
+def test_mop_execution_phase_j_does_not_retry_same_gate_after_operational_timeout(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_ATTEMPTS", "2")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_INTERVAL_SECONDS", "0")
+
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        fake_agent = FakeMopExecutionMutationAgent(
+            mutation_states=["decision_required", "decision_required"],
+            decision_contexts=[
+                {"reason_code": "MUTATION_BLOCKED", "reason": "mutation_instruction_required", "phase_id": "install_helm_releases", "step_id": "helm-1"},
+                {"reason_code": "UNKNOWN_ERROR", "reason": "mcp_timeout:helm.install_upgrade", "phase_id": "install_helm_releases", "step_id": "helm-1"},
+            ],
+        )
+        approved = _approved_mutation_run(client, login.json()["user"]["user_id"], fake_agent)
+
+        response = client.post("/api/mop-execution/mutation", json={"run_id": approved["run_id"]})
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["status"] == "decision_required"
+        assert result["mutation_succeeded"] is False
+        assert len(fake_agent.mutation_instruction_requests) == 1
+        assert client.app.state.repository.get_run(approved["run_id"]).status == "mutation_paused"
+
+def test_mop_execution_phase_j_prefers_current_observation_over_generic_decision_envelope(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_ATTEMPTS", "2")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_INTERVAL_SECONDS", "0")
+
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        fake_agent = GenericDecisionWithCurrentObservationAgent(mutation_states=["decision_required", "succeeded"])
+        approved = _approved_mutation_run(client, login.json()["user"]["user_id"], fake_agent)
+
+        response = client.post("/api/mop-execution/mutation", json={"run_id": approved["run_id"]})
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["valid"] is True
+        assert result["status"] == "mutation_succeeded"
+        assert fake_agent.mutation_instruction_request is not None
+        assert fake_agent.mutation_instruction_request["instruction_type"] == "continue"
+        assert fake_agent.mutation_instruction_request["target_phase_id"] == "apply_configmaps"
+        assert fake_agent.mutation_instruction_request["target_step_id"] == "apply_configmaps-1-configmap-istio-ca-crl"
+        assert fake_agent.mutation_instruction_request["metadata"]["llm_runtime_decision"]["deterministic_continue_gate"] is True
 
 
 def test_mop_execution_phase_j_can_continue_existing_job_when_requested(tmp_path, monkeypatch) -> None:
@@ -372,3 +535,26 @@ def test_mop_execution_phase_j_can_continue_existing_job_when_requested(tmp_path
         assert fake_agent.mutation_start_request["dry_run_job_id"] == approved["dry_run_job_id"]
 
 
+
+
+def test_mop_execution_phase_j_auto_continues_nested_agent_decision_envelope(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_ATTEMPTS", "2")
+    monkeypatch.setenv("MOP_EXECUTION_AGENT_POLL_INTERVAL_SECONDS", "0")
+
+    with build_test_client(tmp_path, monkeypatch) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+        assert login.status_code == 200
+        fake_agent = NestedMutationDecisionAgent(mutation_states=["decision_required", "succeeded"])
+        approved = _approved_mutation_run(client, login.json()["user"]["user_id"], fake_agent)
+
+        response = client.post("/api/mop-execution/mutation", json={"run_id": approved["run_id"]})
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["valid"] is True
+        assert result["status"] == "mutation_succeeded"
+        assert fake_agent.mutation_instruction_request is not None
+        assert fake_agent.mutation_instruction_request["instruction_type"] == "continue"
+        assert fake_agent.mutation_instruction_request["target_phase_id"] == "apply_configmaps"
+        assert fake_agent.mutation_instruction_request["target_step_id"] == "apply_configmaps-1-configmap-istio-ca-crl"

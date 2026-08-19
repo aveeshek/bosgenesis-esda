@@ -37,6 +37,7 @@ def test_bundle_execution_can_restore_or_launch_matching_twin() -> None:
     assert 'fetch("/api/digital-twins", {' in controller
     assert "candidate.canonical_sha256 || candidate.sha256" in controller
     assert "item.bundle_hash || item.bundle?.bundle_hash" in controller
+    assert "item.source_reference_hash === sourceReferenceHash" in controller
     assert "twinRiskLabel(gate.risk)" in controller
     assert "decision v" in controller
     assert 'fetchWithTimeout("/api/mop-execution/bundles", {}, 12000)' in controller

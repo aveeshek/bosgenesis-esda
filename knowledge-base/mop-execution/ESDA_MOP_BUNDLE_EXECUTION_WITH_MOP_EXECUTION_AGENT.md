@@ -866,3 +866,27 @@ Inputs:
 Proceed phase by phase and stop at approval gates.
 ```
 
+## 2026-08-16 Runtime Contract Reconciliation
+
+This source flow remains correct: ESDA orchestrates and presents; the MoP Execution Agent validates, dry-runs, mutates, validates, reports, and cleans up. The deployed agent may use Helm Manager and Kubernetes Inspector through their ingress endpoints for local ESDA operation. This does not imply that the selected bundle creates Kubernetes Ingress resources; the current demo excludes `Ingress` from mutation.
+
+### Current sequence
+
+```text
+resolve immutable bundle -> optional Twin match -> ESDA preflight
+-> agent health/readiness/capabilities -> register and validate bundle
+-> dry-run -> observations/report -> explicit execution approval
+-> mutation -> bounded approved instruction handling when requested
+-> agent reports -> independent live Kubernetes/Helm verification
+-> terminal result -> optional cleanup/revert
+```
+
+The runtime planner may choose `continue`, `hold`, or `abort` only after approval is accepted. It may automatically submit a recognized continuation instruction for the current gate, but it must hold on rollback, unknown outcome, ambiguity, timeout, transport/server error, or an unrecognized context. The model never emits direct mutation commands.
+
+### Current lab properties
+
+ESDA owns post-mutation polling/verification and preferred-bundle settings. Execution exclusions and Namespace Twin properties belong to the execution agent. The lab excludes `Ingress`, `kube-root-ca.crt`, and `istio-` generated names as configured, uses installed-release-only Twin Helm evidence, ignores configured `bosgenesis-` releases, and disables PVC/StatefulSet Twin risk. These are demo ODD choices, not production safety claims.
+
+### Evidence rule
+
+A successful dry-run is necessary but not sufficient. Completion requires post-mutation evidence. Empty validation matrices are review conditions unless explicit healthy live Helm/Kubernetes evidence is available. Historical run evidence must remain immutable and must not be retroactively normalized after a code or policy change.

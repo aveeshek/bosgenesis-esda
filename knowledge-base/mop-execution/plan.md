@@ -554,3 +554,61 @@ Reasoning: Dry-run-only gives us a safe, demonstrable page quickly while preserv
 - [ ] What approval roles are required: admin, approver, operator, or all?
 - [ ] Should cleanup/revert be shown in V1 or hidden behind an advanced mode?
 - [ ] Should Activity Chat support deterministic report inventory answers for execution reports like it does for MoP bundles?
+## Demo-Ready Empty-to-Populated Proof
+
+- [x] Pin the stable Signoz bundle and expected Helm release.
+- [x] Exclude Kubernetes `Ingress` manifests in dry-run and mutation.
+- [x] Continue using deployed BOS Genesis services through their ingress endpoints.
+- [x] Recover delayed execution-job creation without creating duplicate jobs.
+- [x] Verify Helm release state through Helm Manager after mutation.
+- [x] Verify Pod readiness, Services, and zero Ingress through Kubernetes Inspector.
+- [x] Mark the UI `completed` only when all live checks pass.
+- [x] Keep demo pass-through disabled.
+- [x] Document the exact demo and reset sequence in `demo_runbook.md`.
+- [ ] Rebuild and redeploy the MoP Execution Agent with `MOP_EXECUTION_EXCLUDED_K8S_KINDS=Ingress`.
+- [ ] Perform one controlled empty-to-populated rehearsal after the target namespace is explicitly reset.
+
+## 2026-08-16 Implementation Reconciliation Checklist
+
+This checklist is additive and supersedes older open/completed status where the current code proves a different result.
+
+### Implemented
+
+- [x] Bundle sources: Activity run, artifact-repository folder, and upload.
+- [x] Immutable bundle identity, preferred stable demo folder, metadata, checksum, and required-file preflight.
+- [x] Optional compact Namespace Twin match and on-demand generation for the selected bundle/target.
+- [x] Execution-agent health, readiness, capabilities, bundle registration, validation, and `bundle_id` persistence.
+- [x] Idempotent dry-run job creation, polling, observations, reports, decision-required handling, and safe persisted summaries.
+- [x] Explicit execution approval with operator, scope, rationale, expiry, dry-run identity, and command fingerprints.
+- [x] Approved mutation creation/continuation and multi-gate polling.
+- [x] Bounded post-approval runtime planner with only `continue`, `hold`, or `abort` outputs.
+- [x] Automatic current-gate continuation only after explicit accepted approval and only for recognized instruction gates.
+- [x] Post-mutation reports, validation matrix handling, independent live Kubernetes/Helm verification, report publishing, and `completed_with_review` semantics.
+- [x] Cleanup/revert scoped through the execution agent.
+- [x] PostgreSQL transaction restoration, history selection, clear history, Start New, ephemeral live notes, and durable safe summaries.
+- [x] Stable demo bundle prioritization through `MOP_EXECUTION_PREFERRED_BUNDLE_PUBLISH_FOLDER`.
+- [x] No-Ingress demo verification and optional expected Helm-release verification.
+
+### Current normative constraints
+
+- [x] The MoP Execution Agent is the mutation authority; ESDA never performs direct Helm/kubectl mutation.
+- [x] Unknown outcome, rollback requirement, ambiguity, timeout, HTTP failure, or unrecognized decision context causes hold/fail-safe behavior.
+- [x] Mutation is never blindly retried.
+- [x] Twin enforcement is optional when `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false`.
+- [x] A Green/auto-approved Twin or `human_approval_before_mutation=false` bundle does not itself call the Bundle Execution approval endpoint.
+- [ ] One-touch mutation without explicit execution approval is not implemented as the normative contract. Add signed delegation/ODD policy before claiming it.
+
+### Validation acceptance
+
+A full lab completion requires the expected Helm release when configured, non-empty Services, all workload Pods Ready or Completed, and zero Kubernetes Ingress resources when configured. Missing validation rows may produce `completed_with_review` only when explicit healthy Kubernetes/Helm evidence exists. A report-rendering failure must not demote an authoritative completed state.
+
+### Current proof
+
+A real August lab run completed the pinned Signoz bundle into `agent-testing`, observing the expected deployed Helm release, six Ready/Completed Pods, eight Services, zero Ingress resources, and a published execution report bundle. This validates only the tested bundle, cluster state, policy, credentials, and deployed agent versions.
+
+### Remaining
+
+- [ ] Replace FastAPI background execution with a durable worker and PostgreSQL graph checkpointing.
+- [ ] Complete lock/idempotency/restart/timeout/partial-response/report-write/malicious-bundle test matrices.
+- [ ] Add enterprise identity, scoped RBAC, managed credentials, end-to-end metrics/tracing, and signed delegation.
+- [ ] Rehearse one complete mutation plus rollback/cleanup customer-demo journey and archive evidence.

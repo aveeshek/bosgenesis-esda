@@ -120,6 +120,53 @@ def test_mop_execution_agent_client_falls_back_to_mcp_for_approval_500() -> None
     assert captured["payload"]["params"]["arguments"]["job_id"] == "job 1"
     assert captured["payload"]["params"]["arguments"]["approval"]["approval_id"] == "approval_1"
 
+
+def test_mop_execution_agent_client_falls_back_to_mcp_for_missing_decision_route() -> None:
+    captured: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/decision-required"):
+            return httpx.Response(404, json={"detail": "Not Found"})
+        if request.url.path == "/mcp":
+            payload = json.loads(request.content.decode())
+            captured["payload"] = payload
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(
+                                    {
+                                        "job_id": "job 1",
+                                        "next_required_decision": None,
+                                    }
+                                ),
+                            }
+                        ]
+                    },
+                },
+            )
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    client = MopExecutionAgentClient(
+        Settings(mop_execution_agent_url="http://mop-execution.local"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    response = asyncio.run(client.get_decision_required_context("job 1"))
+
+    assert response.method == "MCP"
+    assert response.payload["next_required_decision"] is None
+    assert captured["payload"]["params"]["name"] == (
+        "mop_execution_get_next_required_decision"
+    )
+    assert captured["payload"]["params"]["arguments"]["job_id"] == "job 1"
+
+
 def test_mop_execution_store_persists_redacted_metadata_and_activity_projection(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("MOP_EXECUTION_ALLOWED_TARGET_NAMESPACES", "agent-testing")
 

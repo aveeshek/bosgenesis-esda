@@ -1,7 +1,7 @@
 # High-Level Design (HLD): GPT-5 Powered Bounded Codex-like Workflow Agent
 
-**Document Version:** 1.2
-**Code-Verified Baseline:** 2026-07-22 (`v0.2.18-1`, commit `744e1c6`)
+**Document Version:** 1.3
+**Code-Verified Baseline:** 2026-08-16 working tree; last committed baseline `30f6634` (2026-07-23)
 **Target System:** Custom Web Application / Local Agent Console  
 **Primary Goal:** Build a bounded, task-specific Codex/Kiro/Claude-like agent using GPT-5 API, MCP servers, PowerShell execution, APIs, validation, and agentic memory.  
 **Intended Usage:** Operational automation, troubleshooting, validation, controlled remediation, and workflow orchestration for a limited scope such as BOS Genesis / TAAI / Kubernetes / API validation tasks.
@@ -114,7 +114,7 @@ Implemented behavior:
 - Environment Chat currently integrates namespace-scoped Kubernetes inspection/remediation and Helm inspection/remediation adapters. Read operations include namespace summary, pods, events, logs, deployments, services, ingress, PVCs, ConfigMap metadata, releases, status, history, values, repositories, and optional historical/observability lookups. Mutations include rollout restart, scale, patch, apply, resource delete, Helm install/upgrade/uninstall/rollback, and Helm repository add/update, all subject to tool registry, policy, explicit approval, redaction, and post-action verification.
 - Environment Chat short-term context uses a bounded PostgreSQL chat-message window plus in-process ephemeral turns. When `LANGMEM_ENABLED=true` and the package is installed, the memory facade reports LangMem as the memory-management provider; the current implementation does not yet call LangMem extraction APIs. Durable session memory is stored in PostgreSQL `agent_memories` records.
 - LangGraph currently uses in-process `MemorySaver` when `LANGGRAPH_CHECKPOINTER=memory`. The `postgres` setting is accepted but no PostgreSQL LangGraph saver is wired in the current graph implementation; durable UI rehydration comes from ESDA run/events/chat tables instead.
-- The repository contains 170 automated tests covering authentication, policy, logging, model profiles, Release Notes, Activity, Bundle Generation, Bundle Execution, Environment Chat, artifact publishing, and L4 controls.
+- The repository contains a broad automated suite covering authentication, policy, logging, model profiles, Release Notes, Activity, Bundle Generation, Bundle Execution, Digital Twins, Environment Chat, artifact publishing, and L4 controls; release evidence must use the current collected test result rather than a hard-coded count.
 
 Current release-note MCP tools used:
 
@@ -1259,3 +1259,99 @@ This proof supersedes the earlier demo expectation based on immutable pre-`1.2.0
 | P2 | CI | The execution-agent container workflow passes, but the generic CI type-check path still has pre-existing stub/module-path debt. Add missing type stubs and resolve duplicate module discovery. | Runtime tests and image build are the release gate for this demo only. |
 | P2 | Legacy configuration | Remove unused ClickHouse-oriented settings from the execution-agent sample after confirming no report path consumes them. ESDA already uses PostgreSQL only. | Do not introduce ClickHouse into ESDA. |
 | P2 | Documentation/runbooks | Produce one operator runbook for startup, ingress/DNS checks, twin regeneration, approval, mutation, rollback, cleanup, and log collection. | Current design and plan documents are the interim source. |
+
+## Appendix D: Current Operational Reconciliation (2026-08-16)
+
+This appendix reconciles the July baseline with the current ESDA working tree and the deployed service contracts. It supersedes earlier status statements where they conflict, but it does not rewrite historical Twin or execution evidence.
+
+### D.1 Current runtime topology
+
+```text
+Browser
+  -> FastAPI/Jinja2/JavaScript ESDA
+       -> PostgreSQL
+       -> local artifact storage
+       -> Git artifact publisher
+       -> Azure/OpenAI-compatible model profiles
+       -> Release Note Agent
+       -> MoP Creation Agent
+       -> MoP Execution Agent
+            -> Helm Manager MCP
+            -> Kubernetes Inspector MCP
+            -> Namespace Twin deterministic engine
+```
+
+Local ESDA is configured to use the deployed BOS Genesis services through ingress endpoints. Helm/Kubernetes objects created by Bundle Execution are a separate concern: the current demo deliberately excludes Kubernetes `Ingress` resources from the selected bundle mutation while still using service ingress URLs for ESDA-to-agent connectivity.
+
+### D.2 Current Bundle Execution behavior
+
+The implemented state machine is:
+
+```text
+select bundle/target
+  -> optional Twin match
+  -> ESDA preflight
+  -> execution-agent health/readiness/capabilities
+  -> bundle registration/validation
+  -> dry-run job
+  -> observations and report
+  -> explicit approval
+  -> approved mutation
+  -> bounded instruction handling when requested
+  -> post-mutation agent reports
+  -> live Helm/Kubernetes verification
+  -> completed | completed_with_review | validation_failed
+  -> optional cleanup/revert
+```
+
+Current implementation details:
+
+- The stable demo folder `260630_114925_mop_signoz` is preferred at bundle-list time.
+- The compact Namespace Twin panel is advisory unless `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=true`.
+- `NAMESPACE_TWIN_AUTO_APPROVAL_ENABLED=true` affects the Twin policy projection only. It does not call or bypass the Bundle Execution approval endpoint.
+- Once an explicit approval is accepted, the runtime planner may submit a bounded continuation instruction to the execution agent when current evidence unambiguously says `instruction_required`. It holds on unknown mutation outcome, rollback, ambiguity, timeout, or HTTP failure.
+- The planner returns only `continue`, `hold`, or `abort` with an audit-safe summary. Direct Helm/kubectl mutation remains prohibited.
+- Mutation polling supports multiple decision gates and de-duplicates already continued gates.
+- Post-mutation validation queries execution-agent observations/reports and independently queries Kubernetes Inspector and Helm Manager.
+- A fully validated demo completion requires the expected Helm release when configured, non-empty Services, all workload Pods Ready or Completed, and zero Ingress resources when configured.
+- UI rendering failures after authoritative terminal state do not demote a completed run. Validation rendering is separated from mutation completion and the transaction history refreshes after terminal state.
+
+### D.3 Current evidence statement
+
+A real August lab run completed the pinned Signoz mutation into `agent-testing`. Live verification observed the expected Helm release, six Ready/Completed Pods, eight Services, and zero Kubernetes Ingress resources. ESDA published an execution report bundle.
+
+This is environment-specific proof. It is not a guarantee that another bundle, namespace, cluster state, agent version, credential, or policy version will produce the same outcome.
+
+### D.4 Approval and autonomy clarification
+
+The current product demonstrates conditional autonomy, not unconditional mutation:
+
+- Read-only collection, planning, simulation, dry-run orchestration, and bounded post-approval continuation can run autonomously.
+- Bundle Execution still requires explicit approval before mutation in the current normative implementation.
+- Bundle metadata `human_approval_before_mutation: false`, Twin automatic approval, and a Green Twin are eligibility evidence. None of them currently replaces the execution approval API.
+- A future one-touch mode requires a separately versioned ODD/policy contract, signed operator delegation, expiry, scope, rollback/stop rules, and audit evidence. It must not be inferred from free-text rationale.
+
+### D.5 Current configuration additions
+
+ESDA now includes these execution-specific settings in addition to the July configuration:
+
+| Property | Purpose |
+|---|---|
+| `MOP_EXECUTION_POST_MUTATION_LIVE_VERIFICATION_ENABLED` | Enables independent live Helm/Kubernetes verification. |
+| `MOP_EXECUTION_POST_MUTATION_VERIFICATION_ATTEMPTS` | Bounds readiness polling. |
+| `MOP_EXECUTION_POST_MUTATION_VERIFICATION_INTERVAL_SECONDS` | Controls readiness polling interval. |
+| `MOP_EXECUTION_POST_MUTATION_REQUIRE_NO_INGRESS` | Requires zero Kubernetes Ingress resources for the demo proof. |
+| `MOP_EXECUTION_POST_MUTATION_EXPECTED_HELM_RELEASE` | Optionally requires a named deployed release. |
+| `MOP_EXECUTION_PREFERRED_BUNDLE_PUBLISH_FOLDER` | Moves the stable bundle to the top of selection. |
+| `MOP_EXECUTION_DEMO_PASS_THROUGH_ENABLED` | Unsafe evidence-bypass switch; remains false for validated runs. |
+
+Execution exclusions and all `NAMESPACE_TWIN_*` policy/risk properties belong to the MoP Execution Agent, not ESDA.
+
+### D.6 Revised immediate priorities
+
+1. Convert the current FastAPI background orchestration to a durable worker/checkpointer.
+2. Replace local admin auth with Entra ID and scoped RBAC.
+3. Make cross-service correlation, metrics, and trace dashboards complete.
+4. Add signed delegation if one-touch mutation is required.
+5. Complete the full failure/recovery matrix and malicious-bundle tests.
+6. Replace name/prefix exclusions and disabled risk axes with authoritative provenance and production-grade evidence.

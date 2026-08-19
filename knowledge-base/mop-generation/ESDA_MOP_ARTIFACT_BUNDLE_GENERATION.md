@@ -1,4 +1,4 @@
-﻿# ESDA MoP and Deployment Artifact Bundle Generation Logic
+# ESDA MoP and Deployment Artifact Bundle Generation Logic
 
 ## Purpose
 
@@ -661,5 +661,15 @@ Included:
 No mutation was performed.
 ```
 
+## 2026-08-16 Current Bundle Contract Notes
 
+The MoP Creation Agent remains authoritative for professional human Markdown/PDF rendering and machine bundle structure. ESDA must preserve returned documents and styling, package/download the complete bundle, publish the bundle unchanged, and record immutable identity/checksum metadata.
 
+Current downstream rules:
+
+- Source namespace evidence is captured during generation; target namespace is bound during execution.
+- The bundle can carry `human_approval_before_mutation=false` for configured demo source namespaces, but execution policy remains independent.
+- Namespace Twin planning may exclude configured generated/platform resources. The bundle itself is not rewritten by those Twin filters.
+- The stable demo publish folder may be prioritized in Bundle Execution without changing bundle content or identity.
+- Ingress exclusion for the demo belongs to execution-agent configuration, not the human MoP renderer.
+- Production must replace name/prefix exclusions with typed origin, owner reference, collector/generator identity, and managed-field provenance in `artifact-index.json`.

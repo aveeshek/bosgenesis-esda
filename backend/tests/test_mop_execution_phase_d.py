@@ -29,7 +29,34 @@ def test_mop_execution_page_renders_shell_and_shared_navigation(tmp_path, monkey
         assert 'id="final-report"' in body
         assert 'id="agent-activity-rail"' in body
         assert 'data-auto-hide-ms="30000"' in body
+        assert 'Autonomous mutation (pre-authorized)' in body
+        assert 'Approved mutation (agent approval required)' not in body
         assert '/static/js/mop_execution.js' in body
+
+
+def test_autonomous_mutation_hides_second_approval_and_awaits_mutation() -> None:
+    script = (
+        __import__("pathlib").Path(__file__).parents[1]
+        / "app"
+        / "static"
+        / "js"
+        / "mop_execution.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'if (approvedMutationMode()) {' in script
+    assert 'approvalCard.classList.add("d-none")' in script
+    assert 'async function renderApprovalResult(result = {})' in script
+    assert 'if (autoStart) await startMutation();' in script
+    assert 'await renderMutationResult(result);' in script
+    assert 'async function renderMutationResult(result = {})' in script
+    assert 'validationResult = await runPostMutationValidation(validationRunId);' in script
+    assert 'renderValidationTerminalFallback(validationResult, error);' in script
+    assert 'void runPostMutationValidation' not in script
+    assert 'async function renderDryRunResult(result)' in script
+    assert 'await submitApprovedMutationApproval(result);' in script
+    assert 'await renderDryRunResult(dryRun);' in script
+    assert 'window.setTimeout(() => { void startMutation(); }, 50);' not in script
+    assert 'No additional operator approval is required.' in script
 
 
 def test_mop_execution_page_uses_configured_target_namespaces(tmp_path, monkeypatch) -> None:

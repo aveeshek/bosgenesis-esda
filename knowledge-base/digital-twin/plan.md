@@ -8,7 +8,7 @@
 **Browser-mock target:** 1-2 weeks  
 **Server-mock target:** 2-3 weeks  
 **Real approval-gated baseline:** 10-14 weeks, depending on backend readiness and parallel staffing  
-**Status:** Phases 0-4 and Slice 5A engineering implemented; Slice 5A user acceptance pending
+**Status:** Phases 0-7 and Slices 5A-5K implemented; current lab posture reconciled 2026-08-16
 
 ---
 
@@ -949,3 +949,40 @@ Do these tasks next. Do not start server, database, GPT, MCP, or execution-agent
 - [ ] Repair execution-agent generic CI type-check/module-path debt.
 - [ ] Remove unused ClickHouse sample configuration.
 - [ ] Automate configuration drift validation for Python settings, `.env.example`, Helm values, and documentation.
+
+## 2026-08-16 Current Implementation Reconciliation
+
+This section supersedes earlier status and mandatory-gate wording where it conflicts with the current code. It does not rewrite completed implementation history.
+
+### Current status checklist
+
+- [x] UI-first Phases 0-4 implemented: frozen UX/contracts, static UI, browser mock, server mock, and real backend foundation.
+- [x] Real slices 5A-5K implemented: lifecycle, release delta, dependency graph, policy/risk, authoritative dry-run/diff, rollback, drift, runtime behavior, audit/reports, release-note validation, and optional MoP Replay.
+- [x] Phase 6 compact Twin panel and Bundle Execution linkage implemented.
+- [x] Selected Phase 7 fidelity and product-journey checks implemented.
+- [x] On-demand simulation implemented against a server-resolved published bundle and target namespace.
+- [x] Historical decisions remain immutable; regeneration creates a new Twin/version.
+- [x] Browser tabs render authoritative server facts and lazy-load/cache module payloads.
+- [x] Bundle Execution can match and display a Twin for the selected immutable bundle identity and target.
+- [x] Twin enforcement is optional by default through `DIGITAL_TWIN_EXECUTION_GATE_REQUIRED=false`.
+- [ ] Complete the production hardening and failure matrix listed in the HLD/specification debt register.
+- [ ] Replace heuristic exclusions and disabled risk axes with typed provenance and production evidence.
+- [ ] Rehearse and sign one complete Green/Amber/Red, mutation, validation, rollback, and cleanup evidence set.
+
+### Current decision contract
+
+- The MoP Execution Agent owns authoritative lifecycle facts, deterministic axes, risk score, decision precedence, freshness, dry-run identity, and reports.
+- ESDA owns launch orchestration, authentication, presentation, optional compact matching, browser caching, and bounded model explanation.
+- SIGMA/GPT explanations cannot alter facts, axes, scores, approval, or execution eligibility.
+- Active risk bands are 0-30 Green/low, 31-70 Amber/medium, 71-90 Red/high, and 91-100 Red/critical.
+- PVC and StatefulSet risk are disabled in the current lab configuration. This means not evaluated, not safe.
+- Installed Helm releases are baseline evidence; configured ignored prefixes and generated ConfigMap exclusions are planning filters, not execution changes.
+- Admission/server dry-run does not predict image-pull, scheduling, PVC-binding, readiness, or controller/webhook convergence.
+
+### Approval clarification
+
+Twin automatic approval and bundle metadata `human_approval_before_mutation=false` are Twin/policy evidence. The current Bundle Execution contract still uses its explicit execution approval endpoint. A future one-touch path requires signed delegation, ODD scope, expiry, stop conditions, and audit evidence; it is not inferred from a prompt or rationale.
+
+### Current proof and limitations
+
+The fresh Signoz Twin `twin_5d7c8fe499ca4dd8bdcc9cd7404536da` finalized Green at risk 15 under `namespace-twin-risk-1.2.0`, with complete evidence and zero dependency findings. This is lab evidence only. Existing older Twins retain their prior decisions and must not be presented as recalculated.

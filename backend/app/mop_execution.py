@@ -206,6 +206,9 @@ class MopExecutionRunStore:
     ) -> dict[str, Any]:
         job_id = str(self._find_key(job, "job_id") or self._find_key(job, "id") or "")
         payload: dict[str, Any] = {"job_kind": job_kind, "job": job}
+        if "recovered_after_create_timeout" in job:
+            payload["recovered_after_create_timeout"] = bool(job["recovered_after_create_timeout"])
+            payload["recovery_attempt"] = job.get("recovery_attempt")
         if job_id:
             payload["job_id"] = job_id
             if job_kind == "mutation":
@@ -372,6 +375,8 @@ class MopExecutionRunStore:
             "dry_run_job_id": None,
             "mutation_job_id": None,
             "target_namespace": None,
+            "source_namespace": None,
+            "generated_release_name": None,
             "correlation_id": None,
             "current_state": None,
             "current_phase": None,
@@ -390,7 +395,17 @@ class MopExecutionRunStore:
             if event.get("event_type") == "run_started":
                 metadata["bundle_source"] = payload.get("bundle_source") or {}
                 metadata["execution_mode"] = payload.get("execution_mode")
-            for key in ("bundle_id", "dry_run_job_id", "mutation_job_id", "target_namespace", "correlation_id", "current_state", "current_phase"):
+            for key in (
+                "bundle_id",
+                "dry_run_job_id",
+                "mutation_job_id",
+                "target_namespace",
+                "source_namespace",
+                "generated_release_name",
+                "correlation_id",
+                "current_state",
+                "current_phase",
+            ):
                 value = self._find_key(payload, key)
                 if value:
                     metadata[key] = value
@@ -409,7 +424,6 @@ class MopExecutionRunStore:
             elif event.get("event_type") == "safe_reasoning_summary":
                 metadata["safe_summaries"].append(payload)
         return metadata
-
     def _record(
         self,
         run_id: str,
@@ -492,6 +506,7 @@ class MopExecutionPreflightService:
 
     def bundle_candidates(self, *, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
+        preferred_folder = self.settings.mop_execution_preferred_bundle_publish_folder.strip()
         records = self.repository.list_completed_run_sources(
             user_id=user_id,
             workflow_type="mop_generation",
@@ -505,6 +520,11 @@ class MopExecutionPreflightService:
                 continue
             metadata = bundle.get("metadata") or {}
             publish_state = self._publish_state(record.get("events") or [])
+            published_source = self._published_source_reference(
+                folder=publish_state.get("folder_name"),
+                filename=self._artifact_filename(bundle),
+                branch=publish_state.get("branch"),
+            )
             local_error = None
             try:
                 local_stat = self.artifact_service.stat_artifact(str(bundle.get("storage_path") or ""))
@@ -533,9 +553,16 @@ class MopExecutionPreflightService:
                     "local_error": local_error,
                     "publish_folder": publish_state.get("folder_name"),
                     "publish_branch": publish_state.get("branch"),
+                    "preferred": bool(
+                        preferred_folder
+                        and publish_state.get("folder_name") == preferred_folder
+                    ),
                     "bundle_id": metadata.get("bundle_id"),
+                    "source_reference_hash": published_source.get("hash"),
                 }
             )
+        if preferred_folder:
+            candidates.sort(key=lambda candidate: not candidate["preferred"])
         return candidates
 
     def bundle_identity_for_activity_run(
@@ -610,6 +637,11 @@ class MopExecutionPreflightService:
         bundles: list[dict[str, Any]] = []
         for candidate in self._digital_twin_bundle_candidates(user_id=user_id, limit=100):
             published = bool(candidate.get("publish_folder"))
+            published_source = self._published_source_reference(
+                folder=candidate.get("publish_folder"),
+                filename=candidate.get("filename"),
+                branch=candidate.get("publish_branch"),
+            )
             bundles.append(
                 {
                     key: candidate.get(key)
@@ -632,6 +664,7 @@ class MopExecutionPreflightService:
                 }
                 | {
                     "eligible": published,
+                    "source_reference_hash": published_source.get("hash"),
                     "eligibility_message": (
                         "Published bundle is ready for server-side simulation."
                         if published
@@ -707,6 +740,30 @@ class MopExecutionPreflightService:
                 )
             },
         }
+
+    def _published_source_reference(
+        self,
+        *,
+        folder: Any,
+        filename: Any,
+        branch: Any,
+    ) -> dict[str, str | None]:
+        normalized_folder = str(folder or "").strip().strip("/")
+        if not normalized_folder:
+            return {"url": None, "hash": None}
+        normalized_filename = str(filename or "mop-bundle.zip").strip()
+        normalized_branch = str(branch or self.settings.artifact_git_branch).strip()
+        source_url = self._published_bundle_url(
+            folder=normalized_folder,
+            filename=normalized_filename,
+            branch=normalized_branch,
+        )
+        if not source_url:
+            return {"url": None, "hash": None}
+        source_reference_hash = hashlib.sha256(
+            f"object_store:{source_url}".encode("utf-8")
+        ).hexdigest()
+        return {"url": source_url, "hash": source_reference_hash}
 
     def _published_bundle_url(self, *, folder: str, filename: str, branch: str) -> str | None:
         parsed = urlparse(self.settings.artifact_git_repo_url)

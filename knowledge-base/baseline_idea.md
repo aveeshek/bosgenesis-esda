@@ -1630,3 +1630,7 @@ The most important design principle is:
 > GPT-5 reasons, plans, diagnoses, and chooses tools. The backend validates, controls, and executes.
 
 This allows Codex-like behavior for specific BOS Genesis operational tasks while maintaining strong safety, traceability, and approval boundaries.
+
+## Current-Architecture Pointer (2026-08-16)
+
+This file remains historical brainstorming material. It is not controlling for implementation or deployment. Current architecture, implemented behavior, configuration ownership, technical debt, and document precedence are defined in `README.md`, `hld.md`, `bosgenesis_esda_chatbot_lld.md`, and `project_architecture_specification.md`. In particular, current ESDA uses PostgreSQL rather than ClickHouse/MongoDB as its operational and audit authority.
